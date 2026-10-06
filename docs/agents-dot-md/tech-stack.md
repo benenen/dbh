@@ -5,6 +5,8 @@
 
 语言要求和固定依赖版本以 `go.mod` 为准。命令框架为 Cobra，终端编辑器为 reeflective/readline，数据库访问统一使用 `database/sql`。SQLite 使用 modernc 驱动，PostgreSQL 使用 pgx，MySQL 使用 go-sql-driver/mysql。
 
+readline 暂通过 `go.mod` 的 `replace` 使用 `third_party/readline`，修复终端光标回报阻塞键盘读取的问题；来源与补丁范围见 [补丁说明](../../third_party/readline/DBH_PATCH.md)。更新依赖时必须保留此修复或确认上游已修复，并运行 PTY 回归测试。
+
 连接参数采用驱动原生 DSN，通过现有 `Store` 管理命名连接。补全和历史不依赖大模型或外部服务。
 
 ## 验证命令

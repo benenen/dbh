@@ -11,6 +11,8 @@ import tempfile
 import time
 import unittest
 
+from terminal_screen import TerminalScreen
+
 if os.name == "posix":
     import fcntl
     import pty
@@ -256,6 +258,46 @@ class CLIEndToEnd(unittest.TestCase):
                 terminal.exchange("\r", expected)
         terminal.exit()
         self.assertEqual(self.history(), [query.rstrip()] * 3)
+
+    @unittest.skipUnless(os.name == "posix", "PTY tests require Linux or macOS")
+    def test_terminal_cursor_report_does_not_block_input(self):
+        self.env["TERM"] = "xterm-ghostty"
+        self.env["TERM_PROGRAM"] = "ghostty"
+        terminal = self.terminal()
+        # A terminal-only report must not stop the reader before the next read.
+        os.write(terminal.master, b"\x1b[1;7R")
+        time.sleep(0.1)
+        # Another reply fills the same channel; preserve coalesced user input.
+        terminal.exchange("\x1b[1;7RSELECT 42 AS value;\r", '{"value":42}')
+        terminal.exchange("\x03", "demo> ")
+        terminal.exit()
+
+    @unittest.skipUnless(os.name == "posix", "PTY tests require Linux or macOS")
+    def test_terminal_prompt_at_bottom_keeps_cursor_and_input_aligned(self):
+        terminal = self.terminal("--no-history")
+
+        def check_screen(suffix, prefix="demo>"):
+            for start_row in (0, 22, 23):
+                with self.subTest(start_row=start_row, suffix=suffix):
+                    screen = TerminalScreen(start_row=start_row)
+                    screen.feed(terminal.transcript)
+                    self.assertEqual(screen.line(screen.y), prefix + suffix)
+                    self.assertEqual(screen.x, len("demo> ") + len(suffix.strip()))
+                    self.assertTrue(any("Connected to demo" in screen.line(row)
+                                        for row in range(screen.height)))
+
+        check_screen("")
+        terminal.exchange("se", "SELECT")
+        check_screen(" se")
+        terminal.exchange("\x03", "demo> ")
+        check_screen("")
+        terminal.exchange("SELECT 42 AS value;\r", '{"value":42}')
+        check_screen("")
+        terminal.exchange("SELECT\r", "...> ")
+        check_screen("", prefix="...>")
+        terminal.exchange("43 AS value;\r", '{"value":43}')
+        check_screen("")
+        terminal.exit()
 
     @unittest.skipUnless(os.name == "posix", "PTY tests require Linux or macOS")
     def test_terminal_prompt_colors_and_commands_during_input(self):
