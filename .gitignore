@@ -35,3 +35,7 @@ go.work.sum
 # Local build output
 /bin/
 /dbh
+
+# Python e2e test caches
+__pycache__/
+*.pyc
