@@ -60,11 +60,15 @@ func redact(message, dsn string) string {
 func (s *Session) Close() { _ = s.Conn.Close(); _ = s.DB.Close() }
 
 func (s *Session) Execute(ctx context.Context, query, format string, out io.Writer) error {
+	return s.executeArgs(ctx, query, format, out)
+}
+
+func (s *Session) executeArgs(ctx context.Context, query, format string, out io.Writer, args ...any) error {
 	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
 	// Query works for both row-returning SQL and commands; consuming Next also
 	// ensures SQLite steps commands which do not return columns.
-	rows, err := s.Conn.QueryContext(ctx, query)
+	rows, err := s.Conn.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}

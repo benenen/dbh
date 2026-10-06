@@ -381,6 +381,28 @@ class CLIEndToEnd(unittest.TestCase):
         self.assertEqual(self.history(), ["SELECT\nname FROM users;",
                                           "SELECT * FROM missing;", "SELECT 9 AS value;"])
 
+    @unittest.skipUnless(os.name == "posix", "PTY tests require Linux or macOS")
+    def test_terminal_column_details_and_indexes(self):
+        self.seed()
+        self.sql("CREATE UNIQUE INDEX users_name ON users(name)", "--no-history")
+        terminal = self.terminal()
+        output = terminal.exchange("\\describe users\r", "users_name")
+        self.assertIn('"primary_key_position":1', output)
+        self.assertIn('"type":"INTEGER"', output)
+        self.assertIn('"comment":null', output)
+        self.assertIn('"nullable":"NO"', output)
+        output = terminal.exchange("\\indexes users\r", "users_name")
+        self.assertIn('"is_unique":1', output)
+        self.assertNotIn('"primary_key_position"', output)
+        terminal.exchange("\\describe missing\r", 'does not exist')
+        terminal.exchange("\\format table\r", "demo> ")
+        output = terminal.exchange("\\describe users\r", "users_name")
+        self.assertIn("Columns:", output)
+        self.assertIn("Indexes:", output)
+        terminal.exchange("\\indexes\r", "Usage: \\indexes TABLE")
+        terminal.exit()
+        self.assertFalse((self.config / "history" / "demo.jsonl").exists())
+
 
 if __name__ == "__main__":
     if not BINARY.is_file():

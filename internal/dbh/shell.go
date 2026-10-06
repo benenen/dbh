@@ -82,7 +82,7 @@ var keywords = strings.Fields(`SELECT FROM WHERE INSERT INTO VALUES UPDATE SET D
 
 func (c *completer) refresh(ctx context.Context, s *Session) error {
 	words := append([]string{}, keywords...)
-	words = append(words, `\help`, `\q`, `\tables`, `\describe`, `\history`, `\refresh`, `\clear`, `\format`)
+	words = append(words, `\help`, `\q`, `\tables`, `\describe`, `\indexes`, `\history`, `\refresh`, `\clear`, `\format`)
 	tables, err := s.Tables(ctx)
 	if err != nil {
 		c.words = words
@@ -118,7 +118,8 @@ Ctrl-C clears input; Ctrl-D exits.
 \help               Show help
 \q                  Exit
 \tables             List tables/views
-\describe TABLE     List columns
+\describe TABLE     Show column details and indexes
+\indexes TABLE      List indexes
 \history            Show SQL history
 \refresh            Refresh schema completion (use after DDL)
 \clear              Clear pending SQL
@@ -280,18 +281,19 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 						_, _ = fmt.Fprintln(out, n)
 					}
 				}
-			case `\describe`:
+			case `\describe`, `\indexes`:
 				if len(fields) != 2 {
-					_, _ = fmt.Fprintln(errOut, `Usage: \describe TABLE`)
+					_, _ = fmt.Fprintf(errOut, "Usage: %s TABLE\n", fields[0])
 					break
 				}
-				names, err := s.Columns(ctx, fields[1])
+				var err error
+				if fields[0] == `\describe` {
+					err = s.Describe(ctx, fields[1], format, out)
+				} else {
+					err = s.Indexes(ctx, fields[1], format, out)
+				}
 				if err != nil {
 					_, _ = fmt.Fprintln(errOut, err)
-				} else {
-					for _, n := range names {
-						_, _ = fmt.Fprintln(out, n)
-					}
 				}
 			case `\history`:
 				for i, q := range history.entries {
