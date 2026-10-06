@@ -11,7 +11,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chzyer/readline"
+	"github.com/reeflective/readline"
+	"github.com/reeflective/readline/inputrc"
 )
 
 func historyPath(s Store, name string) string { return filepath.Join(s.Dir, "history", name+".jsonl") }
@@ -35,24 +36,47 @@ func saveHistory(s Store, name, q string) error {
 
 type completer struct{ words []string }
 
-func (c *completer) Do(line []rune, pos int) ([][]rune, int) {
+func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 	if pos < 0 || pos > len(line) {
-		return nil, 0
+		return nil, ""
 	}
 	start := pos
 	for start > 0 && (isIdentifier(line[start-1]) || line[start-1] == '\\') {
 		start--
 	}
-	prefix := strings.ToLower(string(line[start:pos]))
-	results := [][]rune{}
+	prefix := string(line[start:pos])
+	if prefix == "" {
+		return nil, ""
+	}
+	results := []string{}
 	for _, word := range c.words {
-		r := []rune(word)
-		if strings.HasPrefix(strings.ToLower(word), prefix) && len(r) >= pos-start {
-			results = append(results, append(r[pos-start:], ' '))
+		if strings.HasPrefix(strings.ToLower(word), strings.ToLower(prefix)) {
+			results = append(results, word)
 		}
 	}
-	return results, pos - start
+	return results, prefix
 }
+
+func (c *completer) complete(line []rune, pos int) readline.Completions {
+	words, prefix := c.candidates(line, pos)
+	comps := readline.CompleteValues(words...).PreserveEscapes()
+	comps.PREFIX = prefix
+	return comps
+}
+
+// The editor automatically saves each accepted input line. SQL history must instead
+// contain complete statements, so Write is a no-op and the shell appends after parsing.
+type sqlHistory struct{ entries []string }
+
+func (h *sqlHistory) Write(string) (int, error) { return len(h.entries), nil }
+func (h *sqlHistory) GetLine(pos int) (string, error) {
+	if pos < 0 || pos >= len(h.entries) {
+		return "", fmt.Errorf("history position out of range")
+	}
+	return h.entries[pos], nil
+}
+func (h *sqlHistory) Len() int  { return len(h.entries) }
+func (h *sqlHistory) Dump() any { return h.entries }
 
 var keywords = strings.Fields(`SELECT FROM WHERE INSERT INTO VALUES UPDATE SET DELETE CREATE TABLE ALTER DROP JOIN LEFT RIGHT INNER OUTER ON AS AND OR NOT NULL IS IN EXISTS LIKE ILIKE BETWEEN GROUP BY ORDER HAVING LIMIT OFFSET DISTINCT UNION ALL WITH RETURNING EXPLAIN BEGIN COMMIT ROLLBACK CASE WHEN THEN ELSE END COUNT SUM AVG MIN MAX TRUE FALSE PRIMARY KEY REFERENCES INDEX SHOW DESCRIBE PRAGMA`)
 
@@ -85,8 +109,12 @@ func (c *completer) refresh(ctx context.Context, s *Session) error {
 	return nil
 }
 
-const shellHelp = `SQL ends with ; and may span multiple lines. Tab completes keywords/tables/columns.
-Up/Down recall SQL; Ctrl-R searches history; Ctrl-C clears input; Ctrl-D exits.
+const shellHelp = `SQL ends with ; and may span multiple lines. Suggestions appear as you type.
+Paste keeps the entire block editable; press Enter to execute complete SQL.
+Alt-Enter inserts a newline. Up/Down move within multi-line input.
+Tab selects keywords/tables/columns; Shift-Tab selects the previous candidate.
+Up/Down recall SQL; Ctrl-R searches history; Right accepts a history suggestion.
+Ctrl-C clears input; Ctrl-D exits.
 \help               Show help
 \q                  Exit
 \tables             List tables/views
@@ -96,6 +124,15 @@ Up/Down recall SQL; Ctrl-R searches history; Ctrl-C clears input; Ctrl-D exits.
 \clear              Clear pending SQL
 \format table|csv|json  Change output format
 `
+
+func acceptSQLInput(line, driver string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || (strings.HasPrefix(trimmed, `\`) && !strings.Contains(trimmed, "\n")) {
+		return true
+	}
+	statements, rest, err := splitSQL(line, driver)
+	return err == nil && len(statements) > 0 && stripComments(rest, driver) == ""
+}
 
 func shell(ctx context.Context, s *Session, p Profile, store Store, format string, noHistory bool, out, errOut io.Writer) error {
 	c := &completer{}
@@ -113,32 +150,107 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 			return err
 		}
 	}
-	rl, err := readline.NewEx(&readline.Config{Prompt: p.Name + "> ", AutoComplete: c, HistoryLimit: 1000, DisableAutoSaveHistory: true, InterruptPrompt: "^C", EOFPrompt: "exit", Stdout: out, Stderr: errOut})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = rl.Close() }()
-	// readline's on-disk format is line-based, so we manage multi-line history ourselves.
-	for _, q := range entries {
-		if err := rl.SaveHistory(q); err != nil {
+	history := &sqlHistory{entries: entries}
+	rl := readline.NewShell()
+	rl.Config.Vars["enable-bracketed-paste"] = true
+	rl.Config.Vars["multiline-column"] = true
+	rl.Config.Vars["autocomplete"] = true
+	rl.Config.Vars["completion-ignore-case"] = true
+	rl.Config.Vars["history-autosuggest"] = !noHistory
+	rl.Config.Vars["cursor-position-probe"] = false
+	rl.Keymap.Register(map[string]func(){
+		"dbh-newline": func() {
+			rl.Line().Insert(rl.Cursor().Pos(), '\n')
+			rl.Cursor().Inc()
+		},
+		"dbh-interrupt": func() {
+			// Drop virtual completion/search buffers before accepting the interrupt.
+			rl.Keymap.Commands()["abort"]()
+			rl.Display.AcceptLine()
+			rl.History.Accept(false, false, readline.ErrInterrupt)
+		},
+	})
+	for _, keymap := range []string{"emacs", "menu-select", "isearch"} {
+		if err := rl.Config.Bind(keymap, "\x03", "dbh-interrupt", false); err != nil {
 			return err
 		}
 	}
-	_, _ = fmt.Fprintln(out, "Connected to", p.Name, "("+p.Driver+"). Type \\help for help.")
-	pending := ""
-	for {
-		if pending == "" {
-			rl.SetPrompt(p.Name + "> ")
-		} else {
-			rl.SetPrompt("...> ")
+	// The default "complete" command hides the menu after Tab; menu-complete
+	// keeps as-you-type candidates visible for subsequent SQL words.
+	if err := rl.Config.Bind("emacs", "\t", "menu-complete", false); err != nil {
+		return err
+	}
+	if err := rl.Config.Bind("emacs", "\x1b[Z", "menu-complete-backward", false); err != nil {
+		return err
+	}
+	for _, keymap := range []string{"emacs", "menu-select"} {
+		// Both forms normalize to ESC+Enter. Override the meta form too,
+		// otherwise the default self-insert binding takes precedence.
+		for _, key := range []string{"\x1b\r", string(inputrc.Enmeta('\r'))} {
+			if err := rl.Config.Bind(keymap, key, "dbh-newline", false); err != nil {
+				return err
+			}
 		}
+	}
+	for key, action := range map[string]string{
+		inputrc.Unescape(`\M-[A`): "up-line-or-history",
+		inputrc.Unescape(`\M-[B`): "down-line-or-history",
+	} {
+		if err := rl.Config.Bind("emacs", key, action, false); err != nil {
+			return err
+		}
+	}
+	rl.History.Add("SQL history", history)
+	resume := ""
+	rl.AcceptMultiline = func(line []rune) bool {
+		text := string(line)
+		start := strings.LastIndex(text, "\n") + 1
+		last := strings.TrimSpace(text[start:])
+		if strings.HasPrefix(last, `\`) {
+			// Commands can inspect the session while preserving unfinished SQL.
+			// Do not interpret a command inside a literal or block comment.
+			if _, _, err := splitSQL(text[:start], s.Driver); err == nil {
+				resume = text[:start]
+				if last == `\clear` || last == `\q` || last == `\quit` {
+					resume = ""
+				}
+				rl.Line().Set([]rune(last)...)
+				return true
+			}
+		}
+		return acceptSQLInput(text, s.Driver)
+	}
+	color := os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
+	rl.Prompt.Primary(func() string {
+		if color {
+			return "\x1b[36m" + p.Name + "> \x1b[0m"
+		}
+		return p.Name + "> "
+	})
+	rl.Prompt.Secondary(func() string {
+		if color {
+			return "\x1b[90m...> \x1b[0m"
+		}
+		return "...> "
+	})
+	rl.Completer = func(line []rune, pos int) readline.Completions {
+		if pos < 0 || pos > len(line) {
+			return readline.Completions{}
+		}
+		// Do not suggest SQL words inside an unfinished literal or block comment.
+		if _, _, err := splitSQL(string(line[:pos]), s.Driver); err != nil {
+			return readline.Completions{}
+		}
+		return c.complete(line, pos)
+	}
+	_, _ = fmt.Fprintln(out, "Connected to", p.Name, "("+p.Driver+"). Type \\help for help.")
+	for {
 		line, err := rl.Readline()
 		if errors.Is(err, readline.ErrInterrupt) {
-			pending = ""
 			continue
 		}
 		if errors.Is(err, io.EOF) {
-			if pending != "" {
+			if strings.TrimSpace(line) != "" {
 				_, _ = fmt.Fprintln(errOut, "Discarded unfinished SQL.")
 			}
 			return nil
@@ -155,7 +267,6 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 			case `\help`:
 				_, _ = fmt.Fprint(out, shellHelp)
 			case `\clear`:
-				pending = ""
 			case `\refresh`:
 				if err := c.refresh(ctx, s); err != nil {
 					_, _ = fmt.Fprintln(errOut, err)
@@ -172,7 +283,7 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 			case `\describe`:
 				if len(fields) != 2 {
 					_, _ = fmt.Fprintln(errOut, `Usage: \describe TABLE`)
-					continue
+					break
 				}
 				names, err := s.Columns(ctx, fields[1])
 				if err != nil {
@@ -183,7 +294,7 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 					}
 				}
 			case `\history`:
-				for i, q := range entries {
+				for i, q := range history.entries {
 					_, _ = fmt.Fprintf(out, "%d  %s\n", i+1, q)
 				}
 			case `\format`:
@@ -195,32 +306,28 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 			default:
 				_, _ = fmt.Fprintln(errOut, "Unknown command. Type \\help.")
 			}
+			if resume != "" {
+				rl.Line().Set([]rune(resume)...)
+				rl.History.Accept(true, false, nil)
+				resume = ""
+			}
 			continue
 		}
-		if line == "" && pending == "" {
+		if line == "" {
 			continue
 		}
-		if pending != "" {
-			pending += "\n"
-		}
-		pending += line
-		statements, rest, parseErr := splitSQL(pending, s.Driver)
-		pending = rest
+		statements, _, _ := splitSQL(line, s.Driver)
 		for _, q := range statements {
 			if !noHistory {
 				if err := saveHistory(store, p.Name, q+";"); err != nil {
 					_, _ = fmt.Fprintln(errOut, "History:", err)
 				}
-				entries = append(entries, q+";")
-				_ = rl.SaveHistory(q + ";")
+				history.entries = append(history.entries, q+";")
 			}
 			if err := s.Execute(ctx, q, format, out); err != nil {
 				_, _ = fmt.Fprintln(errOut, "SQL error:", err)
 				break
 			}
-		}
-		if parseErr == nil && stripComments(pending, s.Driver) == "" {
-			pending = ""
 		}
 	}
 }

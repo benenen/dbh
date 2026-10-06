@@ -101,9 +101,9 @@ func TestSQLiteSession(t *testing.T) {
 	if err := c.refresh(ctx, s); err != nil {
 		t.Fatal(err)
 	}
-	matches, n := c.Do([]rune("select * from us"), len([]rune("select * from us")))
-	if n != 2 || !reflect.DeepEqual(matches, [][]rune{[]rune("ers ")}) {
-		t.Fatalf("%q %d", matches, n)
+	matches, prefix := c.candidates([]rune("select * from us"), len([]rune("select * from us")))
+	if prefix != "us" || !reflect.DeepEqual(matches, []string{"users"}) {
+		t.Fatalf("%q %s", matches, prefix)
 	}
 	out.Reset()
 	if err := s.Run(ctx, `INSERT INTO users(name) VALUES ('returned') RETURNING id;`, "csv", &out); err != nil {
@@ -126,6 +126,31 @@ func TestHistoryPreservesSQL(t *testing.T) {
 	entries, err := readHistory(s, "test")
 	if err != nil || !reflect.DeepEqual(entries, []string{q}) {
 		t.Fatalf("%q %v", entries, err)
+	}
+}
+
+func TestAcceptSQLInput(t *testing.T) {
+	for _, tt := range []struct {
+		input, driver string
+		accept        bool
+	}{
+		{"", "sqlite", true},
+		{`\tables`, "sqlite", true},
+		{"SELECT\n    1;\n", "sqlite", true},
+		{"SELECT 1;\nSELECT 2", "sqlite", false},
+		{"SELECT ';'", "sqlite", false},
+		{"SELECT 'first\n\\q\nlast';", "sqlite", true},
+		{"SELECT 'unfinished;", "sqlite", false},
+		{"SELECT 1; /* unfinished", "sqlite", false},
+		{"SELECT 1; -- comment", "sqlite", true},
+		{"SELECT $$semi;\ncolon$$;", "postgres", true},
+		{"SELECT $tag$unfinished;", "postgres", false},
+	} {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := acceptSQLInput(tt.input, tt.driver); got != tt.accept {
+				t.Fatalf("accept=%v, want %v", got, tt.accept)
+			}
+		})
 	}
 }
 

@@ -3,10 +3,10 @@ module github.com/benenen/dbh
 go 1.26.0
 
 require (
-	github.com/chzyer/readline v1.5.1
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/gofrs/flock v0.13.1
 	github.com/jackc/pgx/v5 v5.11.0
+	github.com/reeflective/readline v1.3.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.46.0
 	modernc.org/sqlite v1.60.1
@@ -23,6 +23,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect

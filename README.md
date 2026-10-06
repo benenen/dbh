@@ -1,16 +1,20 @@
 # dbh
 
-用 Go 编写的数据库 CLI，支持 SQLite、PostgreSQL 和 MySQL。管理命名连接，直接执行 SQL，或进入支持 Tab 补全与 SQL 历史的交互终端。
+用 Go 编写的数据库 CLI，支持 SQLite、PostgreSQL 和 MySQL。管理命名连接，直接执行 SQL，或进入支持实时补全与 SQL 历史的交互终端。
 
 ## 安装
 
-需要 Go 1.26 或更新版本。
+需要 Go 1.26 或更新版本；使用下列命令还需要 Make。
 
 ```bash
-go build -o bin/dbh .
+make build
 # 或安装到 Go 的 bin 目录
-go install .
+make install
+# 指定安装目录
+GOBIN="$HOME/.local/bin" make install
 ```
+
+`make build` 生成 `bin/dbh`；`make install` 安装到 `GOBIN`，未设置时使用 `GOPATH/bin`（通常为 `~/go/bin`）。将安装目录加入 `PATH` 后即可直接运行 `dbh`。不使用 Make 时，也可运行 `go build -o bin/dbh .` 或 `go install .`。
 
 ## 连接管理
 
@@ -67,9 +71,11 @@ id  name
 local> \q
 ```
 
-- SQL 以 `;` 结束，支持多行输入；字符串、注释、PostgreSQL dollar quote 内的分号不会切分语句。
-- Tab 补全 SQL 关键字、表名、列名和终端命令；结构来自当前数据库，不调用大模型。修改表结构后执行 `\refresh` 更新候选项。补全为候选匹配，暂不解析别名、作用域或带空格的引用标识符。
-- ↑/↓ 回顾历史，Ctrl-R 搜索历史。Ctrl-C 清除当前输入，Ctrl-D 退出。
+- 使用简洁彩色提示符，保留普通终端滚动记录；设置 `NO_COLOR=1` 可关闭提示符颜色。
+- SQL 以 `;` 结束；未完成时按 Enter 继续换行，所有行仍可编辑。Alt-Enter 可直接插入换行。字符串、注释、PostgreSQL dollar quote 内的分号不会切分语句。
+- 在支持括号粘贴的终端中，多行粘贴保留换行、缩进和中文，整块留在输入区，按 Enter 后才执行；LF、CRLF 和 CR 换行均支持。粘贴中有多条 SQL 时，确认后按顺序执行。
+- 输入过程中自动显示 SQL 关键字、表名、列名和终端命令的候选，无需先按 Tab；Tab 选择候选，Shift-Tab 选择上一项。结构来自当前数据库，不调用大模型。修改表结构后执行 `\refresh` 更新候选项。补全为候选匹配，暂不解析别名、作用域或带空格的引用标识符。
+- ↑/↓ 在多行输入中移动，到顶部/底部后回顾历史；Ctrl-R 搜索历史。匹配的历史 SQL 会作为灰色文字预览，在输入末尾按 → 接受。Ctrl-C 清除整块输入，在空输入区按 Ctrl-D 退出。
 - `\tables` 列出表和视图；`\describe TABLE` 列出列名。
 - `\history` 查看历史，`\clear` 清除待执行 SQL，`\format table|csv|json` 切换格式，`\help` 查看帮助。
 
@@ -91,12 +97,20 @@ history/<name>.jsonl       每个连接的 SQL 历史
 ## 开发与验证
 
 ```bash
-go test ./...
-go vet ./...
+make test
+make e2e   # 构建真实 CLI 并运行端到端测试，需要 Python 3
+make vet
+make lint  # 需要已安装 golangci-lint
+make fmt
+make clean
 ```
+
+`make` 或 `make help` 查看可用命令；`make clean` 仅删除本地构建的 `bin/dbh`。
+
+e2e 测试使用 Python 标准库启动真实 `dbh` 进程，覆盖连接管理与简写、环境变量配置、SQL 参数/文件/管道输入、输出格式、事务、错误退出和历史。Linux/macOS 上还通过 PTY 验证实时补全、Tab 选择、多行粘贴与提交前编辑、换行兼容、彩色提示符、Ctrl-C 清空、历史回填与搜索、多行 SQL 和 Ctrl-D 退出。每个测试使用自动清理的临时配置与 SQLite 文件，不需要外部数据库。
 
 SQLite 测试使用真实数据库，覆盖 CLI 生命周期、SQL 查询和写入、事务回滚、返回结果、结构读取、补全、历史和文件权限。PostgreSQL/MySQL 使用各自的 Go 驱动，集成验证需要可访问的数据库。
 
 可设置 `DBH_TEST_POSTGRES_DSN` / `DBH_TEST_MYSQL_DSN` 后运行 `go test ./...` 启用集成测试。测试会创建并清理独立测试表，请使用测试数据库。
 
-驱动及终端库：[pgx](https://github.com/jackc/pgx)、[go-sql-driver/mysql](https://github.com/go-sql-driver/mysql)、[modernc SQLite](https://github.com/modernc-org/sqlite)、[readline](https://github.com/chzyer/readline)。
+驱动及终端库：[pgx](https://github.com/jackc/pgx)、[go-sql-driver/mysql](https://github.com/go-sql-driver/mysql)、[modernc SQLite](https://github.com/modernc-org/sqlite)、[readline](https://github.com/reeflective/readline)。
