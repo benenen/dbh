@@ -35,11 +35,23 @@ func firstWord(query string) string {
 			continue
 		}
 		if strings.HasPrefix(query, "/*") {
-			i := strings.Index(query[2:], "*/")
-			if i < 0 {
+			depth, i := 1, 2
+			for i+1 < len(query) && depth > 0 {
+				switch query[i : i+2] {
+				case "/*":
+					depth++
+					i += 2
+				case "*/":
+					depth--
+					i += 2
+				default:
+					i++
+				}
+			}
+			if depth != 0 {
 				return ""
 			}
-			query = query[i+4:]
+			query = query[i:]
 			continue
 		}
 		end := strings.IndexFunc(query, func(r rune) bool { return !unicode.IsLetter(r) })

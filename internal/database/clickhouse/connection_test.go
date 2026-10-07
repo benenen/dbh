@@ -25,6 +25,9 @@ func TestQueryDispatch(t *testing.T) {
 	}{
 		{"/* header */ -- line\n # line\n INSERT INTO t VALUES (1)", true},
 		{"CREATE TABLE t (id UInt64) ENGINE=Memory", true},
+		{"/* outer /* inner */ outer */ CREATE TABLE t (id UInt64) ENGINE=Memory", true},
+		{"/* outer /* inner /* deeper */ inner */ outer */ INSERT INTO t VALUES (1)", true},
+		{"/* outer /* inner */ outer */ SELECT 1", false},
 		{"SELECT 'INSERT INTO t'", false},
 		{"WITH 1 AS x SELECT x", false},
 		{"SHOW TABLES", false},

@@ -65,6 +65,10 @@ select 2;`, 2, "", false},
 		{"sqlite", `select 'unfinished`, 0, `select 'unfinished`, true},
 		{"sqlite", `select 'it''s; fine';`, 1, "", false},
 		{"mysql", `select 1--1; select 2;`, 2, "", false},
+		{"mysql", `/*! SELECT 1 */;`, 1, "", false},
+		{"mysql", `/* header */ /*!50000 SELECT 1 */; SELECT 2;`, 2, "", false},
+		{"mysql", `/*! SELECT 'a;b' */;`, 1, "", false},
+		{"postgres", `/*! SELECT 1 */;`, 0, "", false},
 		{"postgres", `select foo$bar$ from t;`, 1, "", false},
 	}
 	for _, tt := range tests {

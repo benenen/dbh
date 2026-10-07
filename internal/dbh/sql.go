@@ -139,6 +139,10 @@ func stripCommentsSyntax(s string, syntax database.Syntax) string {
 			}
 			return ""
 		}
+		if syntax.ExecutableComments && strings.HasPrefix(s, "/*!") {
+			// MySQL executes this comment's contents, including versioned SQL.
+			return s
+		}
 		if strings.HasPrefix(s, "/*") {
 			depth, i := 1, 2
 			for i+1 < len(s) && depth > 0 {

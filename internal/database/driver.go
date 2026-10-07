@@ -26,6 +26,7 @@ type Syntax struct {
 	BackslashEscapes        bool
 	DashCommentNeedsSpace   bool
 	HashComments            bool
+	ExecutableComments      bool
 	EscapeStringPrefix      bool
 	BracketIdentifiers      bool
 	DollarQuotes            bool

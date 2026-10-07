@@ -18,7 +18,7 @@ func (Driver) Open(ctx context.Context, dsn string) (database.Connection, error)
 	return database.OpenSQL(ctx, "mysql", dsn)
 }
 func (Driver) Syntax() database.Syntax {
-	return database.Syntax{BackslashEscapes: true, DashCommentNeedsSpace: true, HashComments: true}
+	return database.Syntax{BackslashEscapes: true, DashCommentNeedsSpace: true, HashComments: true, ExecutableComments: true}
 }
 
 func (Driver) SwitchDatabase(ctx context.Context, conn database.Connection, _ string, name string) (database.Connection, error) {
