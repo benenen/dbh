@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/benenen/dbh/internal/database/registry"
 )
 
 func TestStoreLifecycle(t *testing.T) {
@@ -212,5 +214,37 @@ func TestCLI(t *testing.T) {
 	}
 	if _, err := run("connect", "test", "--sql", "select 1"); err == nil {
 		t.Fatal("missing profile accepted")
+	}
+}
+
+func TestUseDatabaseParsing(t *testing.T) {
+	for _, test := range []struct {
+		query, driver, want string
+		matched, invalid    bool
+	}{
+		{"use dbh_test", "postgres", "dbh_test", true, false},
+		{"USE MixedCase", "postgres", "mixedcase", true, false},
+		{`USE "Mixed Case"`, "postgres", "Mixed Case", true, false},
+		{`USE "a""b"`, "postgres", `a"b`, true, false},
+		{"USE `a``b`", "mysql", "a`b", true, false},
+		{"USE MixedCase", "mysql", "MixedCase", true, false},
+		{"-- leading comment\nUSE dbh_test -- trailing comment", "postgres", "dbh_test", true, false},
+		{"SELECT 'USE dbh_test'", "postgres", "", false, false},
+		{"USE", "postgres", "", true, true},
+		{"USE a b", "postgres", "", true, true},
+		{`USE ""`, "postgres", "", true, true},
+		{`USE "unfinished`, "postgres", "", true, true},
+		{"USE db; DROP TABLE users", "mysql", "", true, true},
+	} {
+		t.Run(test.query, func(t *testing.T) {
+			backend, err := registry.Lookup(test.driver)
+			if err != nil {
+				t.Fatal(err)
+			}
+			name, matched, err := parseUseDatabase(test.query, backend.Syntax())
+			if matched != test.matched || (err != nil) != test.invalid || (!test.invalid && name != test.want) {
+				t.Fatalf("got (%q, %v, %v); want (%q, %v, invalid=%v)", name, matched, err, test.want, test.matched, test.invalid)
+			}
+		})
 	}
 }

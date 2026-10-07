@@ -4,11 +4,19 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"github.com/benenen/dbh/internal/database"
+	"github.com/benenen/dbh/internal/database/registry"
 )
 
 // splitSQL recognizes statement separators outside strings, comments and dollar quotes.
 // The remainder is held by the interactive shell until a terminating semicolon arrives.
 func splitSQL(input, driver string) (statements []string, remainder string, err error) {
+	backend, err := registry.Lookup(driver)
+	if err != nil {
+		return nil, "", err
+	}
+	syntax := backend.Syntax()
 	start := 0
 	quote := byte(0)
 	dollar := ""
@@ -40,7 +48,7 @@ func splitSQL(input, driver string) (statements []string, remainder string, err 
 			continue
 		}
 		if quote != 0 {
-			if c == '\\' && driver == "mysql" && quote != ']' {
+			if c == '\\' && syntax.BackslashEscapes && quote != ']' {
 				i++
 				continue
 			}
@@ -62,12 +70,12 @@ func splitSQL(input, driver string) (statements []string, remainder string, err 
 			}
 			continue
 		}
-		if i+1 < len(input) && input[i:i+2] == "--" && (driver != "mysql" || i+2 == len(input) || unicode.IsSpace(rune(input[i+2]))) {
+		if i+1 < len(input) && input[i:i+2] == "--" && (!syntax.DashCommentNeedsSpace || i+2 == len(input) || unicode.IsSpace(rune(input[i+2]))) {
 			line = true
 			i++
 			continue
 		}
-		if c == '#' && driver == "mysql" {
+		if c == '#' && syntax.HashComments {
 			line = true
 			continue
 		}
@@ -78,16 +86,16 @@ func splitSQL(input, driver string) (statements []string, remainder string, err 
 		}
 		if c == '\'' || c == '"' || c == '`' {
 			quote = c
-			if c == '\'' && driver == "postgres" && i > 0 && (input[i-1] == 'E' || input[i-1] == 'e') && (i == 1 || !isIdentifier(rune(input[i-2]))) {
+			if c == '\'' && syntax.EscapeStringPrefix && i > 0 && (input[i-1] == 'E' || input[i-1] == 'e') && (i == 1 || !isIdentifier(rune(input[i-2]))) {
 				quote = 'e'
 			}
 			continue
 		}
-		if c == '[' && driver == "sqlite" {
+		if c == '[' && syntax.BracketIdentifiers {
 			quote = ']'
 			continue
 		}
-		if c == '$' && driver == "postgres" && (i == 0 || (!isIdentifier(rune(input[i-1])) && input[i-1] != '$')) {
+		if c == '$' && syntax.DollarQuotes && (i == 0 || (!isIdentifier(rune(input[i-1])) && input[i-1] != '$')) {
 			j := i + 1
 			for j < len(input) && (unicode.IsLetter(rune(input[j])) || input[j] == '_' || (j > i+1 && unicode.IsDigit(rune(input[j])))) {
 				j++
@@ -100,7 +108,7 @@ func splitSQL(input, driver string) (statements []string, remainder string, err 
 		}
 		if c == ';' {
 			text := strings.TrimSpace(input[start:i])
-			if stripComments(text, driver) != "" {
+			if stripCommentsSyntax(text, syntax) != "" {
 				statements = append(statements, text)
 			}
 			start = i + 1
@@ -114,9 +122,17 @@ func splitSQL(input, driver string) (statements []string, remainder string, err 
 }
 
 func stripComments(s, driver string) string {
+	backend, err := registry.Lookup(driver)
+	if err != nil {
+		return s
+	}
+	return stripCommentsSyntax(s, backend.Syntax())
+}
+
+func stripCommentsSyntax(s string, syntax database.Syntax) string {
 	s = strings.TrimSpace(s)
 	for {
-		if (strings.HasPrefix(s, "--") && (driver != "mysql" || len(s) == 2 || unicode.IsSpace(rune(s[2])))) || (driver == "mysql" && strings.HasPrefix(s, "#")) {
+		if (strings.HasPrefix(s, "--") && (!syntax.DashCommentNeedsSpace || len(s) == 2 || unicode.IsSpace(rune(s[2])))) || (syntax.HashComments && strings.HasPrefix(s, "#")) {
 			if i := strings.IndexByte(s, '\n'); i >= 0 {
 				s = strings.TrimSpace(s[i+1:])
 				continue
@@ -149,4 +165,68 @@ func stripComments(s, driver string) string {
 
 func isIdentifier(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '.'
+}
+
+// Recognize USE as a client-side operation without rewriting ordinary SQL.
+func parseUseDatabase(query string, syntax database.Syntax) (name string, matched bool, err error) {
+	query = stripCommentsSyntax(query, syntax)
+	fields := strings.Fields(query)
+	if len(fields) == 0 || !strings.EqualFold(fields[0], "USE") {
+		return "", false, nil
+	}
+	name, err = parseDatabaseName(strings.TrimSpace(query[len(fields[0]):]), syntax)
+	return name, true, err
+}
+
+func parseDatabaseName(input string, syntax database.Syntax) (string, error) {
+	input = stripCommentsSyntax(input, syntax)
+	if input == "" {
+		return "", fmt.Errorf("database name is required")
+	}
+	name := ""
+	rest := ""
+	quoted := input[0] == '"' || input[0] == '`'
+	if quoted {
+		quote := input[0]
+		var value strings.Builder
+		closed := false
+		for i := 1; i < len(input); i++ {
+			if input[i] == quote {
+				if i+1 < len(input) && input[i+1] == quote {
+					value.WriteByte(quote)
+					i++
+					continue
+				}
+				name, rest, closed = value.String(), input[i+1:], true
+				break
+			}
+			value.WriteByte(input[i])
+		}
+		if !closed {
+			return "", fmt.Errorf("unterminated database identifier")
+		}
+	} else {
+		end := len(input)
+		for i, char := range input {
+			if unicode.IsSpace(char) || char == ';' {
+				end = i
+				break
+			}
+		}
+		name, rest = input[:end], input[end:]
+		for _, char := range name {
+			if !unicode.IsLetter(char) && !unicode.IsDigit(char) && !strings.ContainsRune("_$-", char) {
+				return "", fmt.Errorf("invalid database name; use a quoted identifier")
+			}
+		}
+		if syntax.FoldUnquotedIdentifiers {
+			name = strings.ToLower(name)
+		}
+	}
+	rest = strings.TrimSpace(rest)
+	rest = strings.TrimPrefix(rest, ";")
+	if name == "" || stripCommentsSyntax(rest, syntax) != "" {
+		return "", fmt.Errorf("expected one database name")
+	}
+	return name, nil
 }

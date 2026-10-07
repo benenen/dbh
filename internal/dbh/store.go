@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 
+	"github.com/benenen/dbh/internal/database/registry"
 	"github.com/gofrs/flock"
 )
 
@@ -123,10 +124,8 @@ func validate(p Profile) error {
 	if !validName.MatchString(p.Name) {
 		return fmt.Errorf("name must contain letters, digits, dots, underscores or hyphens and start with a letter or digit")
 	}
-	switch p.Driver {
-	case "sqlite", "postgres", "mysql":
-	default:
-		return fmt.Errorf("unsupported driver %q (use sqlite, postgres or mysql)", p.Driver)
+	if _, err := registry.Lookup(p.Driver); err != nil {
+		return err
 	}
 	if p.DSN == "" {
 		return errors.New("DSN cannot be empty")

@@ -1,6 +1,5 @@
 GO ?= go
 GOLANGCI_LINT ?= golangci-lint
-PYTHON ?= python3
 
 .DEFAULT_GOAL := help
 .PHONY: help build install test e2e vet lint fmt clean
@@ -10,7 +9,7 @@ help:
 		'make build    Build bin/dbh' \
 		'make install  Install dbh to GOBIN or GOPATH/bin' \
 		'make test     Run Go tests' \
-		'make e2e      Build and test the CLI (requires Python 3)' \
+		'make e2e      Build and test the CLI with Go' \
 		'make vet      Run go vet' \
 		'make lint     Run golangci-lint (must be installed)' \
 		'make fmt      Format Go source files' \
@@ -26,8 +25,8 @@ install:
 test:
 	$(GO) test ./...
 
-e2e: build
-	$(PYTHON) tests/e2e_test.py
+e2e:
+	$(GO) test -tags=e2e -count=1 -v ./tests
 
 vet:
 	$(GO) vet ./...

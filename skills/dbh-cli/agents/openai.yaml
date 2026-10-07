@@ -1,0 +1,4 @@
+interface:
+  display_name: "dbh CLI"
+  short_description: "让 agent 直接调用 dbh 查询和操作数据库，并验证实际执行结果"
+  default_prompt: "使用 $dbh-cli 直接执行我的数据库查询或操作，并核对实际结果。"

@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/benenen/dbh/internal/database/registry"
+
 	"github.com/reeflective/readline"
 	"github.com/reeflective/readline/inputrc"
 )
@@ -82,7 +84,10 @@ var keywords = strings.Fields(`SELECT FROM WHERE INSERT INTO VALUES UPDATE SET D
 
 func (c *completer) refresh(ctx context.Context, s *Session) error {
 	words := append([]string{}, keywords...)
-	words = append(words, `\help`, `\q`, `\tables`, `\describe`, `\indexes`, `\history`, `\refresh`, `\clear`, `\format`)
+	if native := s.backend.Syntax().CompletionWords; len(native) > 0 {
+		words = append([]string{}, native...)
+	}
+	words = append(words, `\help`, `\q`, `\database`, `\use`, `\tables`, `\describe`, `\indexes`, `\history`, `\refresh`, `\clear`, `\format`)
 	tables, err := s.Tables(ctx)
 	if err != nil {
 		c.words = words
@@ -117,18 +122,23 @@ Up/Down recall SQL; Ctrl-R searches history; Right accepts a history suggestion.
 Ctrl-C clears input; Ctrl-D exits.
 \help               Show help
 \q                  Exit
+\database           List databases (MySQL/PostgreSQL/MongoDB)
+\use DATABASE       Switch database (also accepts USE DATABASE;)
 \tables             List tables/views
 \describe TABLE     Show column details and indexes
 \indexes TABLE      List indexes
 \history            Show SQL history
 \refresh            Refresh schema completion (use after DDL)
-\clear              Clear pending SQL
+\clear              Clear pending query
 \format table|csv|json  Change output format
 `
 
 func acceptSQLInput(line, driver string) bool {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" || (strings.HasPrefix(trimmed, `\`) && !strings.Contains(trimmed, "\n")) {
+		return true
+	}
+	if backend, err := registry.Lookup(driver); err == nil && backend.Syntax().JSONCommands && json.Valid([]byte(trimmed)) {
 		return true
 	}
 	statements, rest, err := splitSQL(line, driver)
@@ -239,7 +249,7 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 			return readline.Completions{}
 		}
 		// Do not suggest SQL words inside an unfinished literal or block comment.
-		if _, _, err := splitSQL(string(line[:pos]), s.Driver); err != nil {
+		if _, _, err := splitSQL(string(line[:pos]), s.Driver); err != nil && !s.backend.Syntax().JSONCommands {
 			return readline.Completions{}
 		}
 		return c.complete(line, pos)
@@ -266,14 +276,42 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 			case `\q`, `\quit`:
 				return nil
 			case `\help`:
-				_, _ = fmt.Fprint(out, shellHelp)
+				help := shellHelp
+				if s.backend.Syntax().JSONCommands {
+					help = "MongoDB accepts native JSON command documents. Press Enter when complete.\nUse ; between commands in batch input.\n" + shellHelp[strings.Index(shellHelp, `\help`):]
+				}
+				_, _ = fmt.Fprint(out, help)
 			case `\clear`:
+			case `\use`:
+				name, err := parseDatabaseName(strings.TrimSpace(line[len(fields[0]):]), s.backend.Syntax())
+				if err != nil {
+					_, _ = fmt.Fprintln(errOut, `Usage: \use DATABASE`)
+					break
+				}
+				if err := s.UseDatabase(ctx, name); err != nil {
+					_, _ = fmt.Fprintln(errOut, err)
+					break
+				}
+				_, _ = fmt.Fprintln(out, "Database changed to", name)
+				if err := c.refresh(ctx, s); err != nil {
+					_, _ = fmt.Fprintln(errOut, "Schema completion unavailable:", err)
+				}
 			case `\refresh`:
 				if err := c.refresh(ctx, s); err != nil {
 					_, _ = fmt.Fprintln(errOut, err)
 				}
-			case `\tables`:
-				names, err := s.Tables(ctx)
+			case `\database`, `\tables`:
+				var names []string
+				var err error
+				if fields[0] == `\database` {
+					if len(fields) != 1 {
+						_, _ = fmt.Fprintln(errOut, `Usage: \database`)
+						break
+					}
+					names, err = s.Databases(ctx)
+				} else {
+					names, err = s.Tables(ctx)
+				}
 				if err != nil {
 					_, _ = fmt.Fprintln(errOut, err)
 				} else {
@@ -318,7 +356,10 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 		if line == "" {
 			continue
 		}
-		statements, _, _ := splitSQL(line, s.Driver)
+		statements, rest, _ := splitSQL(line, s.Driver)
+		if s.backend.Syntax().JSONCommands && strings.TrimSpace(rest) != "" {
+			statements = append(statements, rest)
+		}
 		for _, q := range statements {
 			if !noHistory {
 				if err := saveHistory(store, p.Name, q+";"); err != nil {
@@ -327,8 +368,17 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 				history.entries = append(history.entries, q+";")
 			}
 			if err := s.Execute(ctx, q, format, out); err != nil {
-				_, _ = fmt.Fprintln(errOut, "SQL error:", err)
+				label := "SQL error:"
+				if s.backend.Syntax().JSONCommands {
+					label = "Command error:"
+				}
+				_, _ = fmt.Fprintln(errOut, label, err)
 				break
+			}
+			if _, use, _ := parseUseDatabase(q, s.backend.Syntax()); use {
+				if err := c.refresh(ctx, s); err != nil {
+					_, _ = fmt.Fprintln(errOut, "Schema completion unavailable:", err)
+				}
 			}
 		}
 	}

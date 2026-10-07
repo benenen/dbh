@@ -15,7 +15,7 @@ import (
 
 func NewCommand() *cobra.Command {
 	var dir string
-	root := &cobra.Command{Use: "dbh", Short: "Manage database connections and run SQL", SilenceUsage: true, SilenceErrors: true}
+	root := &cobra.Command{Use: "dbh", Short: "Manage database connections and run queries", SilenceUsage: true, SilenceErrors: true}
 	root.PersistentFlags().StringVar(&dir, "config-dir", "", "Configuration directory (or DBH_CONFIG_DIR)")
 	store := func() (Store, error) {
 		d := dir
@@ -59,7 +59,7 @@ func NewCommand() *cobra.Command {
 			short = "Update a saved connection"
 		}
 		c := &cobra.Command{Use: verb + " NAME", Aliases: []string{verb[:1]}, Short: short, Args: cobra.ExactArgs(1)}
-		c.Flags().StringVar(&driver, "driver", "", "sqlite, postgres or mysql")
+		c.Flags().StringVar(&driver, "driver", "", "sqlite, postgres, mysql, mongo or clickhouse")
 		c.Flags().StringVar(&dsn, "dsn", "", "Driver DSN (stored locally)")
 		c.Flags().StringVar(&dsnEnv, "dsn-env", "", "Read DSN from this environment variable")
 		c.Flags().BoolVar(&prompt, "prompt-dsn", false, "Read DSN with terminal echo disabled")
@@ -123,91 +123,120 @@ func NewCommand() *cobra.Command {
 		_, err = fmt.Fprintln(cmd.OutOrStdout(), "Removed", args[0])
 		return err
 	}})
-	var query, file, format string
-	var timeout time.Duration
-	var noHistory bool
-	connect := &cobra.Command{Use: "connect NAME", Aliases: []string{"c"}, Short: "Open a SQL shell, or execute SQL from --sql, --file or stdin", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		if format != "table" && format != "csv" && format != "json" {
-			return fmt.Errorf("format must be table, csv or json")
-		}
-		if timeout <= 0 {
-			return fmt.Errorf("timeout must be positive")
-		}
-		s, err := store()
-		if err != nil {
-			return err
-		}
-		p, err := s.Get(args[0])
-		if err != nil {
-			return err
-		}
-		var input string
-		batch := false
-		switch {
-		case cmd.Flags().Changed("sql"):
-			input = query
-			batch = true
-		case cmd.Flags().Changed("file"):
-			var b []byte
-			if file == "-" {
-				b, err = io.ReadAll(cmd.InOrStdin())
-			} else {
-				b, err = os.ReadFile(file)
+	for _, executeOnly := range []bool{false, true} {
+		var query, file, format, databaseName string
+		var timeout time.Duration
+		var noHistory bool
+		connect := &cobra.Command{Use: "connect NAME", Aliases: []string{"c"}, Short: "Open a database shell, or execute queries from --sql, --file or stdin", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+			if executeOnly && len(args) == 2 {
+				if cmd.Flags().Changed("sql") || cmd.Flags().Changed("file") {
+					return fmt.Errorf("positional query cannot be combined with --sql or --file")
+				}
+				query = args[1]
 			}
+			if cmd.Flags().Changed("db") && strings.TrimSpace(databaseName) == "" {
+				return fmt.Errorf("database name must not be empty")
+			}
+			if format != "table" && format != "csv" && format != "json" {
+				return fmt.Errorf("format must be table, csv or json")
+			}
+			if timeout <= 0 {
+				return fmt.Errorf("timeout must be positive")
+			}
+			s, err := store()
 			if err != nil {
 				return err
 			}
-			input = string(b)
-			batch = true
-		default:
-			if !term.IsTerminal(int(os.Stdin.Fd())) {
-				b, e := io.ReadAll(cmd.InOrStdin())
-				if e != nil {
-					return e
+			p, err := s.Get(args[0])
+			if err != nil {
+				return err
+			}
+			var input string
+			batch := false
+			switch {
+			case cmd.Flags().Changed("sql") || executeOnly && len(args) == 2:
+				input = query
+				batch = true
+			case cmd.Flags().Changed("file"):
+				var b []byte
+				if file == "-" {
+					b, err = io.ReadAll(cmd.InOrStdin())
+				} else {
+					b, err = os.ReadFile(file)
+				}
+				if err != nil {
+					return err
 				}
 				input = string(b)
 				batch = true
+			default:
+				if executeOnly || !term.IsTerminal(int(os.Stdin.Fd())) {
+					if executeOnly && term.IsTerminal(int(os.Stdin.Fd())) {
+						return fmt.Errorf("provide a query, --sql, --file or piped stdin")
+					}
+					b, e := io.ReadAll(cmd.InOrStdin())
+					if e != nil {
+						return e
+					}
+					input = string(b)
+					batch = true
+				}
 			}
-		}
-		session, err := openSession(cmd.Context(), p, timeout)
-		if err != nil {
-			return err
-		}
-		defer session.Close()
-		if batch {
-			statements, rest, err := splitSQL(input, p.Driver)
+			if executeOnly && strings.TrimSpace(input) == "" {
+				return fmt.Errorf("provide a query, --sql, --file or piped stdin")
+			}
+			session, err := openSession(cmd.Context(), p, timeout)
 			if err != nil {
 				return err
 			}
-			if stripComments(rest, p.Driver) != "" {
-				statements = append(statements, rest)
-			}
-			if !noHistory {
-				if err := s.prepare(); err != nil {
+			defer session.Close()
+			if cmd.Flags().Changed("db") {
+				if err := session.UseDatabase(cmd.Context(), databaseName); err != nil {
 					return err
 				}
 			}
-			for _, q := range statements {
+			if batch {
+				statements, rest, err := splitSQL(input, p.Driver)
+				if err != nil {
+					return err
+				}
+				if stripComments(rest, p.Driver) != "" {
+					statements = append(statements, rest)
+				}
 				if !noHistory {
-					if err := saveHistory(s, p.Name, q+";"); err != nil {
+					if err := s.prepare(); err != nil {
 						return err
 					}
 				}
-				if err := session.Execute(cmd.Context(), q, format, cmd.OutOrStdout()); err != nil {
-					return err
+				for _, q := range statements {
+					if !noHistory {
+						if err := saveHistory(s, p.Name, q+";"); err != nil {
+							return err
+						}
+					}
+					if err := session.Execute(cmd.Context(), q, format, cmd.OutOrStdout()); err != nil {
+						return err
+					}
 				}
+				return nil
 			}
-			return nil
+			return shell(cmd.Context(), session, p, s, format, noHistory, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		}}
+		if executeOnly {
+			connect.Use = "exec NAME [QUERY]"
+			connect.Aliases = nil
+			connect.Short = "Execute queries using a saved connection and optional database"
+			connect.Args = cobra.RangeArgs(1, 2)
+			connect.Flags().StringVar(&databaseName, "db", "", "Server database to use (defaults to the saved connection database)")
 		}
-		return shell(cmd.Context(), session, p, s, format, noHistory, cmd.OutOrStdout(), cmd.ErrOrStderr())
-	}}
-	connect.Flags().StringVarP(&query, "sql", "e", "", "Execute SQL and exit")
-	connect.Flags().StringVarP(&file, "file", "f", "", "Execute a SQL file (- for stdin)")
-	connect.Flags().StringVar(&format, "format", "table", "table, csv or json (newline-delimited objects)")
-	connect.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Connection/query timeout")
-	connect.Flags().BoolVar(&noHistory, "no-history", false, "Disable persisted SQL history")
-	connect.MarkFlagsMutuallyExclusive("sql", "file")
-	root.AddCommand(connect)
+		connect.Flags().StringVarP(&query, "sql", "e", "", "Execute SQL or a MongoDB JSON command and exit")
+		connect.Flags().StringVarP(&file, "file", "f", "", "Execute a query file (- for stdin)")
+		connect.Flags().StringVar(&format, "format", "table", "table, csv or json (newline-delimited objects)")
+		connect.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Connection/query timeout")
+		connect.Flags().BoolVar(&noHistory, "no-history", false, "Disable persisted query history")
+		connect.MarkFlagsMutuallyExclusive("sql", "file")
+		root.AddCommand(connect)
+	}
 	root.AddCommand(&cobra.Command{Use: "history NAME", Short: "Show SQL history for a connection", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		s, err := store()
 		if err != nil {

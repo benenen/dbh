@@ -6,6 +6,7 @@
 
 - 使用 Go 实现数据库 CLI，沿用现有 `database/sql` 会话与连接配置体系。
 - 交互式 SQL 提示应在输入过程中显示候选；验证时实际输入字符，不以 Tab 补全测试代替实时提示验证。
+- Agent 使用 dbh 查询或操作数据库时，读取 [dbh-cli 技能](skills/dbh-cli/SKILL.md)，直接通过终端执行 `dbh exec` 并核对结果；遵循用户已授权的目标和操作范围。
 - 命令完整名与简写保持相同行为；命令及使用方法以 `dbh --help` 和 `README.md` 为准。
 - 沟通默认简体中文；代码注释、CLI 输出和提交信息沿用仓库英文风格，详见 [语言约定](docs/agents-dot-md/translation.md)。
 - 提交和推送按用户已授权范围执行；数据库测试使用独立测试库，真实凭据不入库。
@@ -27,7 +28,7 @@
 ## 技能与索引维护
 
 - 仓库自带技能放在 `skills/<name>/SKILL.md`，全局技能不复制进仓库。
-- 增删技能、文档模块、记忆主题，或修改技能摘要后，运行 `python3 <agents-dot-md 技能目录>/scripts/reindex.py .`。
+- 增删技能、文档模块、记忆主题，或修改技能摘要后，运行 `bash docs/agents-dot-md/reindex.sh`。
 - 保留下方索引标记，标记之间的内容只由脚本更新。
 - 新模块和记忆文件使用 `# 标题` 与 `> 一句话摘要`，供脚本收录。
 
@@ -46,7 +47,7 @@
 ## 项目技能索引
 
 <!-- SKILLS:START -->
-- （仓库内暂无 SKILL.md）
+- **dbh-cli** — Agent 直接调用 dbh CLI 查询和操作数据库，管理连接、执行 SQL 或 MongoDB JSON、导出结果；使用 dbh 读写数据或查看结构时触发 （`skills/dbh-cli`）
 <!-- SKILLS:END -->
 
 ## 模块文档索引
