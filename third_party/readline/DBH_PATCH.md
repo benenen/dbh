@@ -3,7 +3,7 @@
 Source: `github.com/reeflective/readline` v1.3.0, copied from the Go module
 distribution. The original MIT license and production Go sources are retained.
 Upstream tests are excluded; dbh validates the affected path through a real PTY
-in `tests/e2e_test.py`.
+in `tests/terminal_test.go`.
 
 Upstream's `readInputFiltered` sends terminal cursor position reports to an
 unbuffered channel. With cursor probing disabled, there is no receiver, so an
@@ -12,6 +12,14 @@ Ctrl-C and exit commands.
 
 Local changes:
 
+- `completions.go`, `internal/completion/completion.go` and `utils.go`: add
+  `Completions.NoFilter()` so dbh's substring matches are not discarded by the
+  editor's prefix filter. The typed prefix still determines the input replaced
+  when a candidate is selected; other completers retain prefix filtering.
+- `internal/completion/insert.go`: `InsertCommonPrefix` skips candidates whose
+  common prefix does not start with the typed word, so the
+  `menu-complete-display-prefix` option cannot delete input for substring
+  matches.
 - `inputrc/bind.go`: normalize three map entry indentations with `gofmt`.
 - `internal/core/keys.go`: buffer one cursor reply, allowing a query receiver to
   consume a reply that arrives before it starts waiting.
@@ -25,7 +33,8 @@ Local changes:
 
 The `go.mod` replacement keeps builds reproducible without changing module
 caches. Remove this directory and the replacement when an upstream release
-handles unsolicited and repeated replies without blocking and keeps the prompt
-aligned at the bottom without cursor probing. Run dbh's PTY tests when updating
+handles unsolicited and repeated replies without blocking, keeps the prompt
+aligned at the bottom without cursor probing, and lets a completer bypass the
+prefix filter. Run dbh's PTY tests when updating
 or removing the patch. The layout regression replays the real output controls
 with the cursor initially at the top and bottom of the screen.

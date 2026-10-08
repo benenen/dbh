@@ -1,6 +1,7 @@
 package completion
 
 import (
+	"strings"
 	"unicode"
 
 	"github.com/reeflective/readline/inputrc"
@@ -111,8 +112,10 @@ func (e *Engine) refreshLine() {
 func (e *Engine) InsertCommonPrefix() {
 	common := e.commonPrefix()
 
-	// Only extend the typed word; never shorten or re-case it.
-	if len([]rune(common)) <= len([]rune(e.prefix)) {
+	// Only extend the typed word; never shorten or re-case it. Unfiltered
+	// candidates may contain the typed word without starting with it.
+	if len([]rune(common)) <= len([]rune(e.prefix)) ||
+		!strings.HasPrefix(strings.ToLower(common), strings.ToLower(e.prefix)) {
 		return
 	}
 

@@ -51,8 +51,12 @@ func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 		return nil, ""
 	}
 	results := []string{}
+	match := strings.ToLower(prefix)
 	for _, word := range c.words {
-		if strings.HasPrefix(strings.ToLower(word), strings.ToLower(prefix)) {
+		if strings.HasPrefix(word, `\`) && !strings.HasPrefix(prefix, `\`) {
+			continue
+		}
+		if strings.Contains(strings.ToLower(word), match) {
 			results = append(results, word)
 		}
 	}
@@ -61,7 +65,7 @@ func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 
 func (c *completer) complete(line []rune, pos int) readline.Completions {
 	words, prefix := c.candidates(line, pos)
-	comps := readline.CompleteValues(words...).PreserveEscapes()
+	comps := readline.CompleteValues(words...).PreserveEscapes().NoFilter()
 	comps.PREFIX = prefix
 	return comps
 }

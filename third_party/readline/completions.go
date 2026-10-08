@@ -25,6 +25,7 @@ type Completions struct {
 	listSep  map[string]string
 	pad      map[string]bool
 	escapes  map[string]bool
+	noFilter bool
 
 	// Initially this will be set to the part of the current word
 	// from the beginning of the word up to the position of the cursor.
@@ -133,6 +134,13 @@ func (c Completions) Suppress(expr ...string) Completions {
 		return CompleteMessage(err.Error())
 	}
 
+	return c
+}
+
+// NoFilter keeps candidates already filtered by the caller. PREFIX still controls
+// which input is replaced when a candidate is selected.
+func (c Completions) NoFilter() Completions {
+	c.noFilter = true
 	return c
 }
 
@@ -452,6 +460,7 @@ func (c *Completions) convert() completion.Values {
 	comps.ListSep = c.listSep
 	comps.Pad = c.pad
 	comps.Escapes = c.escapes
+	comps.NoFilter = c.noFilter
 
 	comps.PREFIX = c.PREFIX
 	comps.SUFFIX = c.SUFFIX

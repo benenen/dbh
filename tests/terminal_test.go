@@ -142,6 +142,32 @@ func TestTerminalLiveCompletionAndInterrupt(t *testing.T) {
 	equal(t, f.history(), []string{"SELECT name FROM users;", "SELECT 41 AS value;"})
 }
 
+func TestTerminalSubstringCompletion(t *testing.T) {
+	f := newFixture(t)
+	f.sql("CREATE TABLE apple(id INTEGER); CREATE TABLE platform(id INTEGER); CREATE TABLE sample(value TEXT); CREATE INDEX sample_lookup ON sample(value); INSERT INTO sample VALUES ('substring result');", "--no-history")
+	term := f.terminal()
+	for _, command := range []string{`\describe `, `\indexes `, "SELECT * FROM "} {
+		term.exchange(command)
+		term.exchange("p")
+		output := term.exchange("l", "sample") // Type characters without Tab to verify live suggestions.
+		contains(t, output, "apple")
+		contains(t, output, "platform")
+		screen := newScreen(t, 0)
+		screen.feed(term.transcript)
+		equal(t, screen.line(screen.y), "demo> "+command+"pl")
+		term.exchange("\x03", "demo> ")
+	}
+	for _, command := range []string{`\describe `, `\indexes `} {
+		term.exchange(command+"AMP", "sample")
+		output := term.exchange("\t\r", `"name":"sample_lookup"`)
+		excludes(t, output, "does not exist")
+	}
+	term.exchange("SELECT * FROM AMP", "sample")
+	term.exchange("\t;\r", `{"value":"substring result"}`)
+	term.exit("\\q\r")
+	equal(t, f.history(), []string{"SELECT * FROM sample;"})
+}
+
 func TestTerminalPersistedHistoryAndSearch(t *testing.T) {
 	f := newFixture(t)
 	f.seed()

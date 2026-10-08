@@ -5,7 +5,7 @@
 
 语言要求和固定依赖版本以 `go.mod` 为准。命令框架为 Cobra，终端编辑器为 reeflective/readline。关系型数据库沿用 `database/sql`：SQLite 使用 modernc 驱动，PostgreSQL 使用 pgx，MySQL 使用 go-sql-driver/mysql，ClickHouse 使用官方 clickhouse-go/v2 驱动；MongoDB 使用官方 Go Driver v2 执行原生 JSON 命令。各实现通过 `internal/database` 的驱动与会话接口共用 CLI、输出和配置体系。
 
-readline 暂通过 `go.mod` 的 `replace` 使用 `third_party/readline`，修复终端光标回报阻塞键盘读取的问题；来源与补丁范围见 [补丁说明](../../third_party/readline/DBH_PATCH.md)。更新依赖时必须保留此修复或确认上游已修复，并运行 PTY 回归测试。
+readline 暂通过 `go.mod` 的 `replace` 使用 `third_party/readline`，修复终端光标回报阻塞键盘读取的问题，并允许 dbh 跳过前缀过滤以显示包含匹配的候选；来源与补丁范围见 [补丁说明](../../third_party/readline/DBH_PATCH.md)。更新依赖时必须保留这些修改或确认上游已支持，并运行 PTY 回归测试。
 
 连接参数采用驱动原生 DSN，通过现有 `Store` 管理命名连接。补全和历史不依赖大模型或外部服务。
 

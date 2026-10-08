@@ -123,6 +123,27 @@ func TestSQLiteSession(t *testing.T) {
 	}
 }
 
+func TestCompletionContains(t *testing.T) {
+	c := &completer{words: []string{`\use`, "apple", "platform", "sample", "users"}}
+	for _, input := range []string{`\describe pl`, `\indexes PL`, "SELECT * FROM pl", "SELECT pl"} {
+		t.Run(input, func(t *testing.T) {
+			line := []rune(input)
+			matches, prefix := c.candidates(line, len(line))
+			if !reflect.DeepEqual(matches, []string{"apple", "platform", "sample"}) || !strings.EqualFold(prefix, "pl") {
+				t.Fatalf("matches=%q, prefix=%q", matches, prefix)
+			}
+		})
+	}
+	for _, input := range []string{`\describe zz`, `\describe `} {
+		if matches, _ := c.candidates([]rune(input), len([]rune(input))); len(matches) != 0 {
+			t.Fatalf("unexpected matches for %q: %q", input, matches)
+		}
+	}
+	if matches, _ := c.candidates([]rune("SELECT * FROM us"), len("SELECT * FROM us")); !reflect.DeepEqual(matches, []string{"users"}) {
+		t.Fatalf("shell commands leaked into SQL candidates: %q", matches)
+	}
+}
+
 func TestHistoryPreservesSQL(t *testing.T) {
 	s := Store{Dir: t.TempDir()}
 	q := "select 'first\nsecond';"
