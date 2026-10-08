@@ -96,7 +96,7 @@ func TestExternalDrivers(t *testing.T) {
 }
 
 func TestExternalMetadataNames(t *testing.T) {
-	for driver, env := range map[string]string{"postgres": "DBH_TEST_POSTGRES_DSN", "clickhouse": "DBH_TEST_CLICKHOUSE_DSN"} {
+	for driver, env := range map[string]string{"postgres": "DBH_TEST_POSTGRES_DSN", "clickhouse": "DBH_TEST_CLICKHOUSE_DSN", "mysql": "DBH_TEST_MYSQL_DSN"} {
 		t.Run(driver, func(t *testing.T) {
 			dsn := os.Getenv(env)
 			if dsn == "" {
@@ -109,16 +109,21 @@ func TestExternalMetadataNames(t *testing.T) {
 			}
 			defer s.Close()
 			name := fmt.Sprintf("Dbh_Test_%d", time.Now().UnixNano())
-			ddl, lookups := `CREATE TABLE "`+name+`" (id INTEGER, note TEXT)`, []string{"public." + name, `"` + name + `"`}
-			if driver == "clickhouse" {
+			quoted := `"` + name + `"`
+			ddl, lookups := "CREATE TABLE "+quoted+" (id INTEGER, note TEXT)", []string{"public." + name, quoted}
+			switch driver {
+			case "clickhouse":
 				ddl, lookups = "CREATE TABLE "+name+" (id UInt64, note LowCardinality(Nullable(String))) ENGINE=MergeTree ORDER BY id", []string{name}
+			case "mysql":
+				quoted = "`" + name + "`"
+				ddl, lookups = "CREATE TABLE "+quoted+" (id INTEGER, note TEXT)", []string{quoted}
 			}
 			var out bytes.Buffer
 			if err := s.Run(ctx, ddl, "json", &out); err != nil {
 				t.Fatal(err)
 			}
 			defer func() {
-				if err := s.Run(ctx, `DROP TABLE "`+name+`"`, "json", &out); err != nil {
+				if err := s.Run(ctx, "DROP TABLE "+quoted, "json", &out); err != nil {
 					t.Errorf("cleanup: %v", err)
 				}
 			}()
