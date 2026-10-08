@@ -103,7 +103,10 @@ func TestSQLiteDescribeSchemasAndCompositeKey(t *testing.T) {
 	if rows[2]["columns"] != "b DESC" || rows[3]["is_primary"] != float64(1) || rows[3]["columns"] != "b, a" {
 		t.Fatalf("index order: %#v", rows)
 	}
-	for _, table := range []string{"main.items", "item_view", "attached.other"} {
+	if err := s.Run(ctx, `CREATE TABLE "MyTable"(id INTEGER); CREATE TABLE "a.b"(id INTEGER);`, "json", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"main.items", "item_view", "attached.other", "mytable", `"MyTable"`, "main.[MYTABLE]", "a.b", `main."a.b"`} {
 		out.Reset()
 		if err := s.Describe(ctx, table, "csv", &out); err != nil {
 			t.Fatalf("%s: %v", table, err)

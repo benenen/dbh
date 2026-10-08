@@ -58,7 +58,7 @@ dbh connect local --sql 'SELECT * FROM users' --format csv
 dbh connect local --sql 'SELECT * FROM users' --format json
 ```
 
-默认显示带边框和行分隔线的表格，单元格中的换行独立显示，长内容按终端宽度折行，中文和组合字符不会被拆开。列数过多时按记录显示字段/值表格，避免终端自动换行破坏行边界。CSV 包含列标题；JSON 每行一个对象（NDJSON）。不返回数据的 SQL 语句在表格模式下显示 `OK`，CSV/JSON 模式不输出状态文本。支持 NULL 和 `INSERT ... RETURNING`。每个 SQL 语句独立执行，批量模式遇错停止，以非零状态退出；需要原子性时显式使用 `BEGIN` / `COMMIT`。
+默认显示带边框和行分隔线的表格，单元格中的换行独立显示，长内容按终端宽度折行，中文和组合字符不会被拆开。列数过多时按记录显示字段/值表格，避免终端自动换行破坏行边界。CSV 包含列标题，NULL 输出为 `NULL`；JSON 每行一个对象（NDJSON），字段按结果列顺序排列，重名列依次加 `_2`、`_3` 后缀，避免 JOIN 结果丢失字段。不返回数据的 SQL 语句在表格模式下显示 `OK`，CSV/JSON 模式不输出状态文本。支持 NULL 和 `INSERT ... RETURNING`。每个 SQL 语句独立执行，批量模式遇错停止，以非零状态退出；需要原子性时显式使用 `BEGIN` / `COMMIT`。
 
 `--timeout 30s` 控制连接和每条语句的超时，可修改。一个连接会话使用同一条底层连接，事务、临时表和会话设置可持续使用。
 
@@ -102,7 +102,7 @@ local> \q
 - ↑/↓ 在多行输入中移动，到顶部/底部后回顾历史；Ctrl-R 搜索历史。匹配的历史 SQL 会作为灰色文字预览，在输入末尾按 → 接受。Ctrl-C 清除整块输入，在空输入区按 Ctrl-D 退出。
 - `\database` 在 MySQL/PostgreSQL/MongoDB/ClickHouse 中列出数据库，每行一个名称，与 `\tables` 一样不受 `\format` 影响。MySQL 使用 `SHOW DATABASES`，PostgreSQL 查询 `pg_database`，MongoDB 列出服务器数据库；列表范围由数据库权限决定。SQLite 不支持此命令。
 - `\use DATABASE` 或 `USE DATABASE;` 切换当前数据库，成功后刷新表/集合和字段提示，不修改保存的连接配置。MySQL 保留当前会话；PostgreSQL 重新建立连接，临时表、会话设置和未提交事务不保留，连接失败时仍保留旧连接；MongoDB 复用客户端并选择数据库，新库在写入数据后出现。SQLite 不支持切库。
-- `\tables` 列出表和视图；`\describe TABLE` 显示每个字段的名称、类型、是否可空、默认值、主键顺序和注释，并附上索引列表；`\indexes TABLE` 单独查看索引。支持 `schema.table`，结果遵循当前 `\format`。
+- `\tables` 列出表和视图；`\describe TABLE` 显示每个字段的名称、类型、是否可空、默认值、主键顺序和注释，并附上索引列表；`\indexes TABLE` 单独查看索引。支持 `schema.table` 和带引号的名称（如 `"a.b"`），可直接使用 `\tables` 列出的名称；SQLite 表名不区分大小写。结果遵循当前 `\format`。
 - 索引显示名称、唯一性、主键标记及索引字段/定义。MySQL 联合索引按字段顺序逐行显示，包含索引类型、前缀长度和排序方向。SQLite 没有原生字段注释，注释显示为 `NULL`；`INTEGER PRIMARY KEY` 使用 rowid 时没有独立索引，因此不会出现在索引列表中。CSV/JSON 下字段与索引结果顺序输出，不插入文本标题。
 - `\history` 查看历史，`\clear` 清除待执行 SQL，`\format table|csv|json` 切换格式，`\help` 查看帮助。
 

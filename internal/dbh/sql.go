@@ -31,7 +31,7 @@ func splitSQL(input, driver string) (statements []string, remainder string, err 
 			continue
 		}
 		if block > 0 {
-			if i+1 < len(input) && input[i:i+2] == "/*" {
+			if syntax.NestedComments && i+1 < len(input) && input[i:i+2] == "/*" {
 				block++
 				i++
 			} else if i+1 < len(input) && input[i:i+2] == "*/" {
@@ -48,7 +48,7 @@ func splitSQL(input, driver string) (statements []string, remainder string, err 
 			continue
 		}
 		if quote != 0 {
-			if c == '\\' && syntax.BackslashEscapes && quote != ']' {
+			if c == '\\' && syntax.BackslashEscapes && quote != ']' && (quote != '`' || syntax.BacktickEscapes) {
 				i++
 				continue
 			}
@@ -121,6 +121,15 @@ func splitSQL(input, driver string) (statements []string, remainder string, err 
 	return
 }
 
+// terminate appends the history separator, moving it to a new line when the statement
+// ends inside a line comment.
+func terminate(q, driver string) string {
+	if statements, rest, err := splitSQL(q+";", driver); err == nil && len(statements) == 1 && rest == "" {
+		return q + ";"
+	}
+	return q + "\n;"
+}
+
 func stripComments(s, driver string) string {
 	backend, err := registry.Lookup(driver)
 	if err != nil {
@@ -148,7 +157,9 @@ func stripCommentsSyntax(s string, syntax database.Syntax) string {
 			for i+1 < len(s) && depth > 0 {
 				switch s[i : i+2] {
 				case "/*":
-					depth++
+					if syntax.NestedComments {
+						depth++
+					}
 					i += 2
 				case "*/":
 					depth--

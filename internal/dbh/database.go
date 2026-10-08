@@ -86,13 +86,19 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 		return err
 	}
 	defer func() { _ = rows.Close() }()
+	var csvOut *csv.Writer
+	// Keep rows already read when a later row fails, matching JSON's streaming output.
+	defer func() {
+		if csvOut != nil {
+			csvOut.Flush()
+		}
+	}()
 	for {
 		cols, err := rows.Columns()
 		if err != nil {
 			return err
 		}
 		var tableRows [][]string
-		var csvOut *csv.Writer
 		var jsonOut *json.Encoder
 		switch format {
 		case "csv":

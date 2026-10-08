@@ -19,7 +19,7 @@ func (Driver) Open(ctx context.Context, dsn string) (database.Connection, error)
 	return database.OpenSQL(ctx, "pgx", dsn)
 }
 func (Driver) Syntax() database.Syntax {
-	return database.Syntax{EscapeStringPrefix: true, DollarQuotes: true, FoldUnquotedIdentifiers: true}
+	return database.Syntax{NestedComments: true, EscapeStringPrefix: true, DollarQuotes: true, FoldUnquotedIdentifiers: true}
 }
 
 func (Driver) SwitchDatabase(ctx context.Context, _ database.Connection, dsn, name string) (database.Connection, error) {
@@ -44,7 +44,8 @@ func (Driver) Columns(ctx context.Context, conn database.Connection, table strin
 	return database.Names(ctx, conn, database.Query{Text: `SELECT column_name FROM information_schema.columns WHERE table_name=$1 AND table_schema = ANY(current_schemas(false)) ORDER BY ordinal_position`, Args: []any{table}})
 }
 func (Driver) ColumnDetails(ctx context.Context, conn database.Connection, table string) (database.Query, error) {
-	if err := resolveTable(ctx, conn, table); err != nil {
+	table, err := resolveTable(ctx, conn, table)
+	if err != nil {
 		return database.Query{}, err
 	}
 	return database.Query{Text: `SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type,
@@ -61,7 +62,8 @@ func (Driver) ColumnDetails(ctx context.Context, conn database.Connection, table
    ORDER BY a.attnum`, Args: []any{table}}, nil
 }
 func (Driver) Indexes(ctx context.Context, conn database.Connection, table string) (database.Query, error) {
-	if err := resolveTable(ctx, conn, table); err != nil {
+	table, err := resolveTable(ctx, conn, table)
+	if err != nil {
 		return database.Query{}, err
 	}
 	return database.Query{Text: `SELECT c.relname AS name, i.indisunique AS is_unique,
@@ -70,15 +72,21 @@ func (Driver) Indexes(ctx context.Context, conn database.Connection, table strin
    WHERE i.indrelid = to_regclass($1) ORDER BY c.relname`, Args: []any{table}}, nil
 }
 
-// to_regclass follows the existing session's search_path and quoted identifiers.
-func resolveTable(ctx context.Context, conn database.Connection, table string) error {
-	names, err := database.Names(ctx, conn, database.Query{Text: `SELECT c.relname FROM pg_class c WHERE c.oid = to_regclass($1)
-   AND c.relkind IN ('r', 'p', 'v', 'm', 'f')`, Args: []any{table}})
+// resolveTable returns a quoted relation name. to_regclass follows the session's
+// search_path and quoted identifiers; names listed by \tables (schema.Table) match as stored.
+func resolveTable(ctx context.Context, conn database.Connection, table string) (string, error) {
+	names, err := database.Names(ctx, conn, database.Query{Text: `SELECT c.oid::regclass::text FROM pg_class c
+   JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND (c.oid = to_regclass($1)
+    OR n.nspname || '.' || c.relname = $1
+    OR (c.relname = $1 AND n.nspname = ANY(current_schemas(false))))
+   ORDER BY COALESCE(c.oid = to_regclass($1), false) DESC,
+    array_position(current_schemas(false), n.nspname::text) LIMIT 1`, Args: []any{table}})
 	if err != nil {
-		return err
+		return "", err
 	}
 	if len(names) == 0 {
-		return fmt.Errorf("table or view %q does not exist", table)
+		return "", fmt.Errorf("table or view %q does not exist", table)
 	}
-	return nil
+	return names[0], nil
 }

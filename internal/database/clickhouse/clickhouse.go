@@ -22,7 +22,7 @@ func (Driver) Open(ctx context.Context, dsn string) (database.Connection, error)
 	return connect(ctx, options)
 }
 func (Driver) Syntax() database.Syntax {
-	return database.Syntax{BackslashEscapes: true, HashComments: true}
+	return database.Syntax{BackslashEscapes: true, BacktickEscapes: true, NestedComments: true, HashComments: true}
 }
 func (Driver) SwitchDatabase(ctx context.Context, _ database.Connection, dsn, name string) (database.Connection, error) {
 	options, err := ch.ParseDSN(dsn)
@@ -67,7 +67,7 @@ func (Driver) ColumnDetails(ctx context.Context, conn database.Connection, table
 	if err := resolve(ctx, conn, table); err != nil {
 		return database.Query{}, err
 	}
-	return database.Query{Text: "SELECT name, type, startsWith(type,'Nullable(') AS nullable, default_kind, default_expression, is_in_primary_key, is_in_sorting_key, comment FROM system.columns WHERE " + tableFilter + " ORDER BY position", Args: args(table)}, nil
+	return database.Query{Text: "SELECT name, type, (startsWith(type,'Nullable(') OR startsWith(type,'LowCardinality(Nullable(')) AS nullable, default_kind, default_expression, is_in_primary_key, is_in_sorting_key, comment FROM system.columns WHERE " + tableFilter + " ORDER BY position", Args: args(table)}, nil
 }
 func (Driver) Indexes(ctx context.Context, conn database.Connection, table string) (database.Query, error) {
 	if err := resolve(ctx, conn, table); err != nil {

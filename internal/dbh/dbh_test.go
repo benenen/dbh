@@ -56,7 +56,12 @@ func TestSplitSQL(t *testing.T) {
 		bad           bool
 	}{
 		{"sqlite", `select ';'; select "a;b";`, 2, "", false},
-		{"sqlite", "-- ignore ;\nselect 1; /* nested /* ; */ ; */ select 2;", 2, "", false},
+		{"postgres", "-- ignore ;\nselect 1; /* nested /* ; */ ; */ select 2;", 2, "", false},
+		{"clickhouse", "select 1; /* nested /* ; */ ; */ select 2;", 2, "", false},
+		{"sqlite", "/* a /* b */ select 1; select 2;", 2, "", false},
+		{"mysql", "/* a /* b */ select 1; select 2;", 2, "", false},
+		{"mysql", "select 1 as `a\\`; select 2;", 2, "", false},
+		{"clickhouse", "select 1 as `a\\`; ` select 2;", 1, "", false},
 		{"postgres", `DO $tag$ BEGIN RAISE NOTICE ';'; END $tag$; select 1;`, 2, "", false},
 		{"postgres", `SELECT E'it\'s; ok'; select 2;`, 2, "", false},
 		{"mysql", `select 'it\'s; ok'; # comment ;
@@ -141,6 +146,40 @@ func TestCompletionContains(t *testing.T) {
 	}
 	if matches, _ := c.candidates([]rune("SELECT * FROM us"), len("SELECT * FROM us")); !reflect.DeepEqual(matches, []string{"users"}) {
 		t.Fatalf("shell commands leaked into SQL candidates: %q", matches)
+	}
+}
+
+func TestTerminateHistoryEntry(t *testing.T) {
+	for input, want := range map[string]string{
+		"SELECT 1":         "SELECT 1;",
+		"SELECT 1 -- note": "SELECT 1 -- note\n;",
+		"SELECT '--' AS x": "SELECT '--' AS x;",
+		"SELECT 1 /* x */": "SELECT 1 /* x */;",
+	} {
+		if got := terminate(input, "sqlite"); got != want {
+			t.Errorf("terminate(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestSQLiteOutputKeepsColumns(t *testing.T) {
+	ctx := context.Background()
+	s, err := openSession(ctx, Profile{Name: "test", Driver: "sqlite", DSN: ":memory:"}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var out bytes.Buffer
+	if err := s.Run(ctx, `SELECT 1 AS id, 2 AS id, 3 AS id_2, 4 AS a;`, "json", &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != `{"id":1,"id_3":2,"id_2":3,"a":4}`+"\n" {
+		t.Fatal(out.String())
+	}
+	out.Reset()
+	err = s.Run(ctx, `SELECT 1 AS a UNION ALL SELECT abs(-9223372036854775808);`, "csv", &out)
+	if err == nil || out.String() != "a\n1\n" {
+		t.Fatalf("output=%q err=%v", out.String(), err)
 	}
 }
 

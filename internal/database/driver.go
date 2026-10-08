@@ -4,6 +4,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // Driver queries metadata through the session's existing connection. The caller
@@ -24,6 +25,8 @@ type Driver interface {
 // Syntax contains the lexical differences consumed by the shared SQL splitter.
 type Syntax struct {
 	BackslashEscapes        bool
+	BacktickEscapes         bool
+	NestedComments          bool
 	DashCommentNeedsSpace   bool
 	HashComments            bool
 	ExecutableComments      bool
@@ -64,4 +67,40 @@ func Names(ctx context.Context, conn Connection, query Query) ([]string, error) 
 		names = append(names, name)
 	}
 	return names, rows.Err()
+}
+
+// SplitIdentifier splits a dotted name outside double-quote, backtick and bracket
+// quoting, then unquotes each part.
+func SplitIdentifier(name string) []string {
+	var parts []string
+	start, quote := 0, byte(0)
+	for i := 0; i < len(name); i++ {
+		switch c := name[i]; {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '`':
+			quote = c
+		case c == '[':
+			quote = ']'
+		case c == '.':
+			parts = append(parts, unquote(name[start:i]))
+			start = i + 1
+		}
+	}
+	return append(parts, unquote(name[start:]))
+}
+
+func unquote(name string) string {
+	if len(name) < 2 {
+		return name
+	}
+	switch open, end := name[0], name[len(name)-1]; {
+	case open == '"' && end == '"', open == '`' && end == '`':
+		return strings.ReplaceAll(name[1:len(name)-1], string(open)+string(open), string(open))
+	case open == '[' && end == ']':
+		return name[1 : len(name)-1]
+	}
+	return name
 }

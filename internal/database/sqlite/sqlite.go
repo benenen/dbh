@@ -61,19 +61,38 @@ func (Driver) Indexes(ctx context.Context, conn database.Connection, table strin
    LEFT JOIN ` + quotedSchema + `.sqlite_schema m ON m.name = i.name AND m.type = 'index'
    ORDER BY i.name`, Args: []any{schema, name, schema}}, nil
 }
+
+// resolveTable returns the stored schema and table name; SQLite identifiers ignore case.
 func resolveTable(ctx context.Context, conn database.Connection, table string) (schema, name string, err error) {
-	name = table
-	if parts := strings.SplitN(table, ".", 2); len(parts) == 2 {
-		schema, name = parts[0], parts[1]
+	var candidates [][2]string
+	// \tables lists names unquoted, so a dotted table name is tried whole first.
+	if !strings.ContainsAny(table, "\"`[") {
+		candidates = append(candidates, [2]string{"", table})
 	}
-	schemas, err := database.Names(ctx, conn, database.Query{Text: `SELECT schema FROM pragma_table_list
-   WHERE name = ? AND (? = '' OR schema = ?)
-   ORDER BY CASE schema WHEN 'temp' THEN 0 WHEN 'main' THEN 1 ELSE 2 END`, Args: []any{name, schema, schema}})
-	if err != nil {
-		return "", "", err
+	switch parts := database.SplitIdentifier(table); len(parts) {
+	case 1:
+		candidates = append(candidates, [2]string{"", parts[0]})
+	case 2:
+		candidates = append(candidates, [2]string{parts[0], parts[1]})
 	}
-	if len(schemas) == 0 {
-		return "", "", fmt.Errorf("table or view %q does not exist", table)
+	for _, c := range candidates {
+		schemas, err := database.Names(ctx, conn, database.Query{Text: `SELECT schema FROM pragma_table_list
+   WHERE name = ? COLLATE NOCASE AND (? = '' OR schema = ? COLLATE NOCASE)
+   ORDER BY CASE schema WHEN 'temp' THEN 0 WHEN 'main' THEN 1 ELSE 2 END`, Args: []any{c[1], c[0], c[0]}})
+		if err != nil {
+			return "", "", err
+		}
+		if len(schemas) == 0 {
+			continue
+		}
+		names, err := database.Names(ctx, conn, database.Query{Text: `SELECT name FROM pragma_table_list
+   WHERE schema = ? AND name = ? COLLATE NOCASE`, Args: []any{schemas[0], c[1]}})
+		if err != nil {
+			return "", "", err
+		}
+		if len(names) > 0 {
+			return schemas[0], names[0], nil
+		}
 	}
-	return schemas[0], name, nil
+	return "", "", fmt.Errorf("table or view %q does not exist", table)
 }

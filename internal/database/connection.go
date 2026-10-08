@@ -1,10 +1,13 @@
 package database
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 // Connection is the live session shared by commands, metadata and transactions.
@@ -24,9 +27,57 @@ type Rows interface {
 }
 
 // Row supports tabular values and complete JSON documents without flattening BSON.
+// Object is the JSON value written for the row.
 type Row struct {
 	Values []any
-	Object map[string]any
+	Object any
+}
+
+// object keeps SQL column order; repeated names get _2, _3 suffixes so no value is lost.
+type object struct {
+	keys   []string
+	values []any
+}
+
+func newObject(columns []string, values []any) object {
+	used := make(map[string]bool, len(columns))
+	for _, column := range columns {
+		used[column] = true
+	}
+	seen := make(map[string]bool, len(columns))
+	keys := make([]string, len(columns))
+	for i, column := range columns {
+		key := column
+		for n := 2; seen[key] || (key != column && used[key]); n++ {
+			key = column + "_" + strconv.Itoa(n)
+		}
+		seen[key] = true
+		keys[i] = key
+	}
+	return object{keys: keys, values: values}
+}
+
+func (o object) MarshalJSON() ([]byte, error) {
+	var b bytes.Buffer
+	b.WriteByte('{')
+	for i, key := range o.keys {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		k, err := json.Marshal(key)
+		if err != nil {
+			return nil, err
+		}
+		v, err := json.Marshal(o.values[i])
+		if err != nil {
+			return nil, err
+		}
+		b.Write(k)
+		b.WriteByte(':')
+		b.Write(v)
+	}
+	b.WriteByte('}')
+	return b.Bytes(), nil
 }
 
 type sqlConnection struct {
@@ -76,7 +127,7 @@ func (r *sqlRows) Row() (Row, error) {
 	if err != nil {
 		return Row{}, err
 	}
-	row := Row{Values: make([]any, len(columns)), Object: make(map[string]any, len(columns))}
+	row := Row{Values: make([]any, len(columns))}
 	dest := make([]any, len(columns))
 	for i := range dest {
 		dest[i] = &row.Values[i]
@@ -89,7 +140,7 @@ func (r *sqlRows) Row() (Row, error) {
 			value = string(raw)
 			row.Values[i] = value
 		}
-		row.Object[columns[i]] = value
 	}
+	row.Object = newObject(columns, row.Values)
 	return row, nil
 }

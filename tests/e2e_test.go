@@ -223,7 +223,7 @@ func TestEnvironmentDSNAndConfigOverride(t *testing.T) {
 
 func TestSQLInputsFormatsAndTransactions(t *testing.T) {
 	f := newFixture(t)
-	equal(t, f.sql("CREATE TABLE values_test(value TEXT); INSERT INTO values_test VALUES ('a;b'); BEGIN; INSERT INTO values_test VALUES ('rolled back'); ROLLBACK; SELECT value, NULL AS empty FROM values_test;", "--format", "json"), "{\"empty\":null,\"value\":\"a;b\"}\n")
+	equal(t, f.sql("CREATE TABLE values_test(value TEXT); INSERT INTO values_test VALUES ('a;b'); BEGIN; INSERT INTO values_test VALUES ('rolled back'); ROLLBACK; SELECT value, NULL AS empty FROM values_test;", "--format", "json"), "{\"value\":\"a;b\",\"empty\":null}\n")
 	query := "SELECT value FROM values_test;"
 	file := filepath.Join(f.root, "query.sql")
 	writeFile(t, file, query)

@@ -210,7 +210,7 @@ func NewCommand() *cobra.Command {
 				}
 				for _, q := range statements {
 					if !noHistory {
-						if err := saveHistory(s, p.Name, q+";"); err != nil {
+						if err := saveHistory(s, p.Name, terminate(q, p.Driver)); err != nil {
 							return err
 						}
 					}

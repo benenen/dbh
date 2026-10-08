@@ -366,10 +366,11 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 		}
 		for _, q := range statements {
 			if !noHistory {
-				if err := saveHistory(store, p.Name, q+";"); err != nil {
+				entry := terminate(q, s.Driver)
+				if err := saveHistory(store, p.Name, entry); err != nil {
 					_, _ = fmt.Fprintln(errOut, "History:", err)
 				}
-				history.entries = append(history.entries, q+";")
+				history.entries = append(history.entries, entry)
 			}
 			if err := s.Execute(ctx, q, format, out); err != nil {
 				label := "SQL error:"

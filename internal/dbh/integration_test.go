@@ -94,3 +94,44 @@ func TestExternalDrivers(t *testing.T) {
 		})
 	}
 }
+
+func TestExternalMetadataNames(t *testing.T) {
+	for driver, env := range map[string]string{"postgres": "DBH_TEST_POSTGRES_DSN", "clickhouse": "DBH_TEST_CLICKHOUSE_DSN"} {
+		t.Run(driver, func(t *testing.T) {
+			dsn := os.Getenv(env)
+			if dsn == "" {
+				t.Skip("set " + env + " to run")
+			}
+			ctx := context.Background()
+			s, err := openSession(ctx, Profile{Name: "integration", Driver: driver, DSN: dsn}, 10*time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			name := fmt.Sprintf("Dbh_Test_%d", time.Now().UnixNano())
+			ddl, lookups := `CREATE TABLE "`+name+`" (id INTEGER, note TEXT)`, []string{"public." + name, `"` + name + `"`}
+			if driver == "clickhouse" {
+				ddl, lookups = "CREATE TABLE "+name+" (id UInt64, note LowCardinality(Nullable(String))) ENGINE=MergeTree ORDER BY id", []string{name}
+			}
+			var out bytes.Buffer
+			if err := s.Run(ctx, ddl, "json", &out); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := s.Run(ctx, `DROP TABLE "`+name+`"`, "json", &out); err != nil {
+					t.Errorf("cleanup: %v", err)
+				}
+			}()
+			for _, table := range lookups {
+				out.Reset()
+				if err := s.Describe(ctx, table, "json", &out); err != nil {
+					t.Fatalf("%s: %v", table, err)
+				}
+				rows := metadataRows(t, &out)
+				if driver == "clickhouse" && (len(rows) < 2 || rows[1]["nullable"] != float64(1)) {
+					t.Fatalf("nested Nullable: %#v", rows)
+				}
+			}
+		})
+	}
+}

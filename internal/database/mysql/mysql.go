@@ -74,7 +74,10 @@ func (Driver) Indexes(ctx context.Context, conn database.Connection, table strin
    ORDER BY INDEX_NAME, SEQ_IN_INDEX`, Args: []any{schema, name}}, nil
 }
 func splitTable(table string) (schema, name string) {
-	if parts := strings.SplitN(table, ".", 2); len(parts) == 2 {
+	switch parts := database.SplitIdentifier(table); len(parts) {
+	case 1:
+		return "", parts[0]
+	case 2:
 		return parts[0], parts[1]
 	}
 	return "", table
