@@ -366,3 +366,46 @@ func TestCLIProxies(t *testing.T) {
 		}
 	}
 }
+
+func TestShellCompletion(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := NewCommand()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(append([]string{"--config-dir", dir}, args...))
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	run("new", "zgy-mysql", "--driver", "mysql", "--dsn", "u@tcp(db)/app")
+	run("new", "local", "--driver", "sqlite", "--dsn", "x.db")
+	for _, command := range []string{"connect", "c", "exec", "edit", "e", "remove", "rm", "history"} {
+		out := run("__complete", command, "")
+		contains := strings.Contains(out, "zgy-mysql\tmysql") && strings.Contains(out, "local\tsqlite")
+		if !contains || !strings.Contains(out, ":4") {
+			t.Errorf("%s: %q", command, out)
+		}
+	}
+	for args, want := range map[string]string{
+		"exec zgy-mysql ":          ":4",
+		"new x ":                   ":4",
+		"new x --driver ":          "clickhouse",
+		"exec local --format ":     "csv",
+		"exec local --file ":       ":0",
+		"connect local -f ":        ":0",
+		"new x --dsn ":             ":0",
+		"edit local --dsn-env PAT": "PATH",
+	} {
+		fields := strings.Split(args, " ")
+		if out := run(append([]string{"__complete"}, fields...)...); !strings.Contains(out, want) {
+			t.Errorf("%q: want %q in %q", args, want, out)
+		}
+	}
+	if out := run("__complete", "exec", "zgy-mysql", ""); strings.Contains(out, "local") {
+		t.Errorf("query argument offered connection names: %q", out)
+	}
+}

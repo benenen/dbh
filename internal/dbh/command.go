@@ -29,7 +29,32 @@ func NewCommand() *cobra.Command {
 		}
 		return Store{Dir: d}, nil
 	}
-	ls := &cobra.Command{Use: "list", Aliases: []string{"ls"}, Short: "List saved connections (credentials are hidden)", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+	// Shell completion offers saved connection names for the NAME argument.
+	names := func(_ *cobra.Command, args []string, _ string) ([]cobra.Completion, cobra.ShellCompDirective) {
+		if len(args) > 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		s, err := store()
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		profiles, err := s.List()
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		completions := make([]cobra.Completion, len(profiles))
+		for i, p := range profiles {
+			completions[i] = cobra.CompletionWithDesc(p.Name, p.Driver)
+		}
+		return completions, cobra.ShellCompDirectiveNoFileComp
+	}
+	files := func(*cobra.Command, []string, string) ([]cobra.Completion, cobra.ShellCompDirective) {
+		return nil, cobra.ShellCompDirectiveDefault
+	}
+	fixed := func(values ...string) cobra.CompletionFunc {
+		return cobra.FixedCompletions(values, cobra.ShellCompDirectiveNoFileComp)
+	}
+	ls := &cobra.Command{Use: "list", Aliases: []string{"ls"}, Short: "List saved connections (credentials are hidden)", Args: cobra.NoArgs, ValidArgsFunction: cobra.NoFileCompletions, RunE: func(cmd *cobra.Command, args []string) error {
 		s, err := store()
 		if err != nil {
 			return err
@@ -67,13 +92,29 @@ func NewCommand() *cobra.Command {
 			verb = "edit"
 			short = "Update a saved connection"
 		}
-		c := &cobra.Command{Use: verb + " NAME", Aliases: []string{verb[:1]}, Short: short, Args: cobra.ExactArgs(1)}
+		c := &cobra.Command{Use: verb + " NAME", Aliases: []string{verb[:1]}, Short: short, Args: cobra.ExactArgs(1), ValidArgsFunction: cobra.NoFileCompletions}
+		if !create {
+			c.ValidArgsFunction = names
+		}
 		c.Flags().StringVar(&driver, "driver", "", "sqlite, postgres, mysql, mongo or clickhouse")
 		c.Flags().StringVar(&dsn, "dsn", "", "Driver DSN (stored locally)")
 		c.Flags().StringVar(&dsnEnv, "dsn-env", "", "Read DSN from this environment variable")
 		c.Flags().BoolVar(&prompt, "prompt-dsn", false, "Read DSN with terminal echo disabled")
 		c.Flags().StringArrayVar(&proxies, "proxy", nil, "Proxy hop socks5://[user:pass@]host:port or ssh://[user[:pass]@]host[:port]; repeat in dial order")
 		c.MarkFlagsMutuallyExclusive("dsn", "dsn-env", "prompt-dsn")
+		_ = c.RegisterFlagCompletionFunc("driver", fixed("sqlite", "postgres", "mysql", "mongo", "clickhouse"))
+		// SQLite DSNs are file paths.
+		_ = c.RegisterFlagCompletionFunc("dsn", files)
+		_ = c.RegisterFlagCompletionFunc("dsn-env", func(_ *cobra.Command, _ []string, prefix string) ([]cobra.Completion, cobra.ShellCompDirective) {
+			var completions []cobra.Completion
+			for _, entry := range os.Environ() {
+				if name, _, _ := strings.Cut(entry, "="); strings.HasPrefix(name, prefix) {
+					completions = append(completions, name)
+				}
+			}
+			return completions, cobra.ShellCompDirectiveNoFileComp
+		})
+		_ = c.RegisterFlagCompletionFunc("proxy", cobra.NoFileCompletions)
 		if !create {
 			c.Flags().BoolVar(&noProxy, "no-proxy", false, "Remove all proxies")
 			c.MarkFlagsMutuallyExclusive("proxy", "no-proxy")
@@ -132,7 +173,7 @@ func NewCommand() *cobra.Command {
 		}
 		root.AddCommand(c)
 	}
-	root.AddCommand(&cobra.Command{Use: "remove NAME", Aliases: []string{"rm", "r"}, Short: "Remove a saved connection (keeps the database)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	root.AddCommand(&cobra.Command{Use: "remove NAME", Aliases: []string{"rm", "r"}, Short: "Remove a saved connection (keeps the database)", Args: cobra.ExactArgs(1), ValidArgsFunction: names, RunE: func(cmd *cobra.Command, args []string) error {
 		s, err := store()
 		if err != nil {
 			return err
@@ -147,7 +188,7 @@ func NewCommand() *cobra.Command {
 		var query, file, format, databaseName string
 		var timeout time.Duration
 		var noHistory bool
-		connect := &cobra.Command{Use: "connect NAME", Aliases: []string{"c"}, Short: "Open a database shell, or execute queries from --sql, --file or stdin", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		connect := &cobra.Command{Use: "connect NAME", Aliases: []string{"c"}, Short: "Open a database shell, or execute queries from --sql, --file or stdin", Args: cobra.ExactArgs(1), ValidArgsFunction: names, RunE: func(cmd *cobra.Command, args []string) error {
 			if executeOnly && len(args) == 2 {
 				if cmd.Flags().Changed("sql") || cmd.Flags().Changed("file") {
 					return fmt.Errorf("positional query cannot be combined with --sql or --file")
@@ -255,9 +296,16 @@ func NewCommand() *cobra.Command {
 		connect.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Connection/query timeout")
 		connect.Flags().BoolVar(&noHistory, "no-history", false, "Disable persisted query history")
 		connect.MarkFlagsMutuallyExclusive("sql", "file")
+		_ = connect.RegisterFlagCompletionFunc("file", files)
+		_ = connect.RegisterFlagCompletionFunc("format", fixed("table", "csv", "json"))
+		for _, flag := range []string{"sql", "timeout", "db"} {
+			if connect.Flags().Lookup(flag) != nil {
+				_ = connect.RegisterFlagCompletionFunc(flag, cobra.NoFileCompletions)
+			}
+		}
 		root.AddCommand(connect)
 	}
-	root.AddCommand(&cobra.Command{Use: "history NAME", Short: "Show SQL history for a connection", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	root.AddCommand(&cobra.Command{Use: "history NAME", Short: "Show SQL history for a connection", Args: cobra.ExactArgs(1), ValidArgsFunction: names, RunE: func(cmd *cobra.Command, args []string) error {
 		s, err := store()
 		if err != nil {
 			return err
