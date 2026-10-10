@@ -97,10 +97,17 @@ func (c *completer) refresh(ctx context.Context, s *Session) error {
 		c.words = words
 		return err
 	}
+	// One query per table is slow on large schemas over high-latency links.
+	columns, batched, err := s.ColumnNames(ctx)
+	batched = batched && err == nil
+	words = append(words, columns...)
 	for _, table := range tables {
 		words = append(words, table)
 		if p := strings.SplitN(table, ".", 2); len(p) == 2 {
 			words = append(words, p[1])
+		}
+		if batched {
+			continue
 		}
 		cols, err := s.Columns(ctx, table)
 		if err != nil {

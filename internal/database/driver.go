@@ -33,6 +33,12 @@ type Driver interface {
 	Indexes(context.Context, Connection, string) (Query, error)
 }
 
+// ColumnNames is implemented by drivers that can list the column names of every
+// table in the current database with one query instead of one query per table.
+type ColumnNames interface {
+	ColumnNames(context.Context, Connection) ([]string, error)
+}
+
 // Syntax contains the lexical differences consumed by the shared SQL splitter.
 type Syntax struct {
 	BackslashEscapes        bool

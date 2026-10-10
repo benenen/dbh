@@ -228,6 +228,19 @@ func (s *Session) Tables(ctx context.Context) ([]string, error) {
 	return s.backend.Tables(ctx, s.Conn)
 }
 
+// ColumnNames lists every column of the current database in one query; ok is
+// false when the driver can only read columns per table.
+func (s *Session) ColumnNames(ctx context.Context) (names []string, ok bool, err error) {
+	backend, ok := s.backend.(database.ColumnNames)
+	if !ok {
+		return nil, false, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
+	defer cancel()
+	names, err = backend.ColumnNames(ctx, s.Conn)
+	return names, true, err
+}
+
 func (s *Session) Columns(ctx context.Context, table string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()

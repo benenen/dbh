@@ -57,6 +57,9 @@ func (Driver) Columns(ctx context.Context, conn database.Connection, table strin
 	}
 	return database.Names(ctx, conn, database.Query{Text: `SELECT column_name FROM information_schema.columns WHERE table_name=$1 AND table_schema = ANY(current_schemas(false)) ORDER BY ordinal_position`, Args: []any{table}})
 }
+func (Driver) ColumnNames(ctx context.Context, conn database.Connection) ([]string, error) {
+	return database.Names(ctx, conn, database.Query{Text: "SELECT DISTINCT column_name::text FROM information_schema.columns WHERE table_schema NOT IN ('pg_catalog','information_schema')"})
+}
 func (Driver) ColumnDetails(ctx context.Context, conn database.Connection, table string) (database.Query, error) {
 	table, err := resolveTable(ctx, conn, table)
 	if err != nil {

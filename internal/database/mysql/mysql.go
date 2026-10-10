@@ -63,6 +63,9 @@ func (Driver) Columns(ctx context.Context, conn database.Connection, table strin
 	}
 	return database.Names(ctx, conn, database.Query{Text: `SELECT column_name FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`, Args: []any{schema, name}})
 }
+func (Driver) ColumnNames(ctx context.Context, conn database.Connection) ([]string, error) {
+	return database.Names(ctx, conn, database.Query{Text: "SELECT DISTINCT column_name FROM information_schema.columns WHERE table_schema = DATABASE()"})
+}
 func (Driver) ColumnDetails(ctx context.Context, conn database.Connection, table string) (database.Query, error) {
 	schema, name, err := resolveTable(ctx, conn, table)
 	if err != nil {

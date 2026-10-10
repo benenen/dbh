@@ -54,6 +54,9 @@ func args(table string) []any { a := tableArgs(table); return []any{a[0], a[0], 
 func (Driver) Columns(ctx context.Context, conn database.Connection, table string) ([]string, error) {
 	return database.Names(ctx, conn, database.Query{Text: "SELECT name FROM system.columns WHERE " + tableFilter + " ORDER BY position", Args: args(table)})
 }
+func (Driver) ColumnNames(ctx context.Context, conn database.Connection) ([]string, error) {
+	return database.Names(ctx, conn, database.Query{Text: "SELECT DISTINCT name FROM system.columns WHERE database=currentDatabase()"})
+}
 func resolve(ctx context.Context, conn database.Connection, table string) error {
 	a := tableArgs(table)
 	names, err := database.Names(ctx, conn, database.Query{Text: "SELECT name FROM system.tables WHERE database=if(?='',currentDatabase(),?) AND name=?", Args: []any{a[0], a[0], a[1]}})

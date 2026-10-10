@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benenen/dbh/internal/database"
 	"github.com/benenen/dbh/internal/database/registry"
 )
 
@@ -407,5 +408,37 @@ func TestShellCompletion(t *testing.T) {
 	}
 	if out := run("__complete", "exec", "zgy-mysql", ""); strings.Contains(out, "local") {
 		t.Errorf("query argument offered connection names: %q", out)
+	}
+}
+
+type batchColumnsDriver struct {
+	database.Driver
+	perTable int
+}
+
+func (*batchColumnsDriver) Tables(context.Context, database.Connection) ([]string, error) {
+	return []string{"orders", "users"}, nil
+}
+func (d *batchColumnsDriver) Columns(context.Context, database.Connection, string) ([]string, error) {
+	d.perTable++
+	return []string{"per_table"}, nil
+}
+func (*batchColumnsDriver) ColumnNames(context.Context, database.Connection) ([]string, error) {
+	return []string{"order_id", "user_name"}, nil
+}
+func (*batchColumnsDriver) Syntax() database.Syntax { return database.Syntax{} }
+
+func TestCompletionLoadsColumnsInOneQuery(t *testing.T) {
+	backend := &batchColumnsDriver{}
+	c := &completer{}
+	if err := c.refresh(context.Background(), &Session{backend: backend, Timeout: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	if backend.perTable != 0 {
+		t.Fatalf("queried columns per table %d times", backend.perTable)
+	}
+	words, _ := c.candidates([]rune("SELECT user"), len("SELECT user"))
+	if !reflect.DeepEqual(words, []string{"user_name", "users"}) {
+		t.Fatalf("candidates: %v", words)
 	}
 }
