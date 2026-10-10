@@ -8,6 +8,7 @@ import (
 
 	"github.com/benenen/dbh/internal/database"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -15,19 +16,32 @@ type Driver struct{}
 
 var _ database.Driver = Driver{}
 
-func (Driver) Open(ctx context.Context, dsn string) (database.Connection, error) {
-	return database.OpenSQL(ctx, "pgx", dsn)
+func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (database.Connection, error) {
+	if dial == nil {
+		return database.OpenSQL(ctx, "pgx", dsn)
+	}
+	return open(ctx, dsn, "", dial)
 }
 func (Driver) Syntax() database.Syntax {
 	return database.Syntax{NestedComments: true, EscapeStringPrefix: true, DollarQuotes: true, FoldUnquotedIdentifiers: true}
 }
 
-func (Driver) SwitchDatabase(ctx context.Context, _ database.Connection, dsn, name string) (database.Connection, error) {
+func (Driver) SwitchDatabase(ctx context.Context, _ database.Connection, dsn, name string, dial database.Dial) (database.Connection, error) {
+	return open(ctx, dsn, name, dial)
+}
+func open(ctx context.Context, dsn, name string, dial database.Dial) (database.Connection, error) {
 	config, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("invalid PostgreSQL connection configuration")
 	}
-	config.Database = name
+	if name != "" {
+		config.Database = name
+	}
+	if dial != nil {
+		config.DialFunc = pgconn.DialFunc(dial)
+		// Hostnames resolve at the last proxy hop instead of locally.
+		config.LookupFunc = func(_ context.Context, host string) ([]string, error) { return []string{host}, nil }
+	}
 	return database.ConnectSQL(ctx, stdlib.OpenDB(*config))
 }
 func (Driver) Databases(ctx context.Context, conn database.Connection) ([]string, error) {

@@ -4,6 +4,8 @@ package clickhouse
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"strings"
 
 	ch "github.com/ClickHouse/clickhouse-go/v2"
@@ -14,23 +16,23 @@ type Driver struct{}
 
 var _ database.Driver = Driver{}
 
-func (Driver) Open(ctx context.Context, dsn string) (database.Connection, error) {
+func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (database.Connection, error) {
 	options, err := ch.ParseDSN(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("invalid connection configuration for clickhouse")
 	}
-	return connect(ctx, options)
+	return connect(ctx, options, dial)
 }
 func (Driver) Syntax() database.Syntax {
 	return database.Syntax{BackslashEscapes: true, BacktickEscapes: true, NestedComments: true, HashComments: true}
 }
-func (Driver) SwitchDatabase(ctx context.Context, _ database.Connection, dsn, name string) (database.Connection, error) {
+func (Driver) SwitchDatabase(ctx context.Context, _ database.Connection, dsn, name string, dial database.Dial) (database.Connection, error) {
 	options, err := ch.ParseDSN(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("invalid connection configuration for clickhouse")
 	}
 	options.Auth.Database = name
-	return connect(ctx, options)
+	return connect(ctx, options, dial)
 }
 func (Driver) Databases(ctx context.Context, conn database.Connection) ([]string, error) {
 	return database.Names(ctx, conn, database.Query{Text: "SELECT name FROM system.databases ORDER BY name"})
@@ -76,7 +78,21 @@ func (Driver) Indexes(ctx context.Context, conn database.Connection, table strin
 	return database.Query{Text: "SELECT 'PRIMARY KEY' AS name, 'primary' AS type, primary_key AS expression, toUInt64(0) AS granularity FROM system.tables WHERE database=if(?='',currentDatabase(),?) AND name=? AND primary_key!='' UNION ALL SELECT name,type,expr AS expression,granularity FROM system.data_skipping_indices WHERE " + tableFilter, Args: append(args(table), args(table)...)}, nil
 }
 
-func connect(ctx context.Context, options *ch.Options) (database.Connection, error) {
+func connect(ctx context.Context, options *ch.Options, dial database.Dial) (database.Connection, error) {
+	if dial != nil {
+		options.DialContext = func(ctx context.Context, address string) (net.Conn, error) { return dial(ctx, "tcp", address) }
+		if options.HTTPProxyURL == nil {
+			// Saved proxies replace HTTP_PROXY for the HTTP protocol.
+			transport := options.TransportFunc
+			options.TransportFunc = func(rt *http.Transport) (http.RoundTripper, error) {
+				rt.Proxy = nil
+				if transport != nil {
+					return transport(rt)
+				}
+				return rt, nil
+			}
+		}
+	}
 	conn, err := database.ConnectSQL(ctx, ch.OpenDB(options))
 	if err != nil {
 		return nil, err

@@ -26,6 +26,8 @@ dbh edit app --dsn-env DBH_DSN
 dbh remove app
 ```
 
+数据库只能经跳板访问时，在 `new`/`edit` 上按从本机出发的顺序重复 `--proxy`（`socks5://host:port`、`ssh://user@host[:port]`）；`edit --proxy` 替换整个列表，`--no-proxy` 清空。SSH 主机必须已在 known_hosts 中，不要为连通而绕过主机密钥校验。
+
 `new` 只保存配置，不验证连通性；`remove` 只删连接配置，不删数据库。用查询确认可连接，而不是把“Saved”当作连通证据。
 
 ## 自动化执行

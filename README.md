@@ -44,6 +44,25 @@ dbh remove local
 
 自动化可用 `--dsn-env ENV_NAME` 从环境变量读取 DSN。`--dsn`、`--dsn-env`、`--prompt-dsn` 三选一。密码建议通过隐藏输入或环境变量传入，避免出现在 shell 历史或进程参数中。
 
+### 代理
+
+每个连接可保存自己的代理列表。`--proxy` 可重复，按从本机出发的顺序逐跳连接，最后一跳连接 DSN 中的数据库地址：
+
+```bash
+# 经 SSH 跳板访问内网 PostgreSQL
+dbh new pg --driver postgres --prompt-dsn --proxy ssh://ops@jump.example.com
+# 先经 SOCKS5，再经 SSH 跳板
+dbh new ch --driver clickhouse --prompt-dsn \
+  --proxy socks5://127.0.0.1:1080 --proxy 'ssh://ops@10.0.0.5:2222?identity=~/.ssh/ops_key'
+dbh edit pg --proxy socks5://user:pass@proxy:1080   # 替换整个列表
+dbh edit pg --no-proxy                              # 改为直连
+```
+
+- `socks5://[user:pass@]host:port`：主机名交给代理解析（等同 `socks5h`）。
+- `ssh://[user[:pass]@]host[:port]`：端口默认 22，用户默认当前用户。认证依次尝试 URL 中的密码、`identity=FILE`（可重复）、`SSH_AUTH_SOCK` 代理和 `~/.ssh/id_ed25519|id_ecdsa|id_rsa`（有口令的密钥请放进 ssh-agent）。主机密钥按 `~/.ssh/known_hosts` 严格校验，可用 `known_hosts=FILE` 指定，未知主机会拒绝连接。
+- 使用代理时，DSN 中的主机名由最后一跳解析，可直接写内网主机名。PostgreSQL、MySQL、ClickHouse（TCP 与 HTTP）和 MongoDB 支持代理，SQLite 不支持；MySQL 需使用 `tcp(...)` 地址，PostgreSQL 不支持 Unix socket。`mongodb+srv://` 的 SRV 记录仍在本机解析。ClickHouse HTTP 使用代理列表时不再读取 `HTTP_PROXY` 环境变量。
+- 代理 URL 中的密码与 DSN 一样明文保存在配置文件；`ls` 的 `PROXIES` 列隐藏密码和参数。
+
 ## 执行 SQL
 
 ```bash

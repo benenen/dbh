@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/benenen/dbh/internal/database"
+	"github.com/benenen/dbh/internal/database/proxy"
 	"github.com/benenen/dbh/internal/database/registry"
 )
 
@@ -19,6 +20,7 @@ type Session struct {
 	Timeout time.Duration
 	backend database.Driver
 	dsn     string
+	proxy   *proxy.Chain
 }
 
 func openSession(ctx context.Context, p Profile, timeout time.Duration) (*Session, error) {
@@ -28,21 +30,48 @@ func openSession(ctx context.Context, p Profile, timeout time.Duration) (*Sessio
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	conn, err := backend.Open(pingCtx, p.DSN)
-	if err != nil {
-		return nil, fmt.Errorf("cannot connect to %q: %s", p.Name, redact(err.Error(), p.DSN))
+	s := &Session{Driver: p.Driver, Timeout: timeout, backend: backend, dsn: p.DSN}
+	if len(p.Proxies) > 0 {
+		if s.proxy, err = proxy.Open(pingCtx, p.Proxies); err != nil {
+			return nil, fmt.Errorf("cannot connect to %q: %s", p.Name, redact(err.Error(), "", p.Proxies))
+		}
 	}
-	return &Session{Conn: conn, Driver: p.Driver, Timeout: timeout, backend: backend, dsn: p.DSN}, nil
+	s.Conn, err = backend.Open(pingCtx, p.DSN, s.dial())
+	if err != nil {
+		s.closeProxy()
+		return nil, fmt.Errorf("cannot connect to %q: %s", p.Name, redact(err.Error(), p.DSN, p.Proxies))
+	}
+	return s, nil
 }
 
-func redact(message, dsn string) string {
+// redact hides the DSN and proxy credentials in error messages.
+func redact(message, dsn string, proxies []string) string {
 	if dsn != "" {
 		message = strings.ReplaceAll(message, dsn, "[redacted DSN]")
+	}
+	for _, hop := range proxies {
+		message = strings.ReplaceAll(message, hop, proxy.Redact(hop))
 	}
 	return message
 }
 
-func (s *Session) Close() { _ = s.Conn.Close() }
+func (s *Session) dial() database.Dial {
+	if s.proxy == nil {
+		return nil
+	}
+	return s.proxy.Dial()
+}
+
+func (s *Session) closeProxy() {
+	if s.proxy != nil {
+		_ = s.proxy.Close()
+	}
+}
+
+func (s *Session) Close() {
+	_ = s.Conn.Close()
+	s.closeProxy()
+}
 
 func (s *Session) Execute(ctx context.Context, query, format string, out io.Writer) error {
 	name, use, err := parseUseDatabase(query, s.backend.Syntax())
@@ -64,14 +93,14 @@ func (s *Session) Execute(ctx context.Context, query, format string, out io.Writ
 func (s *Session) UseDatabase(ctx context.Context, name string) error {
 	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
-	conn, err := s.backend.SwitchDatabase(ctx, s.Conn, s.dsn, name)
+	conn, err := s.backend.SwitchDatabase(ctx, s.Conn, s.dsn, name, s.dial())
 	if err == nil && conn != nil {
-		s.Close()
+		_ = s.Conn.Close()
 		s.Conn = conn
 	}
 
 	if err != nil {
-		return fmt.Errorf("cannot switch database to %q: %s", name, redact(err.Error(), s.dsn))
+		return fmt.Errorf("cannot switch database to %q: %s", name, redact(err.Error(), s.dsn, nil))
 	}
 	return nil
 }

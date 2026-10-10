@@ -4,17 +4,28 @@ package database
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 )
+
+// Dial opens a network connection to the database server. A nil Dial connects directly.
+type Dial func(ctx context.Context, network, address string) (net.Conn, error)
+
+func (d Dial) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return d(ctx, network, address)
+}
+func (d Dial) Dial(network, address string) (net.Conn, error) {
+	return d(context.Background(), network, address)
+}
 
 // Driver queries metadata through the session's existing connection. The caller
 // supplies a bounded context and executes returned queries on that same connection.
 type Driver interface {
-	Open(context.Context, string) (Connection, error)
+	Open(context.Context, string, Dial) (Connection, error)
 	Syntax() Syntax
 	// A nil connection means the existing connection changed database in place. A new connection
 	// must already be ready before the caller closes the old session.
-	SwitchDatabase(context.Context, Connection, string, string) (Connection, error)
+	SwitchDatabase(context.Context, Connection, string, string, Dial) (Connection, error)
 	Databases(context.Context, Connection) ([]string, error)
 	Tables(context.Context, Connection) ([]string, error)
 	Columns(context.Context, Connection, string) ([]string, error)

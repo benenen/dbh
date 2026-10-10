@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 
+	"github.com/benenen/dbh/internal/database/proxy"
 	"github.com/benenen/dbh/internal/database/registry"
 	"github.com/gofrs/flock"
 )
@@ -17,6 +18,8 @@ type Profile struct {
 	Name   string `json:"name"`
 	Driver string `json:"driver"`
 	DSN    string `json:"dsn"`
+	// Proxies are dialed in order, starting from the local machine.
+	Proxies []string `json:"proxies,omitempty"`
 }
 
 type Store struct{ Dir string }
@@ -129,6 +132,14 @@ func validate(p Profile) error {
 	}
 	if p.DSN == "" {
 		return errors.New("DSN cannot be empty")
+	}
+	if len(p.Proxies) > 0 && p.Driver == "sqlite" {
+		return errors.New("proxies are not supported for SQLite")
+	}
+	for _, hop := range p.Proxies {
+		if _, err := proxy.Parse(hop); err != nil {
+			return err
+		}
 	}
 	return nil
 }

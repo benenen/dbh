@@ -9,6 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/benenen/dbh/internal/database/proxy"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -38,11 +39,18 @@ func NewCommand() *cobra.Command {
 			return err
 		}
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-		if _, err := fmt.Fprintln(w, "NAME\tDRIVER"); err != nil {
+		if _, err := fmt.Fprintln(w, "NAME\tDRIVER\tPROXIES"); err != nil {
 			return err
 		}
 		for _, p := range profiles {
-			if _, err := fmt.Fprintf(w, "%s\t%s\n", p.Name, p.Driver); err != nil {
+			hops := make([]string, len(p.Proxies))
+			for i, hop := range p.Proxies {
+				hops[i] = proxy.Display(hop)
+			}
+			if len(hops) == 0 {
+				hops = []string{"-"}
+			}
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", p.Name, p.Driver, strings.Join(hops, " -> ")); err != nil {
 				return err
 			}
 		}
@@ -51,7 +59,8 @@ func NewCommand() *cobra.Command {
 	root.AddCommand(ls)
 	for _, create := range []bool{true, false} {
 		var driver, dsn, dsnEnv string
-		var prompt bool
+		var proxies []string
+		var prompt, noProxy bool
 		verb := "new"
 		short := "Create a connection"
 		if !create {
@@ -63,7 +72,12 @@ func NewCommand() *cobra.Command {
 		c.Flags().StringVar(&dsn, "dsn", "", "Driver DSN (stored locally)")
 		c.Flags().StringVar(&dsnEnv, "dsn-env", "", "Read DSN from this environment variable")
 		c.Flags().BoolVar(&prompt, "prompt-dsn", false, "Read DSN with terminal echo disabled")
+		c.Flags().StringArrayVar(&proxies, "proxy", nil, "Proxy hop socks5://[user:pass@]host:port or ssh://[user[:pass]@]host[:port]; repeat in dial order")
 		c.MarkFlagsMutuallyExclusive("dsn", "dsn-env", "prompt-dsn")
+		if !create {
+			c.Flags().BoolVar(&noProxy, "no-proxy", false, "Remove all proxies")
+			c.MarkFlagsMutuallyExclusive("proxy", "no-proxy")
+		}
 		c.RunE = func(cmd *cobra.Command, args []string) error {
 			s, err := store()
 			if err != nil {
@@ -89,6 +103,12 @@ func NewCommand() *cobra.Command {
 				}
 				p.DSN = value
 			}
+			if cmd.Flags().Changed("proxy") {
+				p.Proxies = proxies
+			}
+			if noProxy {
+				p.Proxies = nil
+			}
 			if prompt {
 				if !term.IsTerminal(int(os.Stdin.Fd())) {
 					return fmt.Errorf("--prompt-dsn requires a terminal")
@@ -101,8 +121,8 @@ func NewCommand() *cobra.Command {
 				}
 				p.DSN = string(value)
 			}
-			if !create && !cmd.Flags().Changed("driver") && !cmd.Flags().Changed("dsn") && !cmd.Flags().Changed("dsn-env") && !prompt {
-				return fmt.Errorf("provide --driver, --dsn, --dsn-env or --prompt-dsn")
+			if !create && !cmd.Flags().Changed("driver") && !cmd.Flags().Changed("dsn") && !cmd.Flags().Changed("dsn-env") && !prompt && !cmd.Flags().Changed("proxy") && !noProxy {
+				return fmt.Errorf("provide --driver, --dsn, --dsn-env, --prompt-dsn, --proxy or --no-proxy")
 			}
 			if err = s.Put(p, create); err != nil {
 				return err

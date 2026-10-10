@@ -28,7 +28,7 @@ type connection struct {
 	db     *mongodb.Database
 }
 
-func (Driver) Open(ctx context.Context, dsn string) (database.Connection, error) {
+func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (database.Connection, error) {
 	parsed, err := url.Parse(dsn)
 	if err != nil || (parsed.Scheme != "mongodb" && parsed.Scheme != "mongodb+srv") {
 		return nil, fmt.Errorf("invalid MongoDB connection URI")
@@ -40,7 +40,11 @@ func (Driver) Open(ctx context.Context, dsn string) (database.Connection, error)
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
-	client, err := mongodb.Connect(options.Client().ApplyURI(dsn))
+	clientOptions := options.Client().ApplyURI(dsn)
+	if dial != nil {
+		clientOptions.SetDialer(dial)
+	}
+	client, err := mongodb.Connect(clientOptions)
 	if err != nil {
 		return nil, fmt.Errorf("invalid MongoDB connection URI")
 	}
@@ -55,7 +59,7 @@ func (Driver) Syntax() database.Syntax {
 	return database.Syntax{JSONCommands: true, BackslashEscapes: true,
 		CompletionWords: strings.Fields("find filter insert documents update updates delete deletes aggregate pipeline count distinct listCollections listIndexes create drop ping")}
 }
-func (Driver) SwitchDatabase(_ context.Context, conn database.Connection, _ string, name string) (database.Connection, error) {
+func (Driver) SwitchDatabase(_ context.Context, conn database.Connection, _ string, name string, _ database.Dial) (database.Connection, error) {
 	if err := validateName(name); err != nil {
 		return nil, err
 	}

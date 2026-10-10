@@ -14,12 +14,15 @@ type Driver struct{}
 
 var _ database.Driver = Driver{}
 
-func (Driver) Open(ctx context.Context, dsn string) (database.Connection, error) {
+func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (database.Connection, error) {
+	if dial != nil {
+		return nil, fmt.Errorf("proxies are not supported for SQLite")
+	}
 	return database.OpenSQL(ctx, "sqlite", dsn)
 }
 func (Driver) Syntax() database.Syntax { return database.Syntax{BracketIdentifiers: true} }
 
-func (Driver) SwitchDatabase(context.Context, database.Connection, string, string) (database.Connection, error) {
+func (Driver) SwitchDatabase(context.Context, database.Connection, string, string, database.Dial) (database.Connection, error) {
 	return nil, fmt.Errorf("database switching is not supported for SQLite")
 }
 func (Driver) Databases(context.Context, database.Connection) ([]string, error) {

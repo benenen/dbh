@@ -27,7 +27,7 @@ func TestStoreLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.Get(p.Name)
-	if err != nil || got != p {
+	if err != nil || !reflect.DeepEqual(got, p) {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 	info, err := os.Stat(filepath.Join(s.Dir, "connections.json"))
@@ -310,5 +310,59 @@ func TestUseDatabaseParsing(t *testing.T) {
 				t.Fatalf("got (%q, %v, %v); want (%q, %v, invalid=%v)", name, matched, err, test.want, test.matched, test.invalid)
 			}
 		})
+	}
+}
+
+func TestCLIProxies(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) (string, error) {
+		t.Helper()
+		cmd := NewCommand()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(append([]string{"--config-dir", dir}, args...))
+		err := cmd.Execute()
+		return out.String(), err
+	}
+	s := Store{Dir: dir}
+	if _, err := run("new", "pg", "--driver", "postgres", "--dsn", "postgres://db/app",
+		"--proxy", "ssh://ops:secret@jump", "--proxy", "socks5://inner:1080"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run("n", "direct", "--driver", "mysql", "--dsn", "u@tcp(db)/app"); err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.Get("pg")
+	if err != nil || !reflect.DeepEqual(p.Proxies, []string{"ssh://ops:secret@jump", "socks5://inner:1080"}) {
+		t.Fatalf("%+v %v", p, err)
+	}
+	out, err := run("ls")
+	if err != nil || strings.Contains(out, "secret") || !strings.Contains(out, "ssh://ops:xxxxx@jump -> socks5://inner:1080") {
+		t.Fatalf("list: %s %v", out, err)
+	}
+	if _, err := run("e", "pg", "--proxy", "socks5://other:1080"); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ = s.Get("pg"); !reflect.DeepEqual(p.Proxies, []string{"socks5://other:1080"}) || p.DSN != "postgres://db/app" {
+		t.Fatalf("replace: %+v", p)
+	}
+	if _, err := run("edit", "pg", "--no-proxy"); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ = s.Get("pg"); p.Proxies != nil {
+		t.Fatalf("clear: %+v", p)
+	}
+	if p, _ = s.Get("direct"); p.Proxies != nil {
+		t.Fatalf("other connection changed: %+v", p)
+	}
+	for _, args := range [][]string{
+		{"n", "lite", "--driver", "sqlite", "--dsn", ":memory:", "--proxy", "socks5://p:1080"},
+		{"n", "bad", "--driver", "mysql", "--dsn", "u@tcp(db)/app", "--proxy", "http://p:8080"},
+		{"e", "pg", "--proxy", "socks5://p:1080", "--no-proxy"},
+	} {
+		if _, err := run(args...); err == nil {
+			t.Errorf("%v accepted", args)
+		}
 	}
 }

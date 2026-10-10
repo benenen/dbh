@@ -3,25 +3,50 @@ package mysql
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/benenen/dbh/internal/database"
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 type Driver struct{}
 
 var _ database.Driver = Driver{}
 
-func (Driver) Open(ctx context.Context, dsn string) (database.Connection, error) {
-	return database.OpenSQL(ctx, "mysql", dsn)
+var dialers atomic.Uint64
+
+func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (database.Connection, error) {
+	if dial == nil {
+		return database.OpenSQL(ctx, "mysql", dsn)
+	}
+	config, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("invalid connection configuration for mysql")
+	}
+	if config.Net != "tcp" {
+		return nil, fmt.Errorf("proxies require a MySQL TCP address, not %s", config.Net)
+	}
+	// The driver selects custom dialers by network name, so each proxied session registers its own.
+	config.Net = "dbh-proxy-" + strconv.FormatUint(dialers.Add(1), 10)
+	mysql.RegisterDialContext(config.Net, func(ctx context.Context, address string) (net.Conn, error) {
+		return dial(ctx, "tcp", address)
+	})
+	connector, err := mysql.NewConnector(config)
+	if err != nil {
+		return nil, fmt.Errorf("invalid connection configuration for mysql")
+	}
+	return database.ConnectSQL(ctx, sql.OpenDB(connector))
 }
 func (Driver) Syntax() database.Syntax {
 	return database.Syntax{BackslashEscapes: true, DashCommentNeedsSpace: true, HashComments: true, ExecutableComments: true}
 }
 
-func (Driver) SwitchDatabase(ctx context.Context, conn database.Connection, _ string, name string) (database.Connection, error) {
+func (Driver) SwitchDatabase(ctx context.Context, conn database.Connection, _ string, name string, _ database.Dial) (database.Connection, error) {
 	err := conn.Exec(ctx, "USE `"+strings.ReplaceAll(name, "`", "``")+"`")
 	return nil, err
 }
