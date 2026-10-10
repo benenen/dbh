@@ -130,8 +130,8 @@ func TestSQLiteSession(t *testing.T) {
 }
 
 func TestCompletionContains(t *testing.T) {
-	c := &completer{words: []string{`\use`, "apple", "platform", "sample", "users"}}
-	for _, input := range []string{`\describe pl`, `\indexes PL`, "SELECT * FROM pl", "SELECT pl"} {
+	c := &completer{words: []string{`\use`, "apple", "platform", "plan_id", "sample", "users"}, tables: []string{"apple", "platform", "sample", "users"}}
+	for _, input := range []string{`\describe pl`, `\indexes PL`} {
 		t.Run(input, func(t *testing.T) {
 			line := []rune(input)
 			matches, prefix := c.candidates(line, len(line))
@@ -140,10 +140,15 @@ func TestCompletionContains(t *testing.T) {
 			}
 		})
 	}
-	for _, input := range []string{`\describe zz`, `\describe `} {
-		if matches, _ := c.candidates([]rune(input), len([]rune(input))); len(matches) != 0 {
-			t.Fatalf("unexpected matches for %q: %q", input, matches)
-		}
+	// SQL positions offer columns too; command arguments offer tables only.
+	if matches, _ := c.candidates([]rune("SELECT pl"), len("SELECT pl")); !reflect.DeepEqual(matches, []string{"apple", "platform", "plan_id", "sample"}) {
+		t.Fatalf("SQL candidates: %q", matches)
+	}
+	if matches, _ := c.candidates([]rune(`\describe zz`), len(`\describe zz`)); len(matches) != 0 {
+		t.Fatalf("unexpected matches: %q", matches)
+	}
+	if matches, _ := c.candidates([]rune(`\describe `), len(`\describe `)); !reflect.DeepEqual(matches, c.tables) {
+		t.Fatalf("empty table argument: %q", matches)
 	}
 	if matches, _ := c.candidates([]rune("SELECT * FROM us"), len("SELECT * FROM us")); !reflect.DeepEqual(matches, []string{"users"}) {
 		t.Fatalf("shell commands leaked into SQL candidates: %q", matches)

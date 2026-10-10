@@ -170,7 +170,7 @@ func TestTerminalSubstringCompletion(t *testing.T) {
 
 func TestTerminalMenuSelectionKeys(t *testing.T) {
 	f := newFixture(t)
-	f.sql("CREATE TABLE mail(address TEXT, addressee TEXT, addresseeID INTEGER); INSERT INTO mail VALUES ('a', 'b', 3);", "--no-history")
+	f.sql("CREATE TABLE mail(address TEXT, addressee TEXT, addresseeID INTEGER); CREATE TABLE mailbox(id INTEGER); INSERT INTO mail VALUES ('a', 'b', 3);", "--no-history")
 	term := f.terminal()
 	// Down enters the visible menu; arrows move and Enter only confirms the candidate.
 	term.exchange("SELECT ad", "addresseeID")

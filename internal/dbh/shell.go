@@ -36,15 +36,20 @@ func saveHistory(s Store, name, q string) error {
 	return json.NewEncoder(f).Encode(q)
 }
 
-type completer struct{ words, databases []string }
+type completer struct{ words, databases, tables []string }
 
 func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 	if pos < 0 || pos > len(line) {
 		return nil, ""
 	}
-	if name, ok := useArgument(line[:pos]); ok {
-		// \use takes only a database name, so offer every database before typing.
-		return matching(c.databases, name), name
+	if command, name, ok := commandArgument(line[:pos]); ok {
+		// These commands take one database or table name, so list every name
+		// as soon as the argument starts.
+		names := c.tables
+		if command == `\use` {
+			names = c.databases
+		}
+		return matching(names, name), name
 	}
 	start := pos
 	for start > 0 && (isIdentifier(line[start-1]) || line[start-1] == '\\') {
@@ -77,19 +82,34 @@ func matching(words []string, text string) []string {
 	return results
 }
 
-// useArgument returns the database name typed after \use on the current line.
-func useArgument(line []rune) (string, bool) {
+// commandArgument returns the name typed after \use, \describe or \indexes on
+// the current line.
+func commandArgument(line []rune) (command, name string, ok bool) {
 	text := string(line)
 	text = strings.TrimLeft(text[strings.LastIndex(text, "\n")+1:], " \t")
-	rest, ok := strings.CutPrefix(text, `\use`)
-	if !ok || rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
-		return "", false
+	for _, command := range []string{`\use`, `\describe`, `\indexes`} {
+		rest, found := strings.CutPrefix(text, command)
+		if !found || rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
+			continue
+		}
+		name := strings.TrimLeft(rest, " \t")
+		if strings.ContainsAny(name, " \t") {
+			return "", "", false
+		}
+		return command, name, true
 	}
-	name := strings.TrimLeft(rest, " \t")
-	if strings.ContainsAny(name, " \t") {
-		return "", false
+	return "", "", false
+}
+
+func unique(words []string) []string {
+	sort.Strings(words)
+	var result []string
+	for _, w := range words {
+		if len(result) == 0 || result[len(result)-1] != w {
+			result = append(result, w)
+		}
 	}
-	return name, true
+	return result
 }
 
 func (c *completer) complete(line []rune, pos int) readline.Completions {
@@ -125,17 +145,18 @@ func (c *completer) refresh(ctx context.Context, s *Session) error {
 	c.databases, _ = s.Databases(ctx)
 	tables, err := s.Tables(ctx)
 	if err != nil {
-		c.words = words
+		c.words, c.tables = words, nil
 		return err
 	}
+	var names []string
 	// One query per table is slow on large schemas over high-latency links.
 	columns, batched, err := s.ColumnNames(ctx)
 	batched = batched && err == nil
 	words = append(words, columns...)
 	for _, table := range tables {
-		words = append(words, table)
+		names = append(names, table)
 		if p := strings.SplitN(table, ".", 2); len(p) == 2 {
-			words = append(words, p[1])
+			names = append(names, p[1])
 		}
 		if batched {
 			continue
@@ -146,13 +167,8 @@ func (c *completer) refresh(ctx context.Context, s *Session) error {
 		}
 		words = append(words, cols...)
 	}
-	sort.Strings(words)
-	c.words = nil
-	for _, w := range words {
-		if len(c.words) == 0 || c.words[len(c.words)-1] != w {
-			c.words = append(c.words, w)
-		}
-	}
+	c.tables = unique(names)
+	c.words = unique(append(words, names...))
 	return nil
 }
 
