@@ -168,6 +168,33 @@ func TestTerminalSubstringCompletion(t *testing.T) {
 	equal(t, f.history(), []string{"SELECT * FROM sample;"})
 }
 
+func TestTerminalMenuSelectionKeys(t *testing.T) {
+	f := newFixture(t)
+	f.sql("CREATE TABLE mail(address TEXT, addressee TEXT, addresseeID INTEGER); INSERT INTO mail VALUES ('a', 'b', 3);", "--no-history")
+	term := f.terminal()
+	// Down enters the visible menu; arrows move and Enter only confirms the candidate.
+	term.exchange("SELECT ad", "addresseeID")
+	term.exchange("\x1b[B")
+	term.exchange("\x1b[C")
+	output := term.exchange("\r")
+	excludes(t, output, "...>")
+	term.exchange(" FROM mail;\r", `{"addressee":"b"}`)
+	// Tab then Up returns to the first candidate.
+	term.exchange("SELECT ad\t\x1b[B\x1b[A")
+	term.exchange("\r")
+	term.exchange(" FROM mail;\r", `{"address":"a"}`)
+	// A complete command is not executed by the Enter that confirms a candidate.
+	term.exchange(`\describe ma`, "mail")
+	excludes(t, term.exchange("\t\r"), "addresseeID")
+	term.exchange("\r", `"name":"addresseeID"`)
+	// Above the last line, Down moves within multi-line input even when the
+	// cursor lands on a word with candidates.
+	term.exchange("SELECT 1 AS x,\x1b\r2 AS y")
+	term.exchange("\x1b[A\x1b[B;\r", `{"x":1,"y":2}`)
+	term.exit("\\q\r")
+	equal(t, f.history(), []string{"SELECT addressee FROM mail;", "SELECT address FROM mail;", "SELECT 1 AS x,\n2 AS y;"})
+}
+
 func TestTerminalPersistedHistoryAndSearch(t *testing.T) {
 	f := newFixture(t)
 	f.seed()

@@ -117,8 +117,8 @@ local> \q
 - 使用简洁彩色提示符，保留普通终端滚动记录；设置 `NO_COLOR=1` 可关闭提示符颜色。
 - SQL 以 `;` 结束；未完成时按 Enter 继续换行，所有行仍可编辑。Alt-Enter 可直接插入换行。字符串、注释、PostgreSQL dollar quote 内的分号不会切分语句。
 - 在支持括号粘贴的终端中，多行粘贴保留换行、缩进和中文，整块留在输入区，按 Enter 后才执行；LF、CRLF 和 CR 换行均支持。粘贴中有多条 SQL 时，确认后按顺序执行。
-- 输入过程中自动显示 SQL 关键字、表名、列名和终端命令的候选，无需先按 Tab；候选按不区分大小写的包含匹配过滤，例如 `\describe pl` 可匹配 `platform`、`apple` 和 `sample`。Tab 选择候选，Shift-Tab 选择上一项。结构来自当前数据库，不调用大模型。修改表结构后执行 `\refresh` 更新候选项。补全为候选匹配，暂不解析别名、作用域或带空格的引用标识符。
-- ↑/↓ 在多行输入中移动，到顶部/底部后回顾历史；Ctrl-R 搜索历史。匹配的历史 SQL 会作为灰色文字预览，在输入末尾按 → 接受。Ctrl-C 清除整块输入，在空输入区按 Ctrl-D 退出。
+- 输入过程中自动显示 SQL 关键字、表名、列名和终端命令的候选，无需先按 Tab；候选按不区分大小写的包含匹配过滤，例如 `\describe pl` 可匹配 `platform`、`apple` 和 `sample`。Tab 或 ↓（候选显示时）进入候选菜单，方向键在菜单中移动，Enter 只确认候选、不执行，再按 Enter 才提交；Shift-Tab 选择上一项。结构来自当前数据库，不调用大模型。修改表结构后执行 `\refresh` 更新候选项。补全为候选匹配，暂不解析别名、作用域或带空格的引用标识符。
+- ↑/↓ 在多行输入中移动，到顶部/底部后回顾历史（在最后一行且有候选显示时，↓ 进入候选菜单）；Ctrl-R 搜索历史。匹配的历史 SQL 会作为灰色文字预览，在输入末尾按 → 接受。Ctrl-C 清除整块输入，在空输入区按 Ctrl-D 退出。
 - `\database` 在 MySQL/PostgreSQL/MongoDB/ClickHouse 中列出数据库，每行一个名称，与 `\tables` 一样不受 `\format` 影响。MySQL 使用 `SHOW DATABASES`，PostgreSQL 查询 `pg_database`，MongoDB 列出服务器数据库；列表范围由数据库权限决定。SQLite 不支持此命令。
 - `\use DATABASE` 或 `USE DATABASE;` 切换当前数据库，成功后刷新表/集合和字段提示，不修改保存的连接配置。MySQL 保留当前会话；PostgreSQL 重新建立连接，临时表、会话设置和未提交事务不保留，连接失败时仍保留旧连接；MongoDB 复用客户端并选择数据库，新库在写入数据后出现。SQLite 不支持切库。
 - `\tables` 列出表和视图；`\describe TABLE` 显示每个字段的名称、类型、是否可空、默认值、主键顺序和注释，并附上索引列表；`\indexes TABLE` 单独查看索引。支持 `schema.table` 和带引号的名称（如 `"a.b"`），可直接使用 `\tables` 列出的名称；SQLite 表名不区分大小写。结果遵循当前 `\format`。
@@ -155,7 +155,7 @@ make clean
 
 `make` 或 `make help` 查看可用命令；`make clean` 仅删除本地构建的 `bin/dbh`。
 
-e2e 测试由 Go `testing` 实现，通过 `os/exec` 启动真实 `dbh` 进程，覆盖连接管理与简写、环境变量配置、SQL 参数/文件/管道输入、输出格式、事务、错误退出和历史。Linux/macOS 上还通过 `creack/pty` 验证实时补全、Tab 选择、多行粘贴与提交前编辑、换行兼容、彩色提示符、Ctrl-C 清空、历史回填与搜索、多行 SQL 和 Ctrl-D 退出。每个测试使用自动清理的临时配置，默认仅使用临时 SQLite 文件，不需要外部数据库。`make e2e` 等同于 `go test -tags=e2e -count=1 -v ./tests`，测试会在临时目录构建当前源码，避免复用过期二进制；普通 `go test ./...` 不运行这套 e2e。
+e2e 测试由 Go `testing` 实现，通过 `os/exec` 启动真实 `dbh` 进程，覆盖连接管理与简写、环境变量配置、SQL 参数/文件/管道输入、输出格式、事务、错误退出和历史。Linux/macOS 上还通过 `creack/pty` 验证实时补全、Tab/方向键选择候选与 Enter 确认、多行粘贴与提交前编辑、换行兼容、彩色提示符、Ctrl-C 清空、历史回填与搜索、多行 SQL 和 Ctrl-D 退出。每个测试使用自动清理的临时配置，默认仅使用临时 SQLite 文件，不需要外部数据库。`make e2e` 等同于 `go test -tags=e2e -count=1 -v ./tests`，测试会在临时目录构建当前源码，避免复用过期二进制；普通 `go test ./...` 不运行这套 e2e。
 
 SQLite 测试使用真实数据库，覆盖 CLI 生命周期、SQL 查询和写入、事务回滚、返回结果、结构读取、补全、历史和文件权限。PostgreSQL/MySQL 使用各自的 Go 驱动，集成验证需要可访问的数据库。
 

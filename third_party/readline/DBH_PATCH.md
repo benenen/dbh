@@ -20,6 +20,9 @@ Local changes:
   common prefix does not start with the typed word, so the
   `menu-complete-display-prefix` option cannot delete input for substring
   matches.
+- `completion.go`: export `AcceptCompletion` and `CompletionsVisible`, so dbh
+  can confirm a menu candidate with Enter without accepting the line, and
+  enter the menu with Down only while candidates are displayed.
 - `inputrc/bind.go`: normalize three map entry indentations with `gofmt`.
 - `internal/core/keys.go`: buffer one cursor reply, allowing a query receiver to
   consume a reply that arrives before it starts waiting.

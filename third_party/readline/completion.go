@@ -197,6 +197,17 @@ func (rl *Shell) menuIncrementalSearch() {
 	rl.completer.IsearchStart("completions", false, false)
 }
 
+// AcceptCompletion makes the selected candidate part of the input line and
+// leaves menu selection without accepting the line.
+func (rl *Shell) AcceptCompletion() {
+	rl.completer.Reset()
+}
+
+// CompletionsVisible reports whether candidates are listed below the input.
+func (rl *Shell) CompletionsVisible() bool {
+	return rl.completer.Matches() > 0 && !rl.completer.DisplaySkipped()
+}
+
 // RefreshCompletions regenerates the currently active completion menu from the
 // cached completer and repaints, so completions produced asynchronously (for
 // instance by a background producer that updates a cache the completer reads)

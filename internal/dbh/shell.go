@@ -121,7 +121,8 @@ func (c *completer) refresh(ctx context.Context, s *Session) error {
 const shellHelp = `SQL ends with ; and may span multiple lines. Suggestions appear as you type.
 Paste keeps the entire block editable; press Enter to execute complete SQL.
 Alt-Enter inserts a newline. Up/Down move within multi-line input.
-Tab selects keywords/tables/columns; Shift-Tab selects the previous candidate.
+Tab or Down (suggestions on the last line) selects keywords/tables/columns; arrows
+move in the menu, Enter confirms the candidate, Shift-Tab selects the previous.
 Up/Down recall SQL; Ctrl-R searches history; Right accepts a history suggestion.
 Ctrl-C clears input; Ctrl-D exits.
 \help               Show help
@@ -178,6 +179,18 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 			rl.Line().Insert(rl.Cursor().Pos(), '\n')
 			rl.Cursor().Inc()
 		},
+		// Enter in the menu confirms the candidate; a second Enter accepts the line.
+		"dbh-accept-candidate": rl.AcceptCompletion,
+		// Down selects visible candidates on the last line; elsewhere it keeps
+		// moving within multi-line input.
+		"dbh-down": func() {
+			line, pos := *rl.Line(), rl.Cursor().Pos()
+			if rl.CompletionsVisible() && !strings.ContainsRune(string(line[min(pos, len(line)):]), '\n') {
+				rl.Keymap.Commands()["menu-complete"]()
+				return
+			}
+			rl.Keymap.Commands()["down-line-or-history"]()
+		},
 		"dbh-interrupt": func() {
 			// Drop virtual completion/search buffers before accepting the interrupt.
 			rl.Keymap.Commands()["abort"]()
@@ -198,6 +211,9 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 	if err := rl.Config.Bind("emacs", "\x1b[Z", "menu-complete-backward", false); err != nil {
 		return err
 	}
+	if err := rl.Config.Bind("menu-select", "\r", "dbh-accept-candidate", false); err != nil {
+		return err
+	}
 	for _, keymap := range []string{"emacs", "menu-select"} {
 		// Both forms normalize to ESC+Enter. Override the meta form too,
 		// otherwise the default self-insert binding takes precedence.
@@ -209,7 +225,7 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 	}
 	for key, action := range map[string]string{
 		inputrc.Unescape(`\M-[A`): "up-line-or-history",
-		inputrc.Unescape(`\M-[B`): "down-line-or-history",
+		inputrc.Unescape(`\M-[B`): "dbh-down",
 	} {
 		if err := rl.Config.Bind("emacs", key, action, false); err != nil {
 			return err
