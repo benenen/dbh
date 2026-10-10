@@ -34,6 +34,12 @@ Local changes:
   scroll at the bottom of the screen; cursor-down clamps there and caused the
   input to be erased and the cursor to overlap the previous output line.
 
+- `internal/display/engine.go`: when the cursor row is unknown,
+  `AvailableHelperLines` limits the completion menu to half the terminal and
+  leaves room for the input and the cropped-rows hint. Upstream subtracted the
+  unknown row (-1), so long candidate lists filled the screen and scrolled the
+  input and cursor out of view.
+
 The `go.mod` replacement keeps builds reproducible without changing module
 caches. Remove this directory and the replacement when an upstream release
 handles unsolicited and repeated replies without blocking, keeps the prompt

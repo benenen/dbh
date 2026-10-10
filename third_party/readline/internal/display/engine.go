@@ -251,6 +251,14 @@ func (e *Engine) computeCoordinates(suggested bool) {
 // It returns half the terminal space if we currently have less than 1/3rd of it below.
 func (e *Engine) AvailableHelperLines() int {
 	termHeight := term.GetLength()
+
+	// Without cursor probing the input row is unknown and may be the last one.
+	// Keep the menu within half the screen and leave room for the input and the
+	// "more completion rows" hint, so the input is never scrolled out of view.
+	if e.startRows < 0 {
+		return max(1, min(termHeight/halfTerminalHeight, termHeight-(e.lineRows+1)-e.hintRows-1))
+	}
+
 	compLines := termHeight - e.startRows - e.lineRows - e.hintRows
 
 	if compLines < (termHeight / oneThirdTerminalHeight) {

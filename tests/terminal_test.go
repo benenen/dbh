@@ -195,6 +195,31 @@ func TestTerminalMenuSelectionKeys(t *testing.T) {
 	equal(t, f.history(), []string{"SELECT addressee FROM mail;", "SELECT address FROM mail;", "SELECT 1 AS x,\n2 AS y;"})
 }
 
+func TestTerminalLongCandidateListKeepsInputVisible(t *testing.T) {
+	f := newFixture(t)
+	var ddl strings.Builder
+	for i := range 150 {
+		fmt.Fprintf(&ddl, "CREATE TABLE report_table_%03d(id INTEGER);", i)
+	}
+	f.sql(ddl.String(), "--no-history")
+	term := f.terminal()
+	term.exchange(`\describe re`, "more completion rows")
+	screen := newScreen(t, 0)
+	screen.feed(term.transcript)
+	equal(t, screen.line(screen.y), `demo> \describe re`)
+	rows := 0
+	for y := range screen.rows {
+		if strings.Contains(screen.line(y), "report_table_") {
+			rows++
+		}
+	}
+	if rows == 0 || rows > len(screen.rows)/2 {
+		t.Fatalf("candidate rows = %d, want 1..%d", rows, len(screen.rows)/2)
+	}
+	term.exchange("\x03", "demo> ")
+	term.exit("\\q\r")
+}
+
 func TestTerminalPersistedHistoryAndSearch(t *testing.T) {
 	f := newFixture(t)
 	f.seed()
