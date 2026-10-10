@@ -150,6 +150,26 @@ func TestCompletionContains(t *testing.T) {
 	}
 }
 
+func TestUseCompletesDatabasesOnly(t *testing.T) {
+	c := &completer{words: []string{"SELECT", "resource", "users"}, databases: []string{"information_schema", "resource", "resource-dev"}}
+	for input, want := range map[string][]string{
+		`\use `:              {"information_schema", "resource", "resource-dev"},
+		`\use RES`:           {"resource", "resource-dev"},
+		`\use ce-d`:          {"resource-dev"},
+		"SELECT 1;\n\\use s": {"information_schema", "resource", "resource-dev"},
+		`\use resource x`:    nil,
+		`\user`:              nil,
+	} {
+		matches, prefix := c.candidates([]rune(input), len([]rune(input)))
+		if len(want) == 0 && len(matches) == 0 {
+			continue
+		}
+		if !reflect.DeepEqual(matches, want) {
+			t.Errorf("%q: matches=%q prefix=%q", input, matches, prefix)
+		}
+	}
+}
+
 func TestTerminateHistoryEntry(t *testing.T) {
 	for input, want := range map[string]string{
 		"SELECT 1":         "SELECT 1;",
@@ -427,6 +447,9 @@ func (*batchColumnsDriver) ColumnNames(context.Context, database.Connection) ([]
 	return []string{"order_id", "user_name"}, nil
 }
 func (*batchColumnsDriver) Syntax() database.Syntax { return database.Syntax{} }
+func (*batchColumnsDriver) Databases(context.Context, database.Connection) ([]string, error) {
+	return []string{"app"}, nil
+}
 
 func TestCompletionLoadsColumnsInOneQuery(t *testing.T) {
 	backend := &batchColumnsDriver{}

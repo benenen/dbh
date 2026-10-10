@@ -36,11 +36,15 @@ func saveHistory(s Store, name, q string) error {
 	return json.NewEncoder(f).Encode(q)
 }
 
-type completer struct{ words []string }
+type completer struct{ words, databases []string }
 
 func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 	if pos < 0 || pos > len(line) {
 		return nil, ""
+	}
+	if name, ok := useArgument(line[:pos]); ok {
+		// \use takes only a database name, so offer every database before typing.
+		return matching(c.databases, name), name
 	}
 	start := pos
 	for start > 0 && (isIdentifier(line[start-1]) || line[start-1] == '\\') {
@@ -50,17 +54,42 @@ func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 	if prefix == "" {
 		return nil, ""
 	}
-	results := []string{}
-	match := strings.ToLower(prefix)
-	for _, word := range c.words {
-		if strings.HasPrefix(word, `\`) && !strings.HasPrefix(prefix, `\`) {
-			continue
+	words := c.words
+	if !strings.HasPrefix(prefix, `\`) {
+		words = nil
+		for _, word := range c.words {
+			if !strings.HasPrefix(word, `\`) {
+				words = append(words, word)
+			}
 		}
+	}
+	return matching(words, prefix), prefix
+}
+
+func matching(words []string, text string) []string {
+	results := []string{}
+	match := strings.ToLower(text)
+	for _, word := range words {
 		if strings.Contains(strings.ToLower(word), match) {
 			results = append(results, word)
 		}
 	}
-	return results, prefix
+	return results
+}
+
+// useArgument returns the database name typed after \use on the current line.
+func useArgument(line []rune) (string, bool) {
+	text := string(line)
+	text = strings.TrimLeft(text[strings.LastIndex(text, "\n")+1:], " \t")
+	rest, ok := strings.CutPrefix(text, `\use`)
+	if !ok || rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
+		return "", false
+	}
+	name := strings.TrimLeft(rest, " \t")
+	if strings.ContainsAny(name, " \t") {
+		return "", false
+	}
+	return name, true
 }
 
 func (c *completer) complete(line []rune, pos int) readline.Completions {
@@ -92,6 +121,8 @@ func (c *completer) refresh(ctx context.Context, s *Session) error {
 		words = append([]string{}, native...)
 	}
 	words = append(words, `\help`, `\q`, `\database`, `\use`, `\tables`, `\describe`, `\indexes`, `\history`, `\refresh`, `\clear`, `\format`)
+	// SQLite has no database list; \use then offers no candidates.
+	c.databases, _ = s.Databases(ctx)
 	tables, err := s.Tables(ctx)
 	if err != nil {
 		c.words = words

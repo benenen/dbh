@@ -127,7 +127,7 @@ local> \q
 - 使用简洁彩色提示符，保留普通终端滚动记录；设置 `NO_COLOR=1` 可关闭提示符颜色。
 - SQL 以 `;` 结束；未完成时按 Enter 继续换行，所有行仍可编辑。Alt-Enter 可直接插入换行。字符串、注释、PostgreSQL dollar quote 内的分号不会切分语句。
 - 在支持括号粘贴的终端中，多行粘贴保留换行、缩进和中文，整块留在输入区，按 Enter 后才执行；LF、CRLF 和 CR 换行均支持。粘贴中有多条 SQL 时，确认后按顺序执行。
-- 输入过程中自动显示 SQL 关键字、表名、列名和终端命令的候选，无需先按 Tab；候选按不区分大小写的包含匹配过滤，例如 `\describe pl` 可匹配 `platform`、`apple` 和 `sample`。Tab 或 ↓（候选显示时）进入候选菜单，方向键在菜单中移动，Enter 只确认候选、不执行，再按 Enter 才提交；Shift-Tab 选择上一项。结构来自当前数据库，不调用大模型。修改表结构后执行 `\refresh` 更新候选项。补全为候选匹配，暂不解析别名、作用域或带空格的引用标识符。
+- 输入过程中自动显示 SQL 关键字、表名、列名和终端命令的候选，无需先按 Tab；候选按不区分大小写的包含匹配过滤，例如 `\describe pl` 可匹配 `platform`、`apple` 和 `sample`。`\use ` 之后只提示数据库名，敲完空格即列出全部数据库。Tab 或 ↓（候选显示时）进入候选菜单，方向键在菜单中移动，Enter 只确认候选、不执行，再按 Enter 才提交；Shift-Tab 选择上一项。结构来自当前数据库，不调用大模型。修改表结构后执行 `\refresh` 更新候选项。补全为候选匹配，暂不解析别名、作用域或带空格的引用标识符。
 - ↑/↓ 在多行输入中移动，到顶部/底部后回顾历史（在最后一行且有候选显示时，↓ 进入候选菜单）；Ctrl-R 搜索历史。匹配的历史 SQL 会作为灰色文字预览，在输入末尾按 → 接受。Ctrl-C 清除整块输入，在空输入区按 Ctrl-D 退出。
 - `\database` 在 MySQL/PostgreSQL/MongoDB/ClickHouse 中列出数据库，每行一个名称，与 `\tables` 一样不受 `\format` 影响。MySQL 使用 `SHOW DATABASES`，PostgreSQL 查询 `pg_database`，MongoDB 列出服务器数据库；列表范围由数据库权限决定。SQLite 不支持此命令。
 - `\use DATABASE` 或 `USE DATABASE;` 切换当前数据库，成功后刷新表/集合和字段提示，不修改保存的连接配置。MySQL 保留当前会话；PostgreSQL 重新建立连接，临时表、会话设置和未提交事务不保留，连接失败时仍保留旧连接；MongoDB 复用客户端并选择数据库，新库在写入数据后出现。SQLite 不支持切库。
