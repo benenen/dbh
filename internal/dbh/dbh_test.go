@@ -193,6 +193,23 @@ func TestTerminateHistoryEntry(t *testing.T) {
 	}
 }
 
+func TestTSVOutput(t *testing.T) {
+	ctx := context.Background()
+	s, err := openSession(ctx, Profile{Name: "test", Driver: "sqlite", DSN: ":memory:"}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var out bytes.Buffer
+	query := `CREATE TABLE t(a); SELECT 'x' || char(9) || 'y' AS "tab	name", NULL AS n, '' AS e, 'a' || char(10) || 'b\N' AS m;`
+	if err := s.Run(ctx, query, "tsv", &out); err != nil {
+		t.Fatal(err)
+	}
+	if want := "tab\\tname\tn\te\tm\nx\\ty\t\\N\t\ta\\nb\\\\N\n"; out.String() != want {
+		t.Fatalf("got %q, want %q", out.String(), want)
+	}
+}
+
 func TestSQLiteOutputKeepsColumns(t *testing.T) {
 	ctx := context.Background()
 	s, err := openSession(ctx, Profile{Name: "test", Driver: "sqlite", DSN: ":memory:"}, time.Second)

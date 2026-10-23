@@ -139,6 +139,12 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 			}
 		case "json":
 			jsonOut = json.NewEncoder(out)
+		case "tsv":
+			if len(cols) > 0 {
+				if _, err := fmt.Fprintln(out, tsvLine(cols)); err != nil {
+					return err
+				}
+			}
 		}
 		count := 0
 		for rows.Next() {
@@ -164,6 +170,17 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 				}
 			case "json":
 				if err := jsonOut.Encode(object); err != nil {
+					return err
+				}
+			case "tsv":
+				for i, v := range row.Values {
+					if v == nil {
+						fields[i] = `\N`
+					} else {
+						fields[i] = tsvEscaper.Replace(fields[i])
+					}
+				}
+				if _, err := fmt.Fprintln(out, strings.Join(fields, "\t")); err != nil {
 					return err
 				}
 			}
@@ -197,6 +214,22 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 			return rows.Err()
 		}
 	}
+}
+
+func validFormat(format string) bool {
+	return format == "table" || format == "csv" || format == "json" || format == "tsv"
+}
+
+// tsvEscaper keeps one record per line; NULL is written as \N so it differs
+// from an empty string.
+var tsvEscaper = strings.NewReplacer(`\`, `\\`, "\t", `\t`, "\n", `\n`, "\r", `\r`)
+
+func tsvLine(values []string) string {
+	escaped := make([]string, len(values))
+	for i, value := range values {
+		escaped[i] = tsvEscaper.Replace(value)
+	}
+	return strings.Join(escaped, "\t")
 }
 
 func (s *Session) Run(ctx context.Context, input, format string, out io.Writer) error {

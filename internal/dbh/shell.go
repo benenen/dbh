@@ -189,7 +189,7 @@ Ctrl-C clears input; Ctrl-D exits.
 \history            Show SQL history
 \refresh            Refresh schema completion (use after DDL)
 \clear              Clear pending query
-\format table|csv|json  Change output format
+\format table|csv|json|tsv  Change output format
 `
 
 func acceptSQLInput(line, driver string) bool {
@@ -418,8 +418,8 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 					_, _ = fmt.Fprintf(out, "%d  %s\n", i+1, q)
 				}
 			case `\format`:
-				if len(fields) != 2 || (fields[1] != "table" && fields[1] != "csv" && fields[1] != "json") {
-					_, _ = fmt.Fprintln(errOut, `Usage: \format table|csv|json`)
+				if len(fields) != 2 || !validFormat(fields[1]) {
+					_, _ = fmt.Fprintln(errOut, `Usage: \format table|csv|json|tsv`)
 				} else {
 					format = fields[1]
 				}

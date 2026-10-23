@@ -88,9 +88,10 @@ dbh connect local -f queries.sql
 printf 'SELECT 1; SELECT 2;' | dbh connect local
 dbh connect local --sql 'SELECT * FROM users' --format csv
 dbh connect local --sql 'SELECT * FROM users' --format json
+dbh exec local 'SELECT * FROM users' --format tsv   # 紧凑格式，适合 AI agent 读取
 ```
 
-默认显示带边框和行分隔线的表格，单元格中的换行独立显示，长内容按终端宽度折行，中文和组合字符不会被拆开。列数过多时按记录显示字段/值表格，避免终端自动换行破坏行边界。CSV 包含列标题，NULL 输出为 `NULL`；JSON 每行一个对象（NDJSON），字段按结果列顺序排列，重名列依次加 `_2`、`_3` 后缀，避免 JOIN 结果丢失字段。不返回数据的 SQL 语句在表格模式下显示 `OK`，CSV/JSON 模式不输出状态文本。支持 NULL 和 `INSERT ... RETURNING`。每个 SQL 语句独立执行，批量模式遇错停止，以非零状态退出；需要原子性时显式使用 `BEGIN` / `COMMIT`。
+默认显示带边框和行分隔线的表格，单元格中的换行独立显示，长内容按终端宽度折行，中文和组合字符不会被拆开。列数过多时按记录显示字段/值表格，避免终端自动换行破坏行边界。CSV 包含列标题，NULL 输出为 `NULL`；JSON 每行一个对象（NDJSON），字段按结果列顺序排列，重名列依次加 `_2`、`_3` 后缀，避免 JOIN 结果丢失字段。TSV 为 agent 等程序读取设计：首行列名，每条记录一行，制表符分隔，值中的制表符、换行、回车和反斜杠转义为 `\t`、`\n`、`\r`、`\\`，NULL 输出为 `\N`、空字符串留空；没有边框、行分隔线和行数统计，体积约为表格输出的 1/7、JSON 的一半。不返回数据的 SQL 语句在表格模式下显示 `OK`，CSV/JSON/TSV 模式不输出状态文本。支持 NULL 和 `INSERT ... RETURNING`。每个 SQL 语句独立执行，批量模式遇错停止，以非零状态退出；需要原子性时显式使用 `BEGIN` / `COMMIT`。
 
 `--timeout 30s` 控制连接和每条语句的超时，可修改。一个连接会话使用同一条底层连接，事务、临时表和会话设置可持续使用。
 
@@ -146,7 +147,7 @@ local> \q
 - `\use DATABASE` 或 `USE DATABASE;` 切换当前数据库，成功后刷新表/集合和字段提示，不修改保存的连接配置。MySQL 保留当前会话；PostgreSQL 重新建立连接，临时表、会话设置和未提交事务不保留，连接失败时仍保留旧连接；MongoDB 复用客户端并选择数据库，新库在写入数据后出现。SQLite 不支持切库。
 - `\tables` 列出表和视图；`\describe TABLE` 显示每个字段的名称、类型、是否可空、默认值、主键顺序和注释，并附上索引列表；`\indexes TABLE` 单独查看索引。支持 `schema.table` 和带引号的名称（如 `"a.b"`），可直接使用 `\tables` 列出的名称；SQLite 表名不区分大小写。结果遵循当前 `\format`。
 - 索引显示名称、唯一性、主键标记及索引字段/定义。MySQL 联合索引按字段顺序逐行显示，包含索引类型、前缀长度和排序方向。SQLite 没有原生字段注释，注释显示为 `NULL`；`INTEGER PRIMARY KEY` 使用 rowid 时没有独立索引，因此不会出现在索引列表中。CSV/JSON 下字段与索引结果顺序输出，不插入文本标题。
-- `\history` 查看历史，`\clear` 清除待执行 SQL，`\format table|csv|json` 切换格式，`\help` 查看帮助。
+- `\history` 查看历史，`\clear` 清除待执行 SQL，`\format table|csv|json|tsv` 切换格式，`\help` 查看帮助。
 
 Redis 交互输入按 Enter 执行当前行，引号未闭合时继续换行。`\database` 列出有 key 的数据库编号和当前库，`\use N` 重新连接到第 N 号库；`\tables` 用 `SCAN` 列出当前库最多 1000 个 key；`\describe KEY` 显示类型、TTL（秒）、编码和长度，Redis 没有索引，`\indexes` 会提示不支持。候选包含常用命令名和扫描到的 key。
 

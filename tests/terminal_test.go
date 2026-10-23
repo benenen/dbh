@@ -107,8 +107,10 @@ func TestTerminalPromptColorsAndCommandsDuringInput(t *testing.T) {
 	term.exchange("SELECT\r", "...> ")
 	term.exchange("\\clear\r", "demo> ")
 	term.exchange("SELECT 42 AS value;\r", "{\"value\":42}")
+	term.exchange("\\format tsv\r", "demo> ")
+	term.exchange("SELECT 43 AS value, NULL AS n;\r", "value\tn\r\n43\t\\N")
 	term.exit("\\q\r")
-	equal(t, f.history(), []string{"SELECT\nname FROM users;", "SELECT 42 AS value;"})
+	equal(t, f.history(), []string{"SELECT\nname FROM users;", "SELECT 42 AS value;", "SELECT 43 AS value, NULL AS n;"})
 	f.env["NO_COLOR"] = "1"
 	term = f.terminal()
 	excludes(t, term.transcript, "\x1b[36m")

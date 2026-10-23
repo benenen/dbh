@@ -198,8 +198,8 @@ func NewCommand() *cobra.Command {
 			if cmd.Flags().Changed("db") && strings.TrimSpace(databaseName) == "" {
 				return fmt.Errorf("database name must not be empty")
 			}
-			if format != "table" && format != "csv" && format != "json" {
-				return fmt.Errorf("format must be table, csv or json")
+			if !validFormat(format) {
+				return fmt.Errorf("format must be table, csv, json or tsv")
 			}
 			if timeout <= 0 {
 				return fmt.Errorf("timeout must be positive")
@@ -292,12 +292,12 @@ func NewCommand() *cobra.Command {
 		}
 		connect.Flags().StringVarP(&query, "sql", "e", "", "Execute SQL, a MongoDB JSON command or Redis commands and exit")
 		connect.Flags().StringVarP(&file, "file", "f", "", "Execute a query file (- for stdin)")
-		connect.Flags().StringVar(&format, "format", "table", "table, csv or json (newline-delimited objects)")
+		connect.Flags().StringVar(&format, "format", "table", "table, csv, json (newline-delimited objects) or tsv (compact, for agents)")
 		connect.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Connection/query timeout")
 		connect.Flags().BoolVar(&noHistory, "no-history", false, "Disable persisted query history")
 		connect.MarkFlagsMutuallyExclusive("sql", "file")
 		_ = connect.RegisterFlagCompletionFunc("file", files)
-		_ = connect.RegisterFlagCompletionFunc("format", fixed("table", "csv", "json"))
+		_ = connect.RegisterFlagCompletionFunc("format", fixed("table", "csv", "json", "tsv"))
 		for _, flag := range []string{"sql", "timeout", "db"} {
 			if connect.Flags().Lookup(flag) != nil {
 				_ = connect.RegisterFlagCompletionFunc(flag, cobra.NoFileCompletions)
