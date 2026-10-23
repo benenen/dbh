@@ -17,6 +17,10 @@ func splitSQL(input, driver string) (statements []string, remainder string, err 
 		return nil, "", err
 	}
 	syntax := backend.Syntax()
+	if syntax.LineCommands {
+		statements, remainder, err = splitLines(input)
+		return
+	}
 	start := 0
 	quote := byte(0)
 	dollar := ""
@@ -121,9 +125,40 @@ func splitSQL(input, driver string) (statements []string, remainder string, err 
 	return
 }
 
+// splitLines ends each command at a newline outside quotes; the last line is the remainder.
+func splitLines(input string) (statements []string, remainder string, err error) {
+	start := 0
+	quote := byte(0)
+	for i := 0; i < len(input); i++ {
+		switch c := input[i]; {
+		case quote != 0 && c == '\\':
+			i++
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '\n':
+			if text := strings.TrimSpace(input[start:i]); text != "" {
+				statements = append(statements, text)
+			}
+			start = i + 1
+		}
+	}
+	remainder = strings.TrimSpace(input[start:])
+	if quote != 0 {
+		err = fmt.Errorf("unterminated quoted string")
+	}
+	return
+}
+
 // terminate appends the history separator, moving it to a new line when the statement
-// ends inside a line comment.
+// ends inside a line comment. Line commands need no separator.
 func terminate(q, driver string) string {
+	if backend, err := registry.Lookup(driver); err == nil && backend.Syntax().LineCommands {
+		return q
+	}
 	if statements, rest, err := splitSQL(q+";", driver); err == nil && len(statements) == 1 && rest == "" {
 		return q + ";"
 	}

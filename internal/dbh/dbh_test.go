@@ -76,6 +76,8 @@ select 2;`, 2, "", false},
 		{"mysql", `/*! SELECT 'a;b' */;`, 1, "", false},
 		{"postgres", `/*! SELECT 1 */;`, 0, "", false},
 		{"postgres", `select foo$bar$ from t;`, 1, "", false},
+		{"redis", "SET k \"a;\nb\"\n\nGET k\nGET 'x\\''", 2, "GET 'x\\''", false},
+		{"redis", "SET k \"open\nGET k", 0, "SET k \"open\nGET k", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
@@ -186,6 +188,9 @@ func TestTerminateHistoryEntry(t *testing.T) {
 			t.Errorf("terminate(%q) = %q, want %q", input, got, want)
 		}
 	}
+	if got := terminate("GET k", "redis"); got != "GET k" {
+		t.Errorf("Redis history entry = %q", got)
+	}
 }
 
 func TestSQLiteOutputKeepsColumns(t *testing.T) {
@@ -237,6 +242,9 @@ func TestAcceptSQLInput(t *testing.T) {
 		{"SELECT 1; -- comment", "sqlite", true},
 		{"SELECT $$semi;\ncolon$$;", "postgres", true},
 		{"SELECT $tag$unfinished;", "postgres", false},
+		{"GET k", "redis", true},
+		{"SET k \"a\nb\"", "redis", true},
+		{"SET k \"unfinished", "redis", false},
 	} {
 		t.Run(tt.input, func(t *testing.T) {
 			if got := acceptSQLInput(tt.input, tt.driver); got != tt.accept {

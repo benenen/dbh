@@ -2,8 +2,11 @@ package dbh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+
+	"github.com/benenen/dbh/internal/database"
 )
 
 // Describe prints column details and indexes using the current session.
@@ -26,7 +29,10 @@ func (s *Session) Describe(ctx context.Context, table, format string, out io.Wri
 	if err := s.executeArgs(ctx, query.Text, format, out, query.Args...); err != nil {
 		return err
 	}
-	return s.Indexes(ctx, table, format, out)
+	if err := s.Indexes(ctx, table, format, out); !errors.Is(err, database.ErrNoIndexes) {
+		return err
+	}
+	return nil
 }
 
 func (s *Session) Indexes(ctx context.Context, table, format string, out io.Writer) error {

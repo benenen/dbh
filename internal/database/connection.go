@@ -33,6 +33,11 @@ type Row struct {
 	Object any
 }
 
+// NewRow builds a row whose JSON object keeps the column order.
+func NewRow(columns []string, values []any) Row {
+	return Row{Values: values, Object: newObject(columns, values)}
+}
+
 // object keeps SQL column order; repeated names get _2, _3 suffixes so no value is lost.
 type object struct {
 	keys   []string

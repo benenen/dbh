@@ -181,7 +181,7 @@ Up/Down recall SQL; Ctrl-R searches history; Right accepts a history suggestion.
 Ctrl-C clears input; Ctrl-D exits.
 \help               Show help
 \q                  Exit
-\database           List databases (MySQL/PostgreSQL/MongoDB/ClickHouse)
+\database           List databases (MySQL/PostgreSQL/MongoDB/ClickHouse/Redis)
 \use DATABASE       Switch database (also accepts USE DATABASE;)
 \tables             List tables/views
 \describe TABLE     Show column details and indexes
@@ -201,6 +201,10 @@ func acceptSQLInput(line, driver string) bool {
 		return true
 	}
 	statements, rest, err := splitSQL(line, driver)
+	if backend, lookupErr := registry.Lookup(driver); lookupErr == nil && backend.Syntax().LineCommands {
+		// Enter runs every complete line, unless a quoted argument is still open.
+		return err == nil
+	}
 	return err == nil && len(statements) > 0 && stripComments(rest, driver) == ""
 }
 
@@ -351,7 +355,9 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 				return nil
 			case `\help`:
 				help := shellHelp
-				if s.backend.Syntax().JSONCommands {
+				if s.backend.Syntax().LineCommands {
+					help = "Redis accepts redis-cli style commands, one per line. Press Enter to execute.\nQuote arguments that contain spaces. \\tables lists up to 1000 keys.\n" + shellHelp[strings.Index(shellHelp, `\help`):]
+				} else if s.backend.Syntax().JSONCommands {
 					help = "MongoDB accepts native JSON command documents. Press Enter when complete.\nUse ; between commands in batch input.\n" + shellHelp[strings.Index(shellHelp, `\help`):]
 				}
 				_, _ = fmt.Fprint(out, help)
@@ -431,7 +437,7 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 			continue
 		}
 		statements, rest, _ := splitSQL(line, s.Driver)
-		if s.backend.Syntax().JSONCommands && strings.TrimSpace(rest) != "" {
+		if syntax := s.backend.Syntax(); (syntax.JSONCommands || syntax.LineCommands) && strings.TrimSpace(rest) != "" {
 			statements = append(statements, rest)
 		}
 		for _, q := range statements {
@@ -444,7 +450,7 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 			}
 			if err := s.Execute(ctx, q, format, out); err != nil {
 				label := "SQL error:"
-				if s.backend.Syntax().JSONCommands {
+				if syntax := s.backend.Syntax(); syntax.JSONCommands || syntax.LineCommands {
 					label = "Command error:"
 				}
 				_, _ = fmt.Fprintln(errOut, label, err)

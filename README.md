@@ -1,6 +1,6 @@
 # dbh
 
-用 Go 编写的数据库 CLI，支持 SQLite、PostgreSQL、MySQL、MongoDB 和 ClickHouse。管理命名连接，执行 SQL 或 MongoDB 原生 JSON 命令，或进入支持实时补全与查询历史的交互终端。
+用 Go 编写的数据库 CLI，支持 SQLite、PostgreSQL、MySQL、MongoDB、ClickHouse 和 Redis。管理命名连接，执行 SQL、MongoDB 原生 JSON 命令或 redis-cli 风格的 Redis 命令，或进入支持实时补全与查询历史的交互终端。
 
 ## 安装
 
@@ -43,6 +43,9 @@ dbh new ch --driver clickhouse --prompt-dsn
 # 输入：clickhouse://user:password@localhost:9000/app
 # 也支持 HTTP：http://user:password@localhost:8123/app
 
+dbh new cache --driver redis --prompt-dsn
+# 输入：redis://user:password@localhost:6379/0（TLS 使用 rediss://）
+
 dbh ls
 dbh edit local --dsn ./another.db
 dbh remove local
@@ -70,7 +73,7 @@ dbh edit pg --no-proxy                              # 改为直连
 
 - `socks5://[user:pass@]host:port`：主机名交给代理解析（等同 `socks5h`）。
 - `ssh://[user[:pass]@]host[:port]`：端口默认 22，用户默认当前用户。认证依次尝试 URL 中的密码、`identity=FILE`（可重复）、`SSH_AUTH_SOCK` 代理和 `~/.ssh/id_ed25519|id_ecdsa|id_rsa`（有口令的密钥请放进 ssh-agent）。主机密钥按 `~/.ssh/known_hosts` 严格校验，可用 `known_hosts=FILE` 指定，未知主机会拒绝连接。
-- 使用代理时，DSN 中的主机名由最后一跳解析，可直接写内网主机名。PostgreSQL、MySQL、ClickHouse（TCP 与 HTTP）和 MongoDB 支持代理，SQLite 不支持；MySQL 需使用 `tcp(...)` 地址，PostgreSQL 不支持 Unix socket。`mongodb+srv://` 的 SRV 记录仍在本机解析。ClickHouse HTTP 使用代理列表时不再读取 `HTTP_PROXY` 环境变量。
+- 使用代理时，DSN 中的主机名由最后一跳解析，可直接写内网主机名。PostgreSQL、MySQL、ClickHouse（TCP 与 HTTP）、MongoDB 和 Redis（含 `rediss://`）支持代理，SQLite 和 Redis Unix socket 不支持；MySQL 需使用 `tcp(...)` 地址，PostgreSQL 不支持 Unix socket。`mongodb+srv://` 的 SRV 记录仍在本机解析。ClickHouse HTTP 使用代理列表时不再读取 `HTTP_PROXY` 环境变量。
 - 代理 URL 中的密码与 DSN 一样明文保存在配置文件；`ls` 的 `PROXIES` 列隐藏密码和参数。
 
 ## 执行 SQL
@@ -98,6 +101,16 @@ dbh c mongo --sql '{"insert":"users","documents":[{"name":"Alice"}]}' --format j
 dbh c mongo --sql '{"find":"users","filter":{"name":"Alice"},"batchSize":100}' --format json
 dbh c mongo --sql '{"aggregate":"users","pipeline":[{"$match":{"name":"Alice"}}],"cursor":{}}' --format json
 ```
+
+Redis 使用 redis-cli 风格命令，每行一条，不需要分号：
+
+```bash
+dbh exec cache 'SET greeting "hello dbh"'
+dbh exec cache --db 1 'HGETALL user:1' --format json
+printf 'RPUSH queue a b\nLRANGE queue 0 -1\n' | dbh c cache
+```
+
+参数按 redis-cli 规则解析：双引号支持 `\n`、`\t`、`\xHH` 等转义，单引号只转义 `\'`。字符串、整数和 nil 输出为单行 `value` 列（nil 显示为 `NULL`）；数组每个元素一行；哈希、`CONFIG GET` 等映射结果输出 `field`/`value` 两列；嵌套数组（如 `XRANGE`）在表格/CSV 中显示为 JSON 文本，JSON 输出保留嵌套结构。会话固定使用一条连接，`SELECT`、`MULTI`/`EXEC` 在同一会话中持续有效；连接中断不会自动重试命令，避免重复写入。仅支持单机部署，暂不支持 Cluster 和 Sentinel。
 
 MongoDB 沿用 `--sql` / `--file` / stdin 输入入口；多条命令用 `;` 分隔。JSON 输出保留完整文档、嵌套对象和 BSON 扩展 JSON 类型，并读取游标后续批次；表格/CSV 使用 `document` 列保存完整 JSON 文档。写入命令输出服务器响应，写入错误使批处理停止并以非零状态退出。
 
@@ -129,11 +142,13 @@ local> \q
 - 在支持括号粘贴的终端中，多行粘贴保留换行、缩进和中文，整块留在输入区，按 Enter 后才执行；LF、CRLF 和 CR 换行均支持。粘贴中有多条 SQL 时，确认后按顺序执行。
 - 输入过程中自动显示 SQL 关键字、表名、列名和终端命令的候选，无需先按 Tab；候选按不区分大小写的包含匹配过滤，例如 `\describe pl` 可匹配 `platform`、`apple` 和 `sample`。`\use ` 之后只提示数据库名，`\describe `、`\indexes ` 之后只提示表名，敲完空格即列出全部名称。候选超过半屏时只显示一部分并提示剩余行数，移动选择时菜单随之滚动。Tab 或 ↓（候选显示时）进入候选菜单，方向键在菜单中移动，Enter 只确认候选、不执行，再按 Enter 才提交；Shift-Tab 选择上一项。结构来自当前数据库，不调用大模型。修改表结构后执行 `\refresh` 更新候选项。补全为候选匹配，暂不解析别名、作用域或带空格的引用标识符。
 - ↑/↓ 在多行输入中移动，到顶部/底部后回顾历史（在最后一行且有候选显示时，↓ 进入候选菜单）；Ctrl-R 搜索历史。匹配的历史 SQL 会作为灰色文字预览，在输入末尾按 → 接受。Ctrl-C 清除整块输入，在空输入区按 Ctrl-D 退出。
-- `\database` 在 MySQL/PostgreSQL/MongoDB/ClickHouse 中列出数据库，每行一个名称，与 `\tables` 一样不受 `\format` 影响。MySQL 使用 `SHOW DATABASES`，PostgreSQL 查询 `pg_database`，MongoDB 列出服务器数据库；列表范围由数据库权限决定。SQLite 不支持此命令。
+- `\database` 在 MySQL/PostgreSQL/MongoDB/ClickHouse/Redis 中列出数据库，每行一个名称，与 `\tables` 一样不受 `\format` 影响。MySQL 使用 `SHOW DATABASES`，PostgreSQL 查询 `pg_database`，MongoDB 列出服务器数据库；列表范围由数据库权限决定。SQLite 不支持此命令。
 - `\use DATABASE` 或 `USE DATABASE;` 切换当前数据库，成功后刷新表/集合和字段提示，不修改保存的连接配置。MySQL 保留当前会话；PostgreSQL 重新建立连接，临时表、会话设置和未提交事务不保留，连接失败时仍保留旧连接；MongoDB 复用客户端并选择数据库，新库在写入数据后出现。SQLite 不支持切库。
 - `\tables` 列出表和视图；`\describe TABLE` 显示每个字段的名称、类型、是否可空、默认值、主键顺序和注释，并附上索引列表；`\indexes TABLE` 单独查看索引。支持 `schema.table` 和带引号的名称（如 `"a.b"`），可直接使用 `\tables` 列出的名称；SQLite 表名不区分大小写。结果遵循当前 `\format`。
 - 索引显示名称、唯一性、主键标记及索引字段/定义。MySQL 联合索引按字段顺序逐行显示，包含索引类型、前缀长度和排序方向。SQLite 没有原生字段注释，注释显示为 `NULL`；`INTEGER PRIMARY KEY` 使用 rowid 时没有独立索引，因此不会出现在索引列表中。CSV/JSON 下字段与索引结果顺序输出，不插入文本标题。
 - `\history` 查看历史，`\clear` 清除待执行 SQL，`\format table|csv|json` 切换格式，`\help` 查看帮助。
+
+Redis 交互输入按 Enter 执行当前行，引号未闭合时继续换行。`\database` 列出有 key 的数据库编号和当前库，`\use N` 重新连接到第 N 号库；`\tables` 用 `SCAN` 列出当前库最多 1000 个 key；`\describe KEY` 显示类型、TTL（秒）、编码和长度，Redis 没有索引，`\indexes` 会提示不支持。候选包含常用命令名和扫描到的 key。
 
 MongoDB 交互输入使用 JSON 文档，完整文档按 Enter 即执行，也支持多行输入和 `;`。`\tables` 列出集合；字段提示采样集合的一条文档，`\describe COLLECTION` 显示样本文档与索引，`\indexes COLLECTION` 列出索引定义。
 
@@ -171,14 +186,16 @@ SQLite 测试使用真实数据库，覆盖 CLI 生命周期、SQL 查询和写�
 
 可设置 `DBH_TEST_POSTGRES_DSN` / `DBH_TEST_MYSQL_DSN` 后运行 `go test ./...` 启用集成测试，或运行 `make e2e` 启用真实 CLI 的 PostgreSQL/MySQL 测试；设置 `DBH_TEST_MONGO_DSN` 启用 MongoDB e2e。未设置的外部数据库测试会明确跳过。e2e 覆盖 `new --dsn-env` 创建连接、完整命令与简写、建表/插入/查询、事务回滚、中文与 NULL、表格/CSV/JSON 输出、文件/管道输入、删除连接后数据保留，以及 Linux/macOS 上的实时提示、表结构、索引、数据库列表与切换。设置 `DBH_TEST_MYSQL_ALT_DATABASE` / `DBH_TEST_POSTGRES_ALT_DATABASE` 可进一步验证真实跨库切换，需同一账号能访问的另一个独立测试库。MongoDB 验证文档读写、嵌套字段、64 位整数、多批游标、集合与索引以及原生 JSON 交互。测试会创建并清理随机名称的测试表或集合，请使用测试数据库，DSN 和密码通过环境变量传入。
 
-驱动及终端库：[pgx](https://github.com/jackc/pgx)、[go-sql-driver/mysql](https://github.com/go-sql-driver/mysql)、[modernc SQLite](https://github.com/modernc-org/sqlite)、[MongoDB Go Driver](https://github.com/mongodb/mongo-go-driver)、[ClickHouse Go Driver](https://github.com/ClickHouse/clickhouse-go)、[readline](https://github.com/reeflective/readline)。
+驱动及终端库：[pgx](https://github.com/jackc/pgx)、[go-sql-driver/mysql](https://github.com/go-sql-driver/mysql)、[modernc SQLite](https://github.com/modernc-org/sqlite)、[MongoDB Go Driver](https://github.com/mongodb/mongo-go-driver)、[ClickHouse Go Driver](https://github.com/ClickHouse/clickhouse-go)、[go-redis](https://github.com/redis/go-redis)、[readline](https://github.com/reeflective/readline)。
 
-`exec NAME [QUERY]` 支持位置参数语句、`--sql/-e`、`--file/-f` 或标准输入，执行完退出；支持 `--format`、`--timeout` 和 `--no-history`。`--db` 可省略，默认使用连接 DSN 中的数据库；指定时先切换服务器数据库，不修改已保存配置。MySQL、PostgreSQL、MongoDB 和 ClickHouse 支持切换，SQLite 不支持 `--db`。MongoDB 的 QUERY 使用原生 JSON 命令。
+`exec NAME [QUERY]` 支持位置参数语句、`--sql/-e`、`--file/-f` 或标准输入，执行完退出；支持 `--format`、`--timeout` 和 `--no-history`。`--db` 可省略，默认使用连接 DSN 中的数据库；指定时先切换服务器数据库，不修改已保存配置。MySQL、PostgreSQL、MongoDB、ClickHouse 和 Redis（数据库编号）支持切换，SQLite 不支持 `--db`。MongoDB 的 QUERY 使用原生 JSON 命令。
 
 ClickHouse 使用官方 Go 驱动，支持原生 TCP（`clickhouse://`）和 HTTP/HTTPS DSN（HTTPS 需加 `?secure=true`）。`dbh exec ch --db app 'SELECT * FROM users;'` 可指定数据库。切库重新连接，原会话设置和临时表不保留，失败时保留当前连接。`\describe` 显示列类型、默认表达式、主键/排序键标记和注释；`\indexes` 显示主键表达式与数据跳过索引（ClickHouse 主键不是唯一约束）。ClickHouse 不支持这里用于关系型数据库的通用事务流程。
+
+设置 `DBH_TEST_REDIS_DSN`（如 `redis://127.0.0.1:6379/0`，使用独立测试实例）启用 Redis e2e，覆盖批量命令、引号解析、输出格式、错误退出、切库与交互终端；测试只创建并删除带随机前缀的 key。
 
 设置 `DBH_TEST_CLICKHOUSE_DSN` 启用 ClickHouse Go e2e（独立测试库）；可额外设置 `DBH_TEST_CLICKHOUSE_ALT_DATABASE` 验证跨库切换。测试会创建并清理带随机名称的表。
 
 ## Agent 技能
 
-仓库提供 [dbh-cli](skills/dbh-cli/SKILL.md) 技能，指导 agent 选择连接、执行查询、导出结果和查看数据库结构，覆盖五种驱动。使用时让 agent 读取该技能，例如“使用 dbh-cli 查询连接 docker-pgsql 的 dbh_test 数据库”。
+仓库提供 [dbh-cli](skills/dbh-cli/SKILL.md) 技能，指导 agent 选择连接、执行查询、导出结果和查看数据库结构，覆盖六种驱动。使用时让 agent 读取该技能，例如“使用 dbh-cli 查询连接 docker-pgsql 的 dbh_test 数据库”。

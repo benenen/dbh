@@ -3,6 +3,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -33,6 +34,10 @@ type Driver interface {
 	Indexes(context.Context, Connection, string) (Query, error)
 }
 
+// ErrNoIndexes is returned by Indexes when the database has no index concept;
+// \describe then shows only the column details.
+var ErrNoIndexes = errors.New("this database has no indexes")
+
 // ColumnNames is implemented by drivers that can list the column names of every
 // table in the current database with one query instead of one query per table.
 type ColumnNames interface {
@@ -51,6 +56,7 @@ type Syntax struct {
 	BracketIdentifiers      bool
 	DollarQuotes            bool
 	JSONCommands            bool
+	LineCommands            bool // a newline outside quotes ends each command, not a semicolon
 	FoldUnquotedIdentifiers bool
 	CompletionWords         []string
 }

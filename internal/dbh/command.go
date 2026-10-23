@@ -96,13 +96,13 @@ func NewCommand() *cobra.Command {
 		if !create {
 			c.ValidArgsFunction = names
 		}
-		c.Flags().StringVar(&driver, "driver", "", "sqlite, postgres, mysql, mongo or clickhouse")
+		c.Flags().StringVar(&driver, "driver", "", "sqlite, postgres, mysql, mongo, clickhouse or redis")
 		c.Flags().StringVar(&dsn, "dsn", "", "Driver DSN (stored locally)")
 		c.Flags().StringVar(&dsnEnv, "dsn-env", "", "Read DSN from this environment variable")
 		c.Flags().BoolVar(&prompt, "prompt-dsn", false, "Read DSN with terminal echo disabled")
 		c.Flags().StringArrayVar(&proxies, "proxy", nil, "Proxy hop socks5://[user:pass@]host:port or ssh://[user[:pass]@]host[:port]; repeat in dial order")
 		c.MarkFlagsMutuallyExclusive("dsn", "dsn-env", "prompt-dsn")
-		_ = c.RegisterFlagCompletionFunc("driver", fixed("sqlite", "postgres", "mysql", "mongo", "clickhouse"))
+		_ = c.RegisterFlagCompletionFunc("driver", fixed("sqlite", "postgres", "mysql", "mongo", "clickhouse", "redis"))
 		// SQLite DSNs are file paths.
 		_ = c.RegisterFlagCompletionFunc("dsn", files)
 		_ = c.RegisterFlagCompletionFunc("dsn-env", func(_ *cobra.Command, _ []string, prefix string) ([]cobra.Completion, cobra.ShellCompDirective) {
@@ -290,7 +290,7 @@ func NewCommand() *cobra.Command {
 			connect.Args = cobra.RangeArgs(1, 2)
 			connect.Flags().StringVar(&databaseName, "db", "", "Server database to use (defaults to the saved connection database)")
 		}
-		connect.Flags().StringVarP(&query, "sql", "e", "", "Execute SQL or a MongoDB JSON command and exit")
+		connect.Flags().StringVarP(&query, "sql", "e", "", "Execute SQL, a MongoDB JSON command or Redis commands and exit")
 		connect.Flags().StringVarP(&file, "file", "f", "", "Execute a query file (- for stdin)")
 		connect.Flags().StringVar(&format, "format", "table", "table, csv or json (newline-delimited objects)")
 		connect.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Connection/query timeout")

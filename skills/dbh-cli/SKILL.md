@@ -1,6 +1,6 @@
 ---
 name: dbh-cli
-description: Agent 直接调用 dbh CLI 查询和操作数据库，管理连接、执行 SQL 或 MongoDB JSON、导出结果；使用 dbh 读写数据或查看结构时触发。
+description: Agent 直接调用 dbh CLI 查询和操作数据库，管理连接、执行 SQL、MongoDB JSON 或 Redis 命令、导出结果；使用 dbh 读写数据或查看结构时触发。
 ---
 
 # 使用 dbh CLI
@@ -87,6 +87,7 @@ dbh exec docker-mongo --db dbh_test --sql '{"find":"agent_demo","filter":{"_id":
 | `mysql` | `USER:PASSWORD@tcp(HOST:3306)/DB?parseTime=true` | SQL；切库保留当前会话 |
 | `mongo` | `mongodb://USER:PASSWORD@HOST:27017/DB?authSource=admin` | 原生 JSON；切库复用客户端，新库在写入后出现 |
 | `clickhouse` | `clickhouse://USER:PASSWORD@HOST:9000/DB` | SQL；切库重新连接；也支持 HTTP/HTTPS DSN，HTTPS 加 `?secure=true` |
+| `redis` | `redis://USER:PASSWORD@HOST:6379/0`，TLS 用 `rediss://` | redis-cli 风格命令，一行一条；`--db` 取数字，切库重新连接 |
 
 PostgreSQL/ClickHouse 切库成功后原会话设置、临时表和未提交事务不保留；失败时保留当前连接。切库不修改保存的 DSN。
 
@@ -100,6 +101,15 @@ dbh exec docker-mongo --sql '{"aggregate":"dbh_demo","pipeline":[{"$match":{"nam
 ```
 
 MongoDB JSON 输出保留嵌套字段及 BSON 扩展 JSON；表格/CSV 每条文档作为完整 JSON 文本显示。
+
+Redis 使用 redis-cli 风格命令，每行一条，不加分号；含空格的参数用引号：
+
+```bash
+dbh exec docker-redis --db 0 'HGETALL user:1' --format json
+printf 'SET greeting "hello dbh"\nGET greeting\n' | dbh exec docker-redis --format json
+```
+
+Redis 结果列：字符串/整数/nil 为单行 `value`，数组每个元素一行 `value`，哈希等映射为 `field`/`value` 行，嵌套数组在表格/CSV 中显示为 JSON 文本。避免在生产库执行 `KEYS *`、`FLUSHDB` 等阻塞或破坏性命令，列 key 用 `SCAN`。
 
 ## 交互式结构查看
 
@@ -119,9 +129,9 @@ MongoDB JSON 输出保留嵌套字段及 BSON 扩展 JSON；表格/CSV 每条文
 
 这些反斜杠命令只用于交互 shell，不能放进 `exec --sql` 或 SQL 文件。自动化元数据查询使用对应数据库的 SQL/JSON 命令。
 
-`\use DATABASE` 与 `USE DATABASE;` 都能切库；数据库列表范围取决于账号权限。关系型数据库可使用 `schema.table` 查看字段和索引。MongoDB 的 `\tables` 显示集合，`\describe` 显示样本文档与索引；ClickHouse 的 `\indexes` 显示主键表达式与数据跳过索引，主键不是唯一约束。
+`\use DATABASE` 与 `USE DATABASE;` 都能切库；数据库列表范围取决于账号权限。关系型数据库可使用 `schema.table` 查看字段和索引。MongoDB 的 `\tables` 显示集合，`\describe` 显示样本文档与索引；ClickHouse 的 `\indexes` 显示主键表达式与数据跳过索引，主键不是唯一约束。Redis 的 `\database` 列出有 key 的数据库编号，`\tables` 用 SCAN 列出最多 1000 个 key，`\describe KEY` 显示类型、TTL、编码和长度，没有索引。
 
-SQL 通常以分号提交；完整 MongoDB JSON 文档按 Enter 即执行。实时提示随键入显示，Tab 选择，Ctrl-C 清空待执行输入，空输入处 Ctrl-D 退出。含内部未引用分号的触发器/存储过程及 `DELIMITER` 不属于当前分句器支持范围。
+SQL 通常以分号提交；完整 MongoDB JSON 文档和 Redis 命令行按 Enter 即执行。实时提示随键入显示，Tab 选择，Ctrl-C 清空待执行输入，空输入处 Ctrl-D 退出。含内部未引用分号的触发器/存储过程及 `DELIMITER` 不属于当前分句器支持范围。
 
 ## 完成与报告
 

@@ -8,6 +8,7 @@ import (
 	"github.com/benenen/dbh/internal/database/mongo"
 	"github.com/benenen/dbh/internal/database/mysql"
 	"github.com/benenen/dbh/internal/database/postgres"
+	"github.com/benenen/dbh/internal/database/redis"
 	"github.com/benenen/dbh/internal/database/sqlite"
 )
 
@@ -21,9 +22,11 @@ func Lookup(name string) (database.Driver, error) {
 		return mysql.Driver{}, nil
 	case "postgres":
 		return postgres.Driver{}, nil
+	case "redis":
+		return redis.Driver{}, nil
 	case "sqlite":
 		return sqlite.Driver{}, nil
 	default:
-		return nil, fmt.Errorf("unsupported driver %q (use sqlite, postgres, mysql, mongo or clickhouse)", name)
+		return nil, fmt.Errorf("unsupported driver %q (use sqlite, postgres, mysql, mongo, clickhouse or redis)", name)
 	}
 }
