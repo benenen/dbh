@@ -181,7 +181,7 @@ Up/Down recall SQL; Ctrl-R searches history; Right accepts a history suggestion.
 Ctrl-C clears input; Ctrl-D exits.
 \help               Show help
 \q                  Exit
-\database           List databases (MySQL/PostgreSQL/MongoDB)
+\database           List databases (MySQL/PostgreSQL/MongoDB/ClickHouse)
 \use DATABASE       Switch database (also accepts USE DATABASE;)
 \tables             List tables/views
 \describe TABLE     Show column details and indexes
