@@ -43,13 +43,21 @@ func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 		return nil, ""
 	}
 	if command, name, ok := commandArgument(line[:pos]); ok {
-		// These commands take one database or table name, so list every name
-		// as soon as the argument starts.
+		// List all valid values as soon as the command argument starts.
 		names := c.tables
-		if command == `\use` {
+		switch command {
+		case `\use`:
 			names = c.databases
+		case `\format`:
+			names = []string{"table", "csv", "json", "tsv"}
 		}
 		return matching(names, name), name
+	}
+	// A shell command with no matching argument completer must not offer SQL words.
+	currentLine := string(line[:pos])
+	currentLine = strings.TrimLeft(currentLine[strings.LastIndex(currentLine, "\n")+1:], " \t")
+	if strings.HasPrefix(currentLine, `\`) && strings.ContainsAny(currentLine, " \t") {
+		return nil, ""
 	}
 	start := pos
 	for start > 0 && (isIdentifier(line[start-1]) || line[start-1] == '\\') {
@@ -73,21 +81,25 @@ func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 
 func matching(words []string, text string) []string {
 	results := []string{}
+	var contains []string
 	match := strings.ToLower(text)
 	for _, word := range words {
-		if strings.Contains(strings.ToLower(word), match) {
+		lower := strings.ToLower(word)
+		if strings.HasPrefix(lower, match) {
 			results = append(results, word)
+		} else if strings.Contains(lower, match) {
+			contains = append(contains, word)
 		}
 	}
-	return results
+	return append(results, contains...)
 }
 
-// commandArgument returns the name typed after \use, \describe or \indexes on
+// commandArgument returns the first argument of a supported shell command on
 // the current line.
 func commandArgument(line []rune) (command, name string, ok bool) {
 	text := string(line)
 	text = strings.TrimLeft(text[strings.LastIndex(text, "\n")+1:], " \t")
-	for _, command := range []string{`\use`, `\describe`, `\indexes`} {
+	for _, command := range []string{`\use`, `\describe`, `\indexes`, `\format`} {
 		rest, found := strings.CutPrefix(text, command)
 		if !found || rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
 			continue
@@ -114,9 +126,27 @@ func unique(words []string) []string {
 
 func (c *completer) complete(line []rune, pos int) readline.Completions {
 	words, prefix := c.candidates(line, pos)
-	comps := readline.CompleteValues(words...).PreserveEscapes().NoFilter()
+	comps := readline.CompleteValues(words...).PreserveEscapes().NoFilter().NoSort()
 	comps.PREFIX = prefix
 	return comps
+}
+
+// completionAllowed uses the SQL scanner to suppress suggestions in literals and
+// comments. A synthetic semicolon is consumed only outside a line comment.
+func completionAllowed(input, driver string) bool {
+	backend, err := registry.Lookup(driver)
+	if err != nil {
+		return false
+	}
+	if backend.Syntax().JSONCommands {
+		return true
+	}
+	if backend.Syntax().LineCommands {
+		_, _, err := splitSQL(input, driver)
+		return err == nil
+	}
+	_, rest, err := splitSQL(input+";", driver)
+	return err == nil && rest == ""
 }
 
 // The editor automatically saves each accepted input line. SQL history must instead
@@ -326,8 +356,7 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 		if pos < 0 || pos > len(line) {
 			return readline.Completions{}
 		}
-		// Do not suggest SQL words inside an unfinished literal or block comment.
-		if _, _, err := splitSQL(string(line[:pos]), s.Driver); err != nil && !s.backend.Syntax().JSONCommands {
+		if !completionAllowed(string(line[:pos]), s.Driver) {
 			return readline.Completions{}
 		}
 		return c.complete(line, pos)

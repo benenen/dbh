@@ -137,13 +137,13 @@ func TestCompletionContains(t *testing.T) {
 		t.Run(input, func(t *testing.T) {
 			line := []rune(input)
 			matches, prefix := c.candidates(line, len(line))
-			if !reflect.DeepEqual(matches, []string{"apple", "platform", "sample"}) || !strings.EqualFold(prefix, "pl") {
+			if !reflect.DeepEqual(matches, []string{"platform", "apple", "sample"}) || !strings.EqualFold(prefix, "pl") {
 				t.Fatalf("matches=%q, prefix=%q", matches, prefix)
 			}
 		})
 	}
 	// SQL positions offer columns too; command arguments offer tables only.
-	if matches, _ := c.candidates([]rune("SELECT pl"), len("SELECT pl")); !reflect.DeepEqual(matches, []string{"apple", "platform", "plan_id", "sample"}) {
+	if matches, _ := c.candidates([]rune("SELECT pl"), len("SELECT pl")); !reflect.DeepEqual(matches, []string{"platform", "plan_id", "apple", "sample"}) {
 		t.Fatalf("SQL candidates: %q", matches)
 	}
 	if matches, _ := c.candidates([]rune(`\describe zz`), len(`\describe zz`)); len(matches) != 0 {

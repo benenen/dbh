@@ -440,3 +440,47 @@ func TestTerminalDatabaseSwitch(t *testing.T) {
 		})
 	}
 }
+
+func TestTerminalCompletionPrefixRanking(t *testing.T) {
+	f := newFixture(t)
+	f.sql("CREATE TABLE apple(id INTEGER); CREATE TABLE platform(id INTEGER); INSERT INTO platform VALUES (42);", "--no-history")
+	term := f.terminal()
+	term.exchange("SELECT * FROM p")
+	output := term.exchange("l", "platform")
+	contains(t, output, "apple")
+	term.exchange("\t;\r", `{"id":42}`)
+	term.exit("\\q\r")
+	equal(t, f.history(), []string{"SELECT * FROM platform;"})
+}
+
+func TestTerminalFormatArgumentCompletion(t *testing.T) {
+	f := newFixture(t)
+	term := f.terminal()
+	output := term.exchange("\\format ", "table")
+	for _, format := range []string{"csv", "json", "tsv"} {
+		contains(t, output, format)
+	}
+	term.exchange("t")
+	term.exchange("s", "tsv")
+	term.exchange("\t\r")
+	term.exchange("SELECT 42 AS value;\r", "value\r\n42")
+	term.exit("\\q\r")
+	equal(t, f.history(), []string{"SELECT 42 AS value;"})
+}
+
+func TestTerminalCompletionHiddenInCommentsAndStrings(t *testing.T) {
+	f := newFixture(t)
+	f.sql("CREATE TABLE sentinel_completion(id INTEGER);", "--no-history")
+	term := f.terminal()
+	for _, prefix := range []string{"-- ", "SELECT 1; -- ", "SELECT /* ", "SELECT '"} {
+		term.exchange(prefix)
+		term.exchange("senti")
+		output := term.exchange("nel")
+		excludes(t, output, "sentinel_completion")
+		term.exchange("\x03", "demo> ")
+	}
+	term.exchange("-- comment\x1b\r")
+	term.exchange("sel", "SELECT")
+	term.exchange("\t 43 AS value;\r", `{"value":43}`)
+	term.exit("\\q\r")
+}
