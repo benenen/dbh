@@ -99,3 +99,7 @@ func resolveTable(ctx context.Context, conn database.Connection, table string) (
 	}
 	return "", "", fmt.Errorf("table or view %q does not exist", table)
 }
+
+func (Driver) CurrentDatabase(_ context.Context, conn database.Connection) (string, error) {
+	return "main", nil
+}

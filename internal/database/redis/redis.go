@@ -347,3 +347,11 @@ func (r *rows) Row() (database.Row, error) { return r.rows[r.next-1], nil }
 func (*rows) Err() error                   { return nil }
 func (*rows) NextResultSet() bool          { return false }
 func (*rows) Close() error                 { return nil }
+
+func (Driver) CurrentDatabase(_ context.Context, conn database.Connection) (string, error) {
+	c, err := redisConnection(conn)
+	if err != nil {
+		return "", err
+	}
+	return strconv.Itoa(c.db), nil
+}

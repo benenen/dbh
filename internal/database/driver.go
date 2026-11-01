@@ -127,3 +127,49 @@ func unquote(name string) string {
 	}
 	return name
 }
+
+// CurrentDatabase reads the active database from the live session.
+type CurrentDatabase interface {
+	CurrentDatabase(context.Context, Connection) (string, error)
+}
+
+// TableColumns reads the schema in one round trip for cached alias completion.
+type TableColumns interface {
+	TableColumns(context.Context, Connection) (map[string][]string, error)
+}
+
+func ReadTableColumns(ctx context.Context, conn Connection, query string) (map[string][]string, error) {
+	rows, err := conn.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	result := make(map[string][]string)
+	for rows.Next() {
+		row, err := rows.Row()
+		if err != nil {
+			return nil, err
+		}
+		if len(row.Values) != 2 {
+			return nil, fmt.Errorf("expected table and column names")
+		}
+		table, ok := row.Values[0].(string)
+		column, columnOK := row.Values[1].(string)
+		if !ok || !columnOK {
+			return nil, fmt.Errorf("expected schema names as strings")
+		}
+		result[table] = append(result[table], column)
+	}
+	return result, rows.Err()
+}
+
+func ReadCurrentDatabase(ctx context.Context, conn Connection, query string) (string, error) {
+	names, err := Names(ctx, conn, Query{Text: query})
+	if err != nil {
+		return "", err
+	}
+	if len(names) == 0 {
+		return "", nil
+	}
+	return names[0], nil
+}

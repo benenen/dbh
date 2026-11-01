@@ -17,7 +17,7 @@ func TestTerminalTableWrapsAndSeparatesRecords(t *testing.T) {
 	if err := pty.Setsize(term.master, &pty.Winsize{Rows: 24, Cols: 40}); err != nil {
 		t.Fatal(err)
 	}
-	term.exchange("\\format table\r", "demo> ")
+	term.exchange("\\format table\r", "demo/main> ")
 	sql := "SELECT * FROM wrapped ORDER BY id;"
 	output := term.exchange(sql+"\r", "(2 rows)")
 	start := strings.LastIndex(output, "┌")

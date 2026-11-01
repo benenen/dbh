@@ -27,7 +27,7 @@ func TestTerminalCommentStatements(t *testing.T) {
 			} else {
 				table := fmt.Sprintf("dbh_comment_%d", time.Now().UnixNano())
 				t.Cleanup(func() { f.run("exec", driver, "DROP TABLE IF EXISTS "+table, "--no-history") })
-				term.exchange("\\format table\r", driver+"> ")
+				term.exchange("\\format table\r", term.prompt)
 				term.exchange("/* outer /* inner */ outer */ CREATE TABLE "+table+" (id UInt64) ENGINE=Memory;\r", "OK")
 				term.exchange("/* outer /* inner */ outer */ INSERT INTO "+table+" VALUES (1);\r", "OK")
 				term.exchange("SELECT count() FROM "+table+";\r", "(1 rows)")

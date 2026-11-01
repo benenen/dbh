@@ -2,6 +2,7 @@ package dbh
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -16,8 +17,10 @@ import (
 
 func NewCommand() *cobra.Command {
 	var dir string
+	var historyLimit int
 	root := &cobra.Command{Use: "dbh", Short: "Manage database connections and run queries", SilenceUsage: true, SilenceErrors: true}
 	root.PersistentFlags().StringVar(&dir, "config-dir", "", "Configuration directory (or DBH_CONFIG_DIR)")
+	root.PersistentFlags().IntVar(&historyLimit, "history-limit", 1000, "Maximum retained history entries (0 for unlimited)")
 	store := func() (Store, error) {
 		d := dir
 		if d == "" {
@@ -27,7 +30,10 @@ func NewCommand() *cobra.Command {
 				return Store{}, err
 			}
 		}
-		return Store{Dir: d}, nil
+		if historyLimit < 0 {
+			return Store{}, fmt.Errorf("history-limit must be nonnegative")
+		}
+		return Store{Dir: d, HistoryLimit: historyLimit}, nil
 	}
 	// Shell completion offers saved connection names for the NAME argument.
 	names := func(_ *cobra.Command, args []string, _ string) ([]cobra.Completion, cobra.ShellCompDirective) {
@@ -187,7 +193,9 @@ func NewCommand() *cobra.Command {
 	for _, executeOnly := range []bool{false, true} {
 		var query, file, format, databaseName string
 		var timeout time.Duration
-		var noHistory bool
+		var noHistory, stats bool
+		var maxRows, batchSize int
+		var params []string
 		connect := &cobra.Command{Use: "connect NAME", Aliases: []string{"c"}, Short: "Open a database shell, or execute queries from --sql, --file or stdin", Args: cobra.ExactArgs(1), ValidArgsFunction: names, RunE: func(cmd *cobra.Command, args []string) error {
 			if executeOnly && len(args) == 2 {
 				if cmd.Flags().Changed("sql") || cmd.Flags().Changed("file") {
@@ -200,6 +208,9 @@ func NewCommand() *cobra.Command {
 			}
 			if !validFormat(format) {
 				return fmt.Errorf("format must be table, csv, json or tsv")
+			}
+			if maxRows < 0 || batchSize <= 0 {
+				return fmt.Errorf("max-rows must be nonnegative and table-batch-size positive")
 			}
 			if timeout <= 0 {
 				return fmt.Errorf("timeout must be positive")
@@ -251,6 +262,8 @@ func NewCommand() *cobra.Command {
 				return err
 			}
 			defer session.Close()
+			session.MaxRows, session.BatchSize, session.Notice = maxRows, batchSize, cmd.ErrOrStderr()
+			session.Stats = stats
 			if cmd.Flags().Changed("db") {
 				if err := session.UseDatabase(cmd.Context(), databaseName); err != nil {
 					return err
@@ -269,13 +282,47 @@ func NewCommand() *cobra.Command {
 						return err
 					}
 				}
+				if len(params) > 0 && (len(statements) != 1 || p.Driver == "mongo" || p.Driver == "redis") {
+					return fmt.Errorf("--param requires exactly one SQL statement")
+				}
+				bound := make([]any, len(params))
+				for i, value := range params {
+					decoder := json.NewDecoder(strings.NewReader(value))
+					decoder.UseNumber()
+					var v any
+					if err := decoder.Decode(&v); err != nil {
+						return fmt.Errorf("parameter %d must be a JSON scalar: %w", i+1, err)
+					}
+					var extra any
+					if err := decoder.Decode(&extra); err != io.EOF {
+						return fmt.Errorf("parameter %d must contain one JSON scalar", i+1)
+					}
+					switch n := v.(type) {
+					case json.Number:
+						if integer, err := n.Int64(); err == nil {
+							v = integer
+						} else if number, err := n.Float64(); err == nil {
+							v = number
+						} else {
+							return err
+						}
+					case nil, string, bool:
+					default:
+						return fmt.Errorf("parameter %d must be a JSON scalar", i+1)
+					}
+					bound[i] = v
+				}
 				for _, q := range statements {
 					if !noHistory {
 						if err := saveHistory(s, p.Name, terminate(q, p.Driver)); err != nil {
 							return err
 						}
 					}
-					if err := session.Execute(cmd.Context(), q, format, cmd.OutOrStdout()); err != nil {
+					execute := func() error { return session.Execute(cmd.Context(), q, format, cmd.OutOrStdout()) }
+					if len(bound) > 0 {
+						execute = func() error { return session.executeArgs(cmd.Context(), q, format, cmd.OutOrStdout(), bound...) }
+					}
+					if err := execute(); err != nil {
 						return err
 					}
 				}
@@ -284,6 +331,7 @@ func NewCommand() *cobra.Command {
 			return shell(cmd.Context(), session, p, s, format, noHistory, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		}}
 		if executeOnly {
+			connect.Flags().StringArrayVar(&params, "param", nil, "Bind a JSON scalar to a native SQL placeholder; repeat in order")
 			connect.Use = "exec NAME [QUERY]"
 			connect.Aliases = nil
 			connect.Short = "Execute queries using a saved connection and optional database"
@@ -294,6 +342,9 @@ func NewCommand() *cobra.Command {
 		connect.Flags().StringVarP(&file, "file", "f", "", "Execute a query file (- for stdin)")
 		connect.Flags().StringVar(&format, "format", "table", "table, csv, json (newline-delimited objects) or tsv (compact, for agents)")
 		connect.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Connection/query timeout")
+		connect.Flags().IntVar(&maxRows, "max-rows", 0, "Maximum result rows per statement (0 for unlimited)")
+		connect.Flags().IntVar(&batchSize, "table-batch-size", 500, "Rows per rendered table batch")
+		connect.Flags().BoolVar(&stats, "stats", false, "Write query timing and row counts to stderr")
 		connect.Flags().BoolVar(&noHistory, "no-history", false, "Disable persisted query history")
 		connect.MarkFlagsMutuallyExclusive("sql", "file")
 		_ = connect.RegisterFlagCompletionFunc("file", files)
@@ -305,7 +356,9 @@ func NewCommand() *cobra.Command {
 		}
 		root.AddCommand(connect)
 	}
-	root.AddCommand(&cobra.Command{Use: "history NAME", Short: "Show SQL history for a connection", Args: cobra.ExactArgs(1), ValidArgsFunction: names, RunE: func(cmd *cobra.Command, args []string) error {
+	var historySearch string
+	var clearHistory bool
+	historyCommand := &cobra.Command{Use: "history NAME", Short: "Show SQL history for a connection", Args: cobra.ExactArgs(1), ValidArgsFunction: names, RunE: func(cmd *cobra.Command, args []string) error {
 		s, err := store()
 		if err != nil {
 			return err
@@ -313,17 +366,29 @@ func NewCommand() *cobra.Command {
 		if _, err = s.Get(args[0]); err != nil {
 			return err
 		}
+		if clearHistory {
+			return updateHistory(s, args[0], func([]string) []string { return nil })
+		}
 		entries, err := readHistory(s, args[0])
 		if err != nil {
 			return err
 		}
 		for i, q := range entries {
+			if historySearch != "" && !strings.Contains(strings.ToLower(q), strings.ToLower(historySearch)) {
+				continue
+			}
 			if _, err = fmt.Fprintf(cmd.OutOrStdout(), "%d  %s\n", i+1, q); err != nil {
 				return err
 			}
 		}
 		return nil
-	}})
+	}}
+	historyCommand.Flags().StringVar(&historySearch, "search", "", "Filter history by case-insensitive text")
+	historyCommand.Flags().BoolVar(&clearHistory, "clear", false, "Clear saved history")
+	historyCommand.MarkFlagsMutuallyExclusive("search", "clear")
+	root.AddCommand(historyCommand)
+	addMetadataCommands(root, store, names)
+	addCheckCommand(root, store, names)
 	return root
 }
 
@@ -337,6 +402,9 @@ func readHistory(s Store, name string) ([]string, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
+	if err := seekHistoryTail(f, s.HistoryLimit); err != nil {
+		return nil, err
+	}
 	entries := []string{}
 	scan := bufio.NewScanner(f)
 	scan.Buffer(make([]byte, 4096), 16*1024*1024)
@@ -346,8 +414,12 @@ func readHistory(s Store, name string) ([]string, error) {
 			return nil, err
 		}
 		entries = append(entries, q)
+		if s.HistoryLimit > 0 && len(entries) > s.HistoryLimit {
+			copy(entries, entries[1:])
+			entries = entries[:s.HistoryLimit]
+		}
 	}
-	return entries, scan.Err()
+	return retainHistory(entries, s.HistoryLimit), scan.Err()
 }
 
 func cleanInput(s string) string { return strings.TrimSpace(s) }

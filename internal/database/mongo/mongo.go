@@ -262,3 +262,11 @@ func (r *rows) Close() error {
 	defer cancel()
 	return r.cursor.Close(ctx)
 }
+
+func (Driver) CurrentDatabase(_ context.Context, conn database.Connection) (string, error) {
+	c, err := mongoConnection(conn)
+	if err != nil {
+		return "", err
+	}
+	return c.db.Name(), nil
+}

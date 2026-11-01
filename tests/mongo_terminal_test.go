@@ -31,7 +31,7 @@ func TestMongoTerminalCommands(t *testing.T) {
 	}
 	term := f.openTerminal("mongo", "--no-history")
 	term.exchange(`{"fi`, "find")
-	term.exchange("\x03", "mongo> ")
+	term.exchange("\x03", "mongo/"+current.DB+"> ")
 	term.exchange("{\"ping\":\r", "...> ")
 	term.exchange("1}\r", `"ok":1`)
 	term.exchange(`{"dbh_invalid_command":1}`+"\r", "Command error:")
@@ -46,7 +46,7 @@ func TestMongoTerminalCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	term.exchange("USE "+string(quoted)+";\r", "mongo> ")
+	term.exchange("USE "+string(quoted)+";\r", "mongo/"+current.DB+"> ")
 	term.exchange("\\tables\r", collection)
 	term.exit("\\q\r")
 	if readFile(t, filepath.Join(f.config, "connections.json")) != configBefore {

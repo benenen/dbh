@@ -22,7 +22,10 @@ type Profile struct {
 	Proxies []string `json:"proxies,omitempty"`
 }
 
-type Store struct{ Dir string }
+type Store struct {
+	Dir          string
+	HistoryLimit int
+}
 
 func defaultDir() (string, error) {
 	if dir := os.Getenv("DBH_CONFIG_DIR"); dir != "" {

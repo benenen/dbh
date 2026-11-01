@@ -326,7 +326,7 @@ func TestDatabaseConnections(t *testing.T) {
 			if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
 				terminal := f.openTerminal(name, "--no-history")
 				terminal.exchange("sel", "SELECT")
-				terminal.exchange("\x03", name+"> ")
+				terminal.exchange("\x03", terminal.prompt)
 				terminal.exchange("\\tables\r", table)
 				output = terminal.exchange("\\describe "+table+"\r", index)
 				contains(t, output, "\"primary_key_position\":1")

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/benenen/dbh/internal/database"
 	"github.com/benenen/dbh/internal/database/registry"
 
 	"github.com/reeflective/readline"
@@ -24,19 +25,16 @@ func decodeHistory(b []byte) (string, error) {
 	return q, err
 }
 func saveHistory(s Store, name, q string) error {
-	dir := filepath.Dir(historyPath(s, name))
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(historyPath(s, name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
-	return json.NewEncoder(f).Encode(q)
+	return updateHistory(s, name, func(entries []string) []string {
+		return retainHistory(append(entries, q), s.HistoryLimit)
+	})
 }
 
-type completer struct{ words, databases, tables []string }
+type completer struct {
+	words, databases, tables []string
+	columns                  map[string][]string
+	syntax                   database.Syntax
+}
 
 func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 	if pos < 0 || pos > len(line) {
@@ -64,6 +62,33 @@ func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 		start--
 	}
 	prefix := string(line[start:pos])
+	if !c.syntax.JSONCommands && !c.syntax.LineCommands && !strings.HasPrefix(prefix, `\`) {
+		before := contextTokens(string(line[:start]), c.syntax)
+		if tableContext(before) {
+			matches := matching(c.tables, prefix)
+			for i := range matches {
+				matches[i] = completionIdentifier(matches[i], c.syntax)
+			}
+			return matches, prefix
+		}
+		if dot := strings.LastIndex(prefix, "."); dot >= 0 {
+			qualifier, fragment := prefix[:dot], prefix[dot+1:]
+			depth := 0
+			for _, t := range before {
+				if t.text == "(" {
+					depth = t.depth + 1
+				} else {
+					depth = t.depth
+				}
+			}
+			cols := c.aliasColumns(string(line), qualifier, depth)
+			matches := matching(cols, fragment)
+			for i := range matches {
+				matches[i] = qualifier + "." + completionIdentifier(matches[i], c.syntax)
+			}
+			return matches, prefix
+		}
+	}
 	if prefix == "" {
 		return nil, ""
 	}
@@ -166,6 +191,8 @@ func (h *sqlHistory) Dump() any { return h.entries }
 var keywords = strings.Fields(`SELECT FROM WHERE INSERT INTO VALUES UPDATE SET DELETE CREATE TABLE ALTER DROP JOIN LEFT RIGHT INNER OUTER ON AS AND OR NOT NULL IS IN EXISTS LIKE ILIKE BETWEEN GROUP BY ORDER HAVING LIMIT OFFSET DISTINCT UNION ALL WITH RETURNING EXPLAIN BEGIN COMMIT ROLLBACK CASE WHEN THEN ELSE END COUNT SUM AVG MIN MAX TRUE FALSE PRIMARY KEY REFERENCES INDEX SHOW DESCRIBE PRAGMA`)
 
 func (c *completer) refresh(ctx context.Context, s *Session) error {
+	c.syntax = s.backend.Syntax()
+	c.columns = make(map[string][]string)
 	words := append([]string{}, keywords...)
 	if native := s.backend.Syntax().CompletionWords; len(native) > 0 {
 		words = append([]string{}, native...)
@@ -180,8 +207,23 @@ func (c *completer) refresh(ctx context.Context, s *Session) error {
 	}
 	var names []string
 	// One query per table is slow on large schemas over high-latency links.
-	columns, batched, err := s.ColumnNames(ctx)
-	batched = batched && err == nil
+	var columns []string
+	batched := false
+	if backend, ok := s.backend.(database.TableColumns); ok {
+		schemaCtx, cancel := context.WithTimeout(ctx, s.Timeout)
+		schema, err := backend.TableColumns(schemaCtx, s.Conn)
+		cancel()
+		if err == nil {
+			c.columns, batched = schema, true
+			for _, cols := range schema {
+				columns = append(columns, cols...)
+			}
+		}
+	} else {
+		var err error
+		columns, batched, err = s.ColumnNames(ctx)
+		batched = batched && err == nil
+	}
 	words = append(words, columns...)
 	for _, table := range tables {
 		names = append(names, table)
@@ -195,6 +237,7 @@ func (c *completer) refresh(ctx context.Context, s *Session) error {
 		if err != nil {
 			continue
 		}
+		c.columns[table] = cols
 		words = append(words, cols...)
 	}
 	c.tables = unique(names)
@@ -239,6 +282,8 @@ func acceptSQLInput(line, driver string) bool {
 }
 
 func shell(ctx context.Context, s *Session, p Profile, store Store, format string, noHistory bool, out, errOut io.Writer) error {
+	s.Stats = true
+	s.Notice = errOut
 	c := &completer{}
 	if err := c.refresh(ctx, s); err != nil {
 		_, _ = fmt.Fprintln(errOut, "Schema completion unavailable:", err)
@@ -341,10 +386,14 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 	}
 	color := os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
 	rl.Prompt.Primary(func() string {
-		if color {
-			return "\x1b[36m" + p.Name + "> \x1b[0m"
+		label := p.Name
+		if s.CurrentDatabase != "" {
+			label += "/" + s.CurrentDatabase
 		}
-		return p.Name + "> "
+		if color {
+			return "\x1b[36m" + label + "> \x1b[0m"
+		}
+		return label + "> "
 	})
 	rl.Prompt.Secondary(func() string {
 		if color {
@@ -429,15 +478,16 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 					}
 				}
 			case `\describe`, `\indexes`:
-				if len(fields) != 2 {
+				table := strings.TrimSpace(line[len(fields[0]):])
+				if table == "" {
 					_, _ = fmt.Fprintf(errOut, "Usage: %s TABLE\n", fields[0])
 					break
 				}
 				var err error
 				if fields[0] == `\describe` {
-					err = s.Describe(ctx, fields[1], format, out)
+					err = s.Describe(ctx, table, format, out)
 				} else {
-					err = s.Indexes(ctx, fields[1], format, out)
+					err = s.Indexes(ctx, table, format, out)
 				}
 				if err != nil {
 					_, _ = fmt.Fprintln(errOut, err)
@@ -475,7 +525,7 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 				if err := saveHistory(store, p.Name, entry); err != nil {
 					_, _ = fmt.Fprintln(errOut, "History:", err)
 				}
-				history.entries = append(history.entries, entry)
+				history.entries = retainHistory(append(history.entries, entry), store.HistoryLimit)
 			}
 			if err := s.Execute(ctx, q, format, out); err != nil {
 				label := "SQL error:"

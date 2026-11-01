@@ -52,7 +52,13 @@ func TestChainThroughSSHAndSOCKS5(t *testing.T) {
 	hops := []string{"ssh://dbh:secret@" + sshAddr + "?known_hosts=" + url.QueryEscape(filepath.Join(dir, "known_hosts")), "socks5://u:p@" + socks}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	chain, err := Open(ctx, hops)
+	var completed []int
+	chain, err := OpenTrace(ctx, hops, func(hop int, _ time.Duration, err error) {
+		if err != nil {
+			t.Error(err)
+		}
+		completed = append(completed, hop)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +68,9 @@ func TestChainThroughSSHAndSOCKS5(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = conn.Close() }()
+	if len(completed) != 2 || completed[0] != 1 || completed[1] != 2 {
+		t.Fatalf("proxy trace: %v", completed)
+	}
 	if _, err := conn.Write([]byte("ping")); err != nil {
 		t.Fatal(err)
 	}

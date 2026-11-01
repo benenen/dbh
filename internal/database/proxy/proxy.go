@@ -80,6 +80,21 @@ func Display(raw string) string {
 
 // Open connects the SSH hops in order; the first hop is dialed directly.
 func Open(ctx context.Context, hops []string) (*Chain, error) {
+	return OpenTrace(ctx, hops, nil)
+}
+
+// HopError identifies the first failed proxy hop.
+type HopError struct {
+	Hop int
+	Err error
+}
+
+func (e *HopError) Error() string { return fmt.Sprintf("proxy hop %d: %v", e.Hop, e.Err) }
+func (e *HopError) Unwrap() error { return e.Err }
+
+// OpenTrace reports completed SSH handshakes and SOCKS5 tunnels. SOCKS5 opens
+// lazily when the next hop or database is dialed. Callbacks may run concurrently.
+func OpenTrace(ctx context.Context, hops []string, trace func(int, time.Duration, error)) (*Chain, error) {
 	var direct net.Dialer
 	c := &Chain{dial: direct.DialContext}
 	for i, raw := range hops {
@@ -89,10 +104,14 @@ func Open(ctx context.Context, hops []string) (*Chain, error) {
 			return nil, err
 		}
 		if u.Scheme == "ssh" {
+			started := time.Now()
 			client, err := dialSSH(ctx, c.dial, u)
+			if trace != nil {
+				trace(i+1, time.Since(started), err)
+			}
 			if err != nil {
 				_ = c.Close()
-				return nil, fmt.Errorf("proxy hop %d (%s): %w", i+1, u.Host, err)
+				return nil, hopError(i+1, err)
 			}
 			c.closers = append(c.closers, client)
 			c.dial = sshDial(client)
@@ -107,9 +126,21 @@ func Open(ctx context.Context, hops []string) (*Chain, error) {
 		d, err := xproxy.SOCKS5("tcp", u.Host, auth, c.dial)
 		if err != nil {
 			_ = c.Close()
-			return nil, fmt.Errorf("proxy hop %d (%s): %w", i+1, u.Host, err)
+			return nil, hopError(i+1, err)
 		}
-		c.dial = d.(xproxy.ContextDialer).DialContext
+		hop := i + 1
+		dial := d.(xproxy.ContextDialer).DialContext
+		c.dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+			started := time.Now()
+			conn, err := dial(ctx, network, address)
+			if trace != nil {
+				trace(hop, time.Since(started), err)
+			}
+			if err != nil {
+				return nil, hopError(hop, err)
+			}
+			return conn, nil
+		}
 	}
 	return c, nil
 }
@@ -297,3 +328,11 @@ type addrConn struct {
 
 func (c addrConn) LocalAddr() net.Addr  { return c.local }
 func (c addrConn) RemoteAddr() net.Addr { return c.remote }
+
+func hopError(hop int, err error) error {
+	var prior *HopError
+	if errors.As(err, &prior) {
+		return err
+	}
+	return &HopError{Hop: hop, Err: err}
+}

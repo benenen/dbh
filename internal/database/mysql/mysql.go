@@ -122,3 +122,10 @@ func resolveTable(ctx context.Context, conn database.Connection, table string) (
 	}
 	return schemas[0], name, nil
 }
+
+func (Driver) CurrentDatabase(ctx context.Context, conn database.Connection) (string, error) {
+	return database.ReadCurrentDatabase(ctx, conn, `SELECT COALESCE(DATABASE(), '')`)
+}
+func (Driver) TableColumns(ctx context.Context, conn database.Connection) (map[string][]string, error) {
+	return database.ReadTableColumns(ctx, conn, `SELECT table_name, column_name FROM information_schema.columns WHERE table_schema=DATABASE() ORDER BY table_name, ordinal_position`)
+}

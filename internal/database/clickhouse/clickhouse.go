@@ -102,3 +102,10 @@ func connect(ctx context.Context, options *ch.Options, dial database.Dial) (data
 	}
 	return &connection{conn}, nil
 }
+
+func (Driver) CurrentDatabase(ctx context.Context, conn database.Connection) (string, error) {
+	return database.ReadCurrentDatabase(ctx, conn, `SELECT currentDatabase()`)
+}
+func (Driver) TableColumns(ctx context.Context, conn database.Connection) (map[string][]string, error) {
+	return database.ReadTableColumns(ctx, conn, `SELECT table, name FROM system.columns WHERE database=currentDatabase() ORDER BY table, position`)
+}

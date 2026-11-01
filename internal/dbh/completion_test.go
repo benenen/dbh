@@ -128,3 +128,40 @@ func BenchmarkCompletionMatching(b *testing.B) {
 		matching(words, "order")
 	}
 }
+
+func TestSQLCompletionContext(t *testing.T) {
+	c := &completer{words: []string{"SELECT", "UPDATE", "users", "name"}, tables: []string{"orders", "users"}, columns: map[string][]string{"users": {"id", "name"}, "orders": {"order_id"}}}
+	for _, tt := range []struct {
+		sql  string
+		pos  int
+		want []string
+	}{
+		{"SELECT * FROM ", -1, []string{"orders", "users"}},
+		{"SELECT * FROM us", -1, []string{"users"}},
+		{"SELECT * FROM users u JOIN ", -1, []string{"orders", "users"}},
+		{"SELECT * FROM users, ", -1, []string{"orders", "users"}},
+		{"SELECT u. FROM users AS u", 9, []string{"u.id", "u.name"}},
+		{"SELECT u.na FROM users u", 11, []string{"u.name"}},
+		{"SELECT * FROM users u JOIN orders o ON o.", -1, []string{"o.order_id"}},
+		{"SELECT 'FROM orders o' AS text FROM users u WHERE o.", -1, []string{}},
+		{"SELECT * FROM users u /* JOIN orders o */ WHERE u.", -1, []string{"u.id", "u.name"}},
+		{"SELECT * FROM users WHERE id IN (SELECT o. FROM orders o)", len("SELECT * FROM users WHERE id IN (SELECT o."), []string{"o.order_id"}},
+	} {
+		pos := tt.pos
+		if pos < 0 {
+			pos = len([]rune(tt.sql))
+		}
+		got, _ := c.candidates([]rune(tt.sql), pos)
+		if !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%q at %d: %q, want %q", tt.sql, pos, got, tt.want)
+		}
+	}
+}
+
+func TestCompletionQuotesSpecialIdentifiers(t *testing.T) {
+	c := &completer{tables: []string{"order items", "order"}}
+	got, _ := c.candidates([]rune("SELECT * FROM ord"), len("SELECT * FROM ord"))
+	if !reflect.DeepEqual(got, []string{`"order items"`, `"order"`}) {
+		t.Fatalf("unsafe identifiers: %q", got)
+	}
+}

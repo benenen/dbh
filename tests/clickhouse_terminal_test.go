@@ -21,13 +21,13 @@ func TestClickHouseTerminal(t *testing.T) {
 	term.exchange("\\describe "+table+"\r", "Nullable(String)")
 	term.exchange("\\indexes "+table+"\r", "name_idx")
 	term.exchange("SELECT na", "name")
-	term.exchange("\x03", "clickhouse> ")
+	term.exchange("\x03", "clickhouse/"+current.DB+"> ")
 	term.exchange("\\use dbh_missing_database_e2e\r", "cannot switch database")
 	term.exchange("SELECT count() AS count FROM "+table+";\r", `"count":2`)
 	if alt := os.Getenv("DBH_TEST_CLICKHOUSE_ALT_DATABASE"); alt != "" {
 		term.exchange("\\use "+alt+"\r", "Database changed to "+alt)
 		term.exchange("SELECT currentDatabase() AS db;\r", alt)
-		term.exchange("USE "+"`"+strings.ReplaceAll(current.DB, "`", "``")+"`"+";\r", "clickhouse> ")
+		term.exchange("USE "+"`"+strings.ReplaceAll(current.DB, "`", "``")+"`"+";\r", "clickhouse/"+current.DB+"> ")
 		term.exchange("\\tables\r", table)
 	}
 	term.exit("\\q\r")

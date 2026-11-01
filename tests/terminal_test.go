@@ -22,7 +22,7 @@ func TestTerminalBracketedPasteIsEditableBeforeExecution(t *testing.T) {
 		output := term.exchange("\x1b[200~" + strings.ReplaceAll(query, "\n", newline) + "\x1b[201~")
 		excludes(t, output, "{\"value\":")
 		absent(t, f.historyPath())
-		term.exchange("\x03", "demo> ")
+		term.exchange("\x03", "demo/main> ")
 	}
 	query := "INSERT INTO users(name)\n    VALUES ('粘贴');\nSELECT name\n    FROM users WHERE id = 2;\n"
 	term.exchange("\x1b[200~" + query + "\x1b[201~")
@@ -31,7 +31,7 @@ func TestTerminalBracketedPasteIsEditableBeforeExecution(t *testing.T) {
 	term.exchange("\x7f")
 	term.exchange("\x7f")
 	term.exchange("3;\x1b[B")
-	term.exchange("\r", "demo> ")
+	term.exchange("\r", "demo/main> ")
 	equal(t, f.sql("SELECT name FROM users ORDER BY id", "--format", "json", "--no-history"), "{\"name\":\"Alice\"}\n{\"name\":\"粘贴\"}\n")
 	equal(t, f.history(), []string{"INSERT INTO users(name)\n    VALUES ('粘贴');", "SELECT name\n    FROM users WHERE id = 3;"})
 	term.exit("\\q\r")
@@ -46,7 +46,7 @@ func TestTerminalPasteLineEndingsAndLiteralCommands(t *testing.T) {
 		term.exchange("\r", "{\"value\":\"你好;\\n\\\\q\\n缩进\"}")
 	}
 	term.exit("\\q\r")
-	equal(t, f.history(), []string{strings.TrimSpace(query), strings.TrimSpace(query), strings.TrimSpace(query)})
+	equal(t, f.history(), []string{strings.TrimSpace(query)})
 }
 
 func TestTerminalCursorReportDoesNotBlockInput(t *testing.T) {
@@ -59,7 +59,7 @@ func TestTerminalCursorReportDoesNotBlockInput(t *testing.T) {
 	}
 	time.Sleep(100 * time.Millisecond)
 	term.exchange("\x1b[1;7RSELECT 42 AS value;\r", "{\"value\":42}")
-	term.exchange("\x03", "demo> ")
+	term.exchange("\x03", "demo/main> ")
 	term.exit("\\q\r")
 }
 
@@ -72,7 +72,7 @@ func TestTerminalPromptAtBottomKeepsCursorAndInputAligned(t *testing.T) {
 			screen := newScreen(t, start)
 			screen.feed(term.transcript)
 			equal(t, screen.line(screen.y), prefix+suffix)
-			equal(t, screen.x, len("demo> ")+len(strings.TrimSpace(suffix)))
+			equal(t, screen.x, len("demo/main> ")+len(strings.TrimSpace(suffix)))
 			connected := false
 			for row := range screen.rows {
 				connected = connected || strings.Contains(screen.line(row), "Connected to demo")
@@ -82,17 +82,17 @@ func TestTerminalPromptAtBottomKeepsCursorAndInputAligned(t *testing.T) {
 			}
 		}
 	}
-	check("", "demo>")
+	check("", "demo/main>")
 	term.exchange("se", "SELECT")
-	check(" se", "demo>")
-	term.exchange("\x03", "demo> ")
-	check("", "demo>")
+	check(" se", "demo/main>")
+	term.exchange("\x03", "demo/main> ")
+	check("", "demo/main>")
 	term.exchange("SELECT 42 AS value;\r", "{\"value\":42}")
-	check("", "demo>")
+	check("", "demo/main>")
 	term.exchange("SELECT\r", "...> ")
 	check("", "...>")
 	term.exchange("43 AS value;\r", "{\"value\":43}")
-	check("", "demo>")
+	check("", "demo/main>")
 	term.exit("\\q\r")
 }
 
@@ -105,9 +105,9 @@ func TestTerminalPromptColorsAndCommandsDuringInput(t *testing.T) {
 	term.exchange("\\tables\r", "users")
 	term.exchange("name FROM users;\r", "{\"name\":\"Alice\"}")
 	term.exchange("SELECT\r", "...> ")
-	term.exchange("\\clear\r", "demo> ")
+	term.exchange("\\clear\r", "demo/main> ")
 	term.exchange("SELECT 42 AS value;\r", "{\"value\":42}")
-	term.exchange("\\format tsv\r", "demo> ")
+	term.exchange("\\format tsv\r", "demo/main> ")
 	term.exchange("SELECT 43 AS value, NULL AS n;\r", "value\tn\r\n43\t\\N")
 	term.exit("\\q\r")
 	equal(t, f.history(), []string{"SELECT\nname FROM users;", "SELECT 42 AS value;", "SELECT 43 AS value, NULL AS n;"})
@@ -138,7 +138,7 @@ func TestTerminalLiveCompletionAndInterrupt(t *testing.T) {
 	term.exchange("us", "users")
 	term.exchange("\t;\r", "{\"name\":\"Alice\"}")
 	term.exchange("se\t")
-	term.exchange("\x03", "demo> ")
+	term.exchange("\x03", "demo/main> ")
 	term.exchange("SELECT 41 AS value;\r", "{\"value\":41}")
 	term.exit("\\q\r")
 	equal(t, f.history(), []string{"SELECT name FROM users;", "SELECT 41 AS value;"})
@@ -156,8 +156,8 @@ func TestTerminalSubstringCompletion(t *testing.T) {
 		contains(t, output, "platform")
 		screen := newScreen(t, 0)
 		screen.feed(term.transcript)
-		equal(t, screen.line(screen.y), "demo> "+command+"pl")
-		term.exchange("\x03", "demo> ")
+		equal(t, screen.line(screen.y), "demo/main> "+command+"pl")
+		term.exchange("\x03", "demo/main> ")
 	}
 	for _, command := range []string{`\describe `, `\indexes `} {
 		term.exchange(command+"AMP", "sample")
@@ -208,7 +208,7 @@ func TestTerminalLongCandidateListKeepsInputVisible(t *testing.T) {
 	term.exchange(`\describe re`, "more completion rows")
 	screen := newScreen(t, 0)
 	screen.feed(term.transcript)
-	equal(t, screen.line(screen.y), `demo> \describe re`)
+	equal(t, screen.line(screen.y), `demo/main> \describe re`)
 	rows := 0
 	for y := range screen.rows {
 		if strings.Contains(screen.line(y), "report_table_") {
@@ -218,7 +218,7 @@ func TestTerminalLongCandidateListKeepsInputVisible(t *testing.T) {
 	if rows == 0 || rows > len(screen.rows)/2 {
 		t.Fatalf("candidate rows = %d, want 1..%d", rows, len(screen.rows)/2)
 	}
-	term.exchange("\x03", "demo> ")
+	term.exchange("\x03", "demo/main> ")
 	term.exit("\\q\r")
 }
 
@@ -233,14 +233,14 @@ func TestTerminalPersistedHistoryAndSearch(t *testing.T) {
 	contains(t, ghost, "\x1b[2m")
 	term.exchange("\x1b[C\r", "{\"name\":\"Alice\"}")
 	term.exchange("\x12name", "SQL history")
-	term.exchange("\x03", "demo> ")
+	term.exchange("\x03", "demo/main> ")
 	term.exchange("SELECT 41 AS value;\r", "{\"value\":41}")
 	term.exchange("\x1b[A\r", "{\"value\":41}")
 	term.exit("\\q\r")
 	before := readFile(t, f.historyPath())
 	term = f.terminal("--no-history")
 	excludes(t, term.exchange("SELECT na", "SELECT na"), "FROM users;")
-	term.exchange("\x03", "demo> ")
+	term.exchange("\x03", "demo/main> ")
 	term.exchange("SELECT 99 AS value;\r", "{\"value\":99}")
 	term.exit("\\q\r")
 	equal(t, readFile(t, f.historyPath()), before)
@@ -254,7 +254,7 @@ func TestTerminalMultilineErrorRecoveryAndEOF(t *testing.T) {
 	term.exchange("name FROM users;\r", "{\"name\":\"Alice\"}")
 	term.exchange("SELECT * FROM missing;\r", "SQL error:")
 	term.exchange("SELECT\r", "...> ")
-	term.exchange("\x03", "demo> ")
+	term.exchange("\x03", "demo/main> ")
 	term.exchange("SELECT 9 AS value;\r", "{\"value\":9}")
 	term.exchange("\\tables\r", "users")
 	term.exit("\x04")
@@ -274,7 +274,7 @@ func TestTerminalColumnDetailsAndIndexes(t *testing.T) {
 	contains(t, output, "\"is_unique\":1")
 	excludes(t, output, "\"primary_key_position\"")
 	term.exchange("\\describe missing\r", "does not exist")
-	term.exchange("\\format table\r", "demo> ")
+	term.exchange("\\format table\r", "demo/main> ")
 	output = term.exchange("\\describe users\r", "users_name")
 	contains(t, output, "Columns:")
 	contains(t, output, "Indexes:")
@@ -309,7 +309,7 @@ func TestTerminalDatabaseLists(t *testing.T) {
 			}
 			term := f.openTerminal(driver)
 			term.exchange("\\dat", "\\database") // Command suggestions must appear without Tab.
-			term.exchange("\x03", driver+"> ")
+			term.exchange("\x03", driver+"/"+current.Name+"> ")
 			output := term.exchange("\\database\r", systemDB)
 			contains(t, output, current.Name+"\r\n")
 			excludes(t, output, "Unknown command")
@@ -370,7 +370,7 @@ func TestTerminalDatabaseSwitch(t *testing.T) {
 			configBefore := readFile(t, filepath.Join(f.config, "connections.json"))
 			term := f.openTerminal(driver, "--no-history")
 			term.exchange("\\us", "\\use")
-			term.exchange("\x03", driver+"> ")
+			term.exchange("\x03", driver+"/"+current.Name+"> ")
 			term.exchange("\\use "+identifier(current.Name)+"\r", "Database changed to "+current.Name)
 			term.exchange(currentSQL+";\r", expectedJSON(current.Name))
 			term.exchange(useCurrent+currentSQL+";\r", expectedJSON(current.Name))
@@ -426,10 +426,10 @@ func TestTerminalDatabaseSwitch(t *testing.T) {
 				output := term.exchange("\\tables\r", target)
 				excludes(t, output, original)
 				term.exchange("SELECT tar", "target_column")
-				term.exchange("\x03", driver+"> ")
+				term.exchange("\x03", driver+"/"+alt+"> ")
 				term.exchange(useCurrent+currentSQL+";\r", expectedJSON(current.Name))
 				term.exchange("SELECT orig", "original_marker")
-				term.exchange("\x03", driver+"> ")
+				term.exchange("\x03", driver+"/"+current.Name+"> ")
 				output = term.exchange("\\tables\r", original)
 				excludes(t, output, target)
 				term.exit("\\q\r")
@@ -477,7 +477,7 @@ func TestTerminalCompletionHiddenInCommentsAndStrings(t *testing.T) {
 		term.exchange("senti")
 		output := term.exchange("nel")
 		excludes(t, output, "sentinel_completion")
-		term.exchange("\x03", "demo> ")
+		term.exchange("\x03", "demo/main> ")
 	}
 	term.exchange("-- comment\x1b\r")
 	term.exchange("sel", "SELECT")

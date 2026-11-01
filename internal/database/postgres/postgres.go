@@ -107,3 +107,17 @@ func resolveTable(ctx context.Context, conn database.Connection, table string) (
 	}
 	return names[0], nil
 }
+
+func (Driver) CurrentDatabase(ctx context.Context, conn database.Connection) (string, error) {
+	return database.ReadCurrentDatabase(ctx, conn, `SELECT current_database()`)
+}
+func (Driver) TableColumns(ctx context.Context, conn database.Connection) (map[string][]string, error) {
+	return database.ReadTableColumns(ctx, conn, `SELECT name, column_name FROM (
+ SELECT table_schema || '.' || table_name AS name, column_name, ordinal_position
+ FROM information_schema.columns WHERE table_schema NOT IN ('pg_catalog','information_schema')
+ UNION ALL
+ SELECT table_name, column_name, ordinal_position FROM information_schema.columns
+ WHERE table_schema NOT IN ('pg_catalog','information_schema')
+ AND pg_table_is_visible(format('%I.%I', table_schema, table_name)::regclass)
+ ) AS cols ORDER BY name, ordinal_position`)
+}

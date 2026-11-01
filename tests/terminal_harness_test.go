@@ -23,6 +23,7 @@ type terminal struct {
 	readerDone chan struct{}
 	waitErr    error
 	transcript string
+	prompt     string
 }
 
 func (f *fixture) openTerminal(name string, args ...string) *terminal {
@@ -76,7 +77,13 @@ func (f *fixture) openTerminal(name string, args ...string) *terminal {
 			f.t.Error("terminal reader did not stop")
 		}
 	})
-	term.exchange("", name+"> ")
+	term.exchange("", "> ")
+	screen := newScreen(f.t, 0)
+	screen.feed(term.transcript)
+	term.prompt = strings.TrimSpace(screen.line(screen.y)) + " "
+	if !strings.HasPrefix(term.prompt, name+"/") {
+		f.t.Fatalf("missing current database in prompt: %q", term.prompt)
+	}
 	return term
 }
 

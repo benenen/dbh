@@ -15,12 +15,17 @@ import (
 )
 
 type Session struct {
-	Conn    database.Connection
-	Driver  string
-	Timeout time.Duration
-	backend database.Driver
-	dsn     string
-	proxy   *proxy.Chain
+	Conn            database.Connection
+	Driver          string
+	Timeout         time.Duration
+	MaxRows         int
+	BatchSize       int
+	Notice          io.Writer
+	Stats           bool
+	CurrentDatabase string
+	backend         database.Driver
+	dsn             string
+	proxy           *proxy.Chain
 }
 
 func openSession(ctx context.Context, p Profile, timeout time.Duration) (*Session, error) {
@@ -40,6 +45,13 @@ func openSession(ctx context.Context, p Profile, timeout time.Duration) (*Sessio
 	if err != nil {
 		s.closeProxy()
 		return nil, fmt.Errorf("cannot connect to %q: %s", p.Name, redact(err.Error(), p.DSN, p.Proxies))
+	}
+	if current, ok := backend.(database.CurrentDatabase); ok {
+		s.CurrentDatabase, err = current.CurrentDatabase(pingCtx, s.Conn)
+		if err != nil {
+			s.Close()
+			return nil, fmt.Errorf("cannot read current database: %s", redact(err.Error(), p.DSN, p.Proxies))
+		}
 	}
 	return s, nil
 }
@@ -76,6 +88,7 @@ func (s *Session) Close() {
 func (s *Session) Execute(ctx context.Context, query, format string, out io.Writer) error {
 	name, use, err := parseUseDatabase(query, s.backend.Syntax())
 	if use {
+		started := time.Now()
 		if err != nil {
 			return err
 		}
@@ -85,9 +98,22 @@ func (s *Session) Execute(ctx context.Context, query, format string, out io.Writ
 		if format == "table" {
 			_, err = fmt.Fprintln(out, "OK")
 		}
+		if err == nil && s.Stats {
+			w := s.Notice
+			if w == nil {
+				w = out
+			}
+			_, err = fmt.Fprintf(w, "Time: %s\n", time.Since(started).Round(time.Microsecond))
+		}
 		return err
 	}
-	return s.executeArgs(ctx, query, format, out)
+	err = s.executeArgs(ctx, query, format, out)
+	if err == nil && s.backend.Syntax().LineCommands {
+		if current, ok := s.backend.(database.CurrentDatabase); ok {
+			s.CurrentDatabase, err = current.CurrentDatabase(ctx, s.Conn)
+		}
+	}
+	return err
 }
 
 func (s *Session) UseDatabase(ctx context.Context, name string) error {
@@ -102,19 +128,58 @@ func (s *Session) UseDatabase(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("cannot switch database to %q: %s", name, redact(err.Error(), s.dsn, nil))
 	}
+	s.CurrentDatabase = name
 	return nil
 }
 
-func (s *Session) executeArgs(ctx context.Context, query, format string, out io.Writer, args ...any) error {
+func (s *Session) executeArgs(ctx context.Context, query, format string, out io.Writer, args ...any) (err error) {
+	started := time.Now()
+	total := 0
+	hasColumns := false
+	var affected int64
+	affectedKnown := false
+	defer func() {
+		if err != nil || !s.Stats {
+			return
+		}
+		w := s.Notice
+		if w == nil {
+			w = out
+		}
+		detail := ""
+		if affectedKnown {
+			detail = fmt.Sprintf("; %d rows affected", affected)
+		} else if hasColumns {
+			detail = fmt.Sprintf("; %d rows returned", total)
+		}
+		_, err = fmt.Fprintf(w, "Time: %s%s\n", time.Since(started).Round(time.Microsecond), detail)
+	}()
 	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
+	if s.Stats && affectedStatement(query, s.backend.Syntax()) {
+		if executor, ok := s.Conn.(database.ResultExecutor); ok {
+			affected, affectedKnown, err = executor.ExecResult(ctx, query, args...)
+			if err != nil {
+				return err
+			}
+			if format == "table" {
+				_, err = fmt.Fprintln(out, "OK")
+			}
+			return err
+		}
+	}
 	// Query works for both row-returning SQL and commands; consuming Next also
 	// ensures SQLite steps commands which do not return columns.
 	rows, err := s.Conn.Query(ctx, query, args...)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		closeErr := rows.Close()
+		if err == nil {
+			err = closeErr
+		}
+	}()
 	var csvOut *csv.Writer
 	// Keep rows already read when a later row fails, matching JSON's streaming output.
 	defer func() {
@@ -127,6 +192,7 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 		if err != nil {
 			return err
 		}
+		hasColumns = hasColumns || len(cols) > 0
 		var tableRows [][]string
 		var jsonOut *json.Encoder
 		switch format {
@@ -147,7 +213,16 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 			}
 		}
 		count := 0
+		truncated := false
+		batchSize := s.BatchSize
+		if batchSize <= 0 {
+			batchSize = 500
+		}
 		for rows.Next() {
+			if s.MaxRows > 0 && count >= s.MaxRows {
+				truncated = true
+				break
+			}
 			row, err := rows.Row()
 			if err != nil {
 				return err
@@ -164,6 +239,12 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 			switch format {
 			case "table":
 				tableRows = append(tableRows, fields)
+				if len(tableRows) == batchSize {
+					if err := renderTable(out, cols, tableRows, tableWidth(out)); err != nil {
+						return err
+					}
+					tableRows = nil
+				}
 			case "csv":
 				if err := csvOut.Write(fields); err != nil {
 					return err
@@ -185,14 +266,17 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 				}
 			}
 			count++
+			total++
 		}
 		if err := rows.Err(); err != nil {
 			return err
 		}
 		if format == "table" {
 			if len(cols) > 0 {
-				if err := renderTable(out, cols, tableRows, tableWidth(out)); err != nil {
-					return err
+				if len(tableRows) > 0 || count == 0 {
+					if err := renderTable(out, cols, tableRows, tableWidth(out)); err != nil {
+						return err
+					}
 				}
 				if _, err := fmt.Fprintf(out, "(%d rows)\n", count); err != nil {
 					return err
@@ -209,6 +293,14 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 			if err := csvOut.Error(); err != nil {
 				return err
 			}
+		}
+		if truncated {
+			w := s.Notice
+			if w == nil {
+				w = out
+			}
+			_, err := fmt.Fprintf(w, "Result truncated after %d rows (--max-rows).\n", count)
+			return err
 		}
 		if !rows.NextResultSet() {
 			return rows.Err()

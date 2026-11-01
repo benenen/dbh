@@ -17,6 +17,12 @@ type Connection interface {
 	Close() error
 }
 
+// ResultExecutor reports write counts from the original execution.
+// known is false when the driver cannot provide an affected row count.
+type ResultExecutor interface {
+	ExecResult(context.Context, string, ...any) (affected int64, known bool, err error)
+}
+
 type Rows interface {
 	Columns() ([]string, error)
 	Next() bool
@@ -148,4 +154,13 @@ func (r *sqlRows) Row() (Row, error) {
 	}
 	row.Object = newObject(columns, row.Values)
 	return row, nil
+}
+
+func (c *sqlConnection) ExecResult(ctx context.Context, query string, args ...any) (int64, bool, error) {
+	result, err := c.conn.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, false, err
+	}
+	count, err := result.RowsAffected()
+	return count, err == nil, nil
 }
