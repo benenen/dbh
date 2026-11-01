@@ -93,6 +93,23 @@ dbh exec local 'SELECT * FROM users' --format tsv   # 紧凑格式，适合 AI a
 
 默认显示带边框和行分隔线的表格，单元格中的换行独立显示，长内容按终端宽度折行，中文和组合字符不会被拆开。列数过多时按记录显示字段/值表格，避免终端自动换行破坏行边界。CSV 包含列标题，NULL 输出为 `NULL`；JSON 每行一个对象（NDJSON），字段按结果列顺序排列，重名列依次加 `_2`、`_3` 后缀，避免 JOIN 结果丢失字段。TSV 为 agent 等程序读取设计：首行列名，每条记录一行，制表符分隔，值中的制表符、换行、回车和反斜杠转义为 `\t`、`\n`、`\r`、`\\`，NULL 输出为 `\N`、空字符串留空；没有边框、行分隔线和行数统计，体积约为表格输出的 1/7、JSON 的一半。不返回数据的 SQL 语句在表格模式下显示 `OK`，CSV/JSON/TSV 模式不输出状态文本。支持 NULL 和 `INSERT ... RETURNING`。每个 SQL 语句独立执行，批量模式遇错停止，以非零状态退出；需要原子性时显式使用 `BEGIN` / `COMMIT`。
 
+表格默认每 500 行渲染一批，读完一批即输出；每批重复表头，列宽按该批内容计算，末尾显示总输出行数。`--table-batch-size N` 调整批大小。`--max-rows N` 限制每条语句的结果行数（默认 `0` 不限）；确有剩余行时，stderr 显示截断提示，适用于所有格式。行数上限只限制读取和显示，不限制数据库实际执行的写操作。
+
+脚本添加 `--stats` 后，stderr 显示每条语句的耗时、查询输出行数，以及 SQLite/PostgreSQL/MySQL 普通 `INSERT`、`UPDATE`、`DELETE` 等写语句的影响行数；包含返回结果的写语句显示返回行数。影响行数取自原次执行，遵循驱动语义。ClickHouse 异步写入及 MongoDB/Redis 命令不提供统一的影响行数，查看命令响应；耗时包含结果读取和输出。默认脚本结果不附带统计。
+
+### 参数绑定
+
+`exec` 的 `--param` 按顺序绑定 JSON 标量，可重复使用。支持字符串、数值、布尔值和 `null`；不接受数组或对象。保留数据库原生占位符，MySQL/SQLite 常用 `?`，PostgreSQL 用 `$1`、`$2`，ClickHouse 按驱动使用 `?`。绑定只允许一条 SQL，MongoDB/Redis 使用各自原生命令文档或参数。
+
+```bash
+dbh exec local 'SELECT * FROM users WHERE id = ?' --param 42 --format tsv
+dbh exec pg 'SELECT * FROM users WHERE name = $1 AND active = $2' \
+  --param '"Alice"' --param true --format tsv
+dbh exec local 'INSERT INTO users(name) VALUES (?)' --param '"O’Connor"' --stats
+```
+
+绑定值不会拼入 SQL 或写入 dbh 历史；占位符 SQL 仍按历史开关记录。敏感绑定值也应避免写入系统 shell 历史或共享进程命令行。
+
 `--timeout 30s` 控制连接和每条语句的超时，可修改。一个连接会话使用同一条底层连接，事务、临时表和会话设置可持续使用。
 
 MongoDB 使用原生 JSON 命令文档，不执行 SQL 或 mongosh JavaScript。例如：
@@ -115,6 +132,22 @@ printf 'RPUSH queue a b\nLRANGE queue 0 -1\n' | dbh c cache
 
 MongoDB 沿用 `--sql` / `--file` / stdin 输入入口；多条命令用 `;` 分隔。JSON 输出保留完整文档、嵌套对象和 BSON 扩展 JSON 类型，并读取游标后续批次；表格/CSV 使用 `document` 列保存完整 JSON 文档。写入命令输出服务器响应，写入错误使批处理停止并以非零状态退出。
 
+## 结构查询与连接诊断
+
+结构查询无需进入交互终端，复用同一数据库连接与驱动元数据逻辑：
+
+```bash
+dbh tables pg --format tsv
+dbh describe local '"order items"' --format tsv
+dbh indexes mysql users --db app --format json
+dbh databases pg --format tsv
+dbh check pg --timeout 10s
+```
+
+`tables`、`describe`、`indexes`、`databases` 支持 `--db`、`--format table|csv|json|tsv` 和 `--timeout`。表或数据库列表使用 `name` 列；`describe` 依次输出字段与索引，CSV/JSON/TSV 不插入文本标题。
+
+`check NAME` 验证保存的配置、逐跳代理连接、数据库连接与认证，以及当前数据库访问。SSH 在握手后报告，SOCKS5 在实际建立到下一跳或数据库的通道后报告；失败区分代理跳、网络、认证和数据库阶段，退出码非零。诊断只显示错误分类与耗时，不显示 DSN、密码或服务器原始错误。`--timeout` 限制整次诊断。SQLite 连接诊断会遵循驱动行为，在文件不存在时创建数据库文件。
+
 ## 交互终端
 
 ```bash
@@ -122,12 +155,12 @@ dbh connect local
 ```
 
 ```text
-local> CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+local/main> CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
 OK
-local> INSERT INTO users (name) VALUES ('Alice');
+local/main> INSERT INTO users (name) VALUES ('Alice');
 OK
-local> \refresh
-local> SELECT *
+local/main> \refresh
+local/main> SELECT *
 ...> FROM users;
 ┌────┬───────┐
 │ id │ name  │
@@ -135,17 +168,17 @@ local> SELECT *
 │ 1  │ Alice │
 └────┴───────┘
 (1 rows)
-local> \q
+local/main> \q
 ```
 
-- 使用简洁彩色提示符，保留普通终端滚动记录；设置 `NO_COLOR=1` 可关闭提示符颜色。
+- 提示符显示 `连接名/当前数据库>`（SQLite 为 `main`），切库成功后立即更新，失败时保留原目标；使用简洁彩色提示符，保留普通终端滚动记录；设置 `NO_COLOR=1` 可关闭提示符颜色。
 - SQL 以 `;` 结束；未完成时按 Enter 继续换行，所有行仍可编辑。Alt-Enter 可直接插入换行。字符串、注释、PostgreSQL dollar quote 内的分号不会切分语句。
 - 在支持括号粘贴的终端中，多行粘贴保留换行、缩进和中文，整块留在输入区，按 Enter 后才执行；LF、CRLF 和 CR 换行均支持。粘贴中有多条 SQL 时，确认后按顺序执行。
-- 输入过程中自动显示 SQL 关键字、表名、列名和终端命令的候选，无需先按 Tab；候选按不区分大小写的包含匹配过滤，前缀匹配优先，例如 `\describe pl` 可匹配 `platform`、`apple` 和 `sample`。`\use ` 之后只提示数据库名，`\describe `、`\indexes ` 之后只提示表名，敲完空格即列出全部名称。`\format ` 提示 `table`、`csv`、`json`、`tsv`；SQL 字符串和注释内不显示候选，退出字符串或注释后恢复。候选超过半屏时只显示一部分并提示剩余行数，移动选择时菜单随之滚动。Tab 或 ↓（候选显示时）进入候选菜单，方向键在菜单中移动，Enter 只确认候选、不执行，再按 Enter 才提交；Shift-Tab 选择上一项。结构来自当前数据库，不调用大模型。修改表结构后执行 `\refresh` 更新候选项。补全为候选匹配，暂不解析别名、作用域或带空格的引用标识符。
+- 输入过程中自动显示 SQL 关键字、表名、列名和终端命令的候选，无需先按 Tab；候选按不区分大小写的包含匹配过滤，前缀匹配优先，例如 `\describe pl` 可匹配 `platform`、`apple` 和 `sample`。`\use ` 之后只提示数据库名，`\describe `、`\indexes ` 之后只提示表名，敲完空格即列出全部名称。`\format ` 提示 `table`、`csv`、`json`、`tsv`；SQL 字符串和注释内不显示候选，退出字符串或注释后恢复。候选超过半屏时只显示一部分并提示剩余行数，移动选择时菜单随之滚动。Tab 或 ↓（候选显示时）进入候选菜单，方向键在菜单中移动，Enter 只确认候选、不执行，再按 Enter 才提交；Shift-Tab 选择上一项。结构来自当前数据库，不调用大模型。修改表结构后执行 `\refresh` 更新候选项。`FROM`、`JOIN` 及同一 `FROM` 列表的逗号后只提示表；`FROM users u` 或 `FROM users AS u` 后输入 `u.` 可提示该表字段，也支持光标在前面的 `SELECT u.`。这些候选来自缓存，按键时不查询数据库；暂不推导 CTE、子查询结果和表达式的字段。
 - ↑/↓ 在多行输入中移动，到顶部/底部后回顾历史（在最后一行且有候选显示时，↓ 进入候选菜单）；Ctrl-R 搜索历史。匹配的历史 SQL 会作为灰色文字预览，在输入末尾按 → 接受。Ctrl-C 清除整块输入，在空输入区按 Ctrl-D 退出。
 - `\database` 在 MySQL/PostgreSQL/MongoDB/ClickHouse/Redis 中列出数据库，每行一个名称，与 `\tables` 一样不受 `\format` 影响。MySQL 使用 `SHOW DATABASES`，PostgreSQL 查询 `pg_database`，MongoDB 列出服务器数据库；列表范围由数据库权限决定。SQLite 不支持此命令。
 - `\use DATABASE` 或 `USE DATABASE;` 切换当前数据库，成功后刷新表/集合和字段提示，不修改保存的连接配置。MySQL 保留当前会话；PostgreSQL 重新建立连接，临时表、会话设置和未提交事务不保留，连接失败时仍保留旧连接；MongoDB 复用客户端并选择数据库，新库在写入数据后出现。SQLite 不支持切库。
-- `\tables` 列出表和视图；`\describe TABLE` 显示每个字段的名称、类型、是否可空、默认值、主键顺序和注释，并附上索引列表；`\indexes TABLE` 单独查看索引。支持 `schema.table` 和带引号的名称（如 `"a.b"`），可直接使用 `\tables` 列出的名称；SQLite 表名不区分大小写。结果遵循当前 `\format`。
+- `\tables` 列出表和视图；`\describe TABLE` 显示每个字段的名称、类型、是否可空、默认值、主键顺序和注释，并附上索引列表；`\indexes TABLE` 单独查看索引。支持 `schema.table` 和带引号的名称（如 `"a.b"`、`"order items"`），可直接使用 `\tables` 列出的名称；SQLite 表名不区分大小写。结果遵循当前 `\format`。
 - 索引显示名称、唯一性、主键标记及索引字段/定义。MySQL 联合索引按字段顺序逐行显示，包含索引类型、前缀长度和排序方向。SQLite 没有原生字段注释，注释显示为 `NULL`；`INTEGER PRIMARY KEY` 使用 rowid 时没有独立索引，因此不会出现在索引列表中。CSV/JSON 下字段与索引结果顺序输出，不插入文本标题。
 - `\history` 查看历史，`\clear` 清除待执行 SQL，`\format table|csv|json|tsv` 切换格式，`\help` 查看帮助。
 
@@ -153,7 +186,15 @@ Redis 交互输入按 Enter 执行当前行，引号未闭合时继续换行。`
 
 MongoDB 交互输入使用 JSON 文档，完整文档按 Enter 即执行，也支持多行输入和 `;`。`\tables` 列出集合；字段提示采样集合的一条文档，`\describe COLLECTION` 显示样本文档与索引，`\indexes COLLECTION` 列出索引定义。
 
-历史按连接名存储，保留多行 SQL。`dbh history NAME` 可在终端外查看。`--no-history` 禁用本次历史读取与记录。
+历史按连接名存储，保留多行 SQL，默认保留最近 1000 条；重复 SQL 移至最新位置。全局 `--history-limit N` 调整保留条数，`0` 为不限，适用于启动读取、记录和当前交互会话。写入历史使用文件锁和原子替换。
+
+```bash
+dbh history local --search users    # 不区分大小写的文本搜索
+dbh history local --clear           # 清空该连接的历史
+dbh connect local --history-limit 200
+```
+
+`--no-history` 禁用本次历史读取与记录。交互执行后默认在 stderr 显示耗时与行数统计。
 
 当前分句器面向常规 SQL 和 PostgreSQL dollar quote 块；SQLite trigger、MySQL 存储过程等含内部未引用分号的复合语句以及 `DELIMITER` 客户端指令暂不支持。
 
@@ -189,7 +230,7 @@ SQLite 测试使用真实数据库，覆盖 CLI 生命周期、SQL 查询和写�
 
 驱动及终端库：[pgx](https://github.com/jackc/pgx)、[go-sql-driver/mysql](https://github.com/go-sql-driver/mysql)、[modernc SQLite](https://github.com/modernc-org/sqlite)、[MongoDB Go Driver](https://github.com/mongodb/mongo-go-driver)、[ClickHouse Go Driver](https://github.com/ClickHouse/clickhouse-go)、[go-redis](https://github.com/redis/go-redis)、[readline](https://github.com/reeflective/readline)。
 
-`exec NAME [QUERY]` 支持位置参数语句、`--sql/-e`、`--file/-f` 或标准输入，执行完退出；支持 `--format`、`--timeout` 和 `--no-history`。`--db` 可省略，默认使用连接 DSN 中的数据库；指定时先切换服务器数据库，不修改已保存配置。MySQL、PostgreSQL、MongoDB、ClickHouse 和 Redis（数据库编号）支持切换，SQLite 不支持 `--db`。MongoDB 的 QUERY 使用原生 JSON 命令。
+`exec NAME [QUERY]` 支持位置参数语句、`--sql/-e`、`--file/-f` 或标准输入，执行完退出；支持 `--format`、`--timeout`、`--no-history`、`--param`、`--stats`、`--max-rows` 和 `--table-batch-size`。`--db` 可省略，默认使用连接 DSN 中的数据库；指定时先切换服务器数据库，不修改已保存配置。MySQL、PostgreSQL、MongoDB、ClickHouse 和 Redis（数据库编号）支持切换，SQLite 不支持 `--db`。MongoDB 的 QUERY 使用原生 JSON 命令。
 
 ClickHouse 使用官方 Go 驱动，支持原生 TCP（`clickhouse://`）和 HTTP/HTTPS DSN（HTTPS 需加 `?secure=true`）。`dbh exec ch --db app 'SELECT * FROM users;'` 可指定数据库。切库重新连接，原会话设置和临时表不保留，失败时保留当前连接。`\describe` 显示列类型、默认表达式、主键/排序键标记和注释；`\indexes` 显示主键表达式与数据跳过索引（ClickHouse 主键不是唯一约束）。ClickHouse 不支持这里用于关系型数据库的通用事务流程。
 
