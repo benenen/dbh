@@ -1,8 +1,9 @@
 GO ?= go
 GOLANGCI_LINT ?= golangci-lint
+GORELEASER ?= goreleaser
 
 .DEFAULT_GOAL := help
-.PHONY: help build install test e2e vet lint fmt clean
+.PHONY: help build install test e2e vet lint fmt clean release-check release-snapshot
 
 help:
 	@printf '%s\n' \
@@ -13,7 +14,9 @@ help:
 		'make vet      Run go vet' \
 		'make lint     Run golangci-lint (must be installed)' \
 		'make fmt      Format Go source files' \
-		'make clean    Remove bin/dbh'
+		'make clean    Remove bin/dbh' \
+		'make release-check     Validate GoReleaser configuration' \
+		'make release-snapshot  Build release archives without publishing'
 
 build:
 	mkdir -p bin
@@ -39,3 +42,9 @@ fmt:
 
 clean:
 	rm -f bin/dbh
+
+release-check:
+	$(GORELEASER) check
+
+release-snapshot:
+	$(GORELEASER) release --snapshot --clean --parallelism 2

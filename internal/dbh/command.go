@@ -18,7 +18,7 @@ import (
 func NewCommand() *cobra.Command {
 	var dir string
 	var historyLimit int
-	root := &cobra.Command{Use: "dbh", Short: "Manage database connections and run queries", SilenceUsage: true, SilenceErrors: true}
+	root := &cobra.Command{Use: "dbh", Version: version, Short: "Manage database connections and run queries", SilenceUsage: true, SilenceErrors: true}
 	root.PersistentFlags().StringVar(&dir, "config-dir", "", "Configuration directory (or DBH_CONFIG_DIR)")
 	root.PersistentFlags().IntVar(&historyLimit, "history-limit", 1000, "Maximum retained history entries (0 for unlimited)")
 	store := func() (Store, error) {

@@ -16,6 +16,8 @@ GOBIN="$HOME/.local/bin" make install
 
 `make build` 生成 `bin/dbh`；`make install` 安装到 `GOBIN`，未设置时使用 `GOPATH/bin`（通常为 `~/go/bin`）。将安装目录加入 `PATH` 后即可直接运行 `dbh`。不使用 Make 时，也可运行 `go build -o bin/dbh .` 或 `go install .`。
 
+也可从 [GitHub Releases](https://github.com/benenen/dbh/releases) 下载预编译包。Linux、macOS 和 Windows 均提供 amd64、arm64 版本；Linux/macOS 使用 `.tar.gz`，Windows 使用 `.zip`。解压后将 `dbh`（Windows 为 `dbh.exe`）放入 `PATH`，运行 `dbh --version` 确认版本。每次发布包含 `checksums.txt`，用于核对下载文件的 SHA-256；本地普通构建显示 `dev`。
+
 ### Shell 补全
 
 在 `~/.bashrc` 中加入下面几行，重新打开终端后即可用 Tab 补全子命令、已保存的连接名（`dbh c z<Tab>` → `dbh c zgy-mysql`）、`--driver`/`--format` 取值、`--dsn-env` 环境变量名，以及 `--file`/`-f` 和 SQLite `--dsn` 的本地文件路径。zsh 和 fish 分别使用 `dbh completion zsh`、`dbh completion fish`。
@@ -237,6 +239,30 @@ ClickHouse 使用官方 Go 驱动，支持原生 TCP（`clickhouse://`）和 HTT
 设置 `DBH_TEST_REDIS_DSN`（如 `redis://127.0.0.1:6379/0`，使用独立测试实例）启用 Redis e2e，覆盖批量命令、引号解析、输出格式、错误退出、切库与交互终端；测试只创建并删除带随机前缀的 key。
 
 设置 `DBH_TEST_CLICKHOUSE_DSN` 启用 ClickHouse Go e2e（独立测试库）；可额外设置 `DBH_TEST_CLICKHOUSE_ALT_DATABASE` 验证跨库切换。测试会创建并清理带随机名称的表。
+
+## GitHub Actions 与发布
+
+分支提交、PR 和手动运行会触发 [CI](https://github.com/benenen/dbh/actions/workflows/ci.yml)。CI 在 Ubuntu 上执行格式检查、`go vet`、单元与 race 测试、真实 CLI/PTY 测试、lint、构建和 GoReleaser 配置检查。Go 版本取自 `go.mod`；未配置的外部数据库测试会跳过。
+
+推送 `v主版本.次版本.修订版本` 标签会触发 [Release](https://github.com/benenen/dbh/actions/workflows/release.yml)。例如，确认要发布当前提交后执行：
+
+```bash
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
+```
+
+Release 会先对标签指向的源码运行完整 CI，通过后用 GoReleaser 生成六个平台组合的二进制包、许可证、README 和 SHA-256 校验文件，并创建 GitHub Release。`v0.1.0-rc.1` 这类标签会标为预发布。也可以在 Actions 的 Release 页面选择 **Run workflow**，填写已经推送的标签；手动运行使用该标签源码，不使用页面选择分支的源码。
+
+发布使用仓库自带的 `GITHUB_TOKEN`，只有发布 job 具有 `contents: write` 权限，无需个人令牌。Actions 引用固定到 commit SHA，GoReleaser 和 lint 工具也固定版本。
+
+安装 GoReleaser v2 后，可先在本地验证和试打包：
+
+```bash
+make release-check
+make release-snapshot
+```
+
+试打包会重建 `dist/` 中的快照包与校验文件，不创建标签或 GitHub Release。正式包的 `dbh --version` 显示标签版本；快照包带有快照版本。打包配置见 [.goreleaser.yaml](.goreleaser.yaml)。
 
 ## Agent 技能
 
