@@ -3,7 +3,7 @@
 
 ## 本地数据
 
-配置目录和历史格式见 README 的「配置与历史」。实验与自动测试指定独立 `--config-dir`，避免改动用户日常连接。DSN 使用 `--prompt-dsn` 或 `--dsn-env` 传入真实凭据。
+配置目录和历史格式见 [配置与历史](../configuration.md)。实验与自动测试指定独立 `--config-dir`，避免改动用户日常连接。DSN 使用 `--prompt-dsn` 或 `--dsn-env` 传入真实凭据。
 
 Go 缓存目录不可写时，将 `GOCACHE`、`GOMODCACHE`、`GOPATH` 指向可写临时目录；`golangci-lint` 同样可通过 `GOLANGCI_LINT_CACHE` 设置缓存位置。个人代理、测试库地址和凭据保留在本机，不写入仓库。
 

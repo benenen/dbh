@@ -9,7 +9,7 @@ Agent 通过终端工具直接运行本机 `dbh`，完成用户要求的数据�
 
 ## 选择连接与数据库
 
-先运行 `dbh --help` 和 `dbh list`，核对当前版本与已有连接；执行参数以 `dbh exec --help` 为准。若没有安装 CLI，在 dbh 源码仓库运行 `make build` 并使用 `bin/dbh`。源码和完整用法见 [README](../../README.md)。
+先运行 `dbh --help` 和 `dbh list`，核对当前版本与已有连接；执行参数以 `dbh exec --help` 为准。若没有安装 CLI，在 dbh 源码仓库运行 `make build` 并使用 `bin/dbh`。源码和完整用法见 [README](../../README.md) 及 `docs/` 目录。
 
 - `NAME` 是 `dbh list` 中保存的连接名，例如 `docker-pgsql`。
 - `exec --db DATABASE` 是服务器上的数据库名，例如 `dbh_test`，不是连接名。

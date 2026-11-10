@@ -4,265 +4,46 @@
 
 ## 安装
 
-需要 Go 1.26 或更新版本；使用下列命令还需要 Make。
+从 [GitHub Releases](https://github.com/benenen/dbh/releases) 下载预编译包，或从源码构建（需要 Go 1.26+）：
 
 ```bash
-make build
-# 或安装到 Go 的 bin 目录
-make install
-# 指定安装目录
-GOBIN="$HOME/.local/bin" make install
+make install   # 安装到 GOBIN，未设置时为 GOPATH/bin
 ```
 
-`make build` 生成 `bin/dbh`；`make install` 安装到 `GOBIN`，未设置时使用 `GOPATH/bin`（通常为 `~/go/bin`）。将安装目录加入 `PATH` 后即可直接运行 `dbh`。不使用 Make 时，也可运行 `go build -o bin/dbh .` 或 `go install .`。
+Shell 补全和其他安装方式见 [安装](docs/install.md)。
 
-也可从 [GitHub Releases](https://github.com/benenen/dbh/releases) 下载预编译包。Linux、macOS 和 Windows 均提供 amd64、arm64 版本；Linux/macOS 使用 `.tar.gz`，Windows 使用 `.zip`。解压后将 `dbh`（Windows 为 `dbh.exe`）放入 `PATH`，运行 `dbh --version` 确认版本。每次发布包含 `checksums.txt`，用于核对下载文件的 SHA-256；本地普通构建显示 `dev`。
-
-### Shell 补全
-
-在 `~/.bashrc` 中加入下面几行，重新打开终端后即可用 Tab 补全子命令、已保存的连接名（`dbh c z<Tab>` → `dbh c zgy-mysql`）、`--driver`/`--format` 取值、`--dsn-env` 环境变量名，以及 `--file`/`-f` 和 SQLite `--dsn` 的本地文件路径。zsh 和 fish 分别使用 `dbh completion zsh`、`dbh completion fish`。
+## 快速开始
 
 ```bash
-if command -v dbh >/dev/null 2>&1; then
-    source <(dbh completion bash)
-fi
-```
-
-## 连接管理
-
-```bash
+# 保存连接（--prompt-dsn 隐藏输入 DSN，避免密码进入 shell 历史）
 dbh new local --driver sqlite --dsn ./demo.db
 dbh new pg --driver postgres --prompt-dsn
-# 输入：postgres://user:password@localhost:5432/app?sslmode=require
 
-dbh new mysql --driver mysql --prompt-dsn
-# 输入：user:password@tcp(localhost:3306)/app?parseTime=true
-
-dbh new mongo --driver mongo --prompt-dsn
-# 输入：mongodb://user:password@localhost:27017/app?authSource=admin
-
-dbh new ch --driver clickhouse --prompt-dsn
-# 输入：clickhouse://user:password@localhost:9000/app
-# 也支持 HTTP：http://user:password@localhost:8123/app
-
-dbh new cache --driver redis --prompt-dsn
-# 输入：redis://user:password@localhost:6379/0（TLS 使用 rediss://）
-
-dbh ls
-dbh edit local --dsn ./another.db
-dbh remove local
-```
-
-`new` 保存配置，不要求数据库在线。`edit` 仅更新传入的字段。`remove` 只删除连接配置，不删除数据库。连接名允许字母、数字、点、下划线、连字符，以字母或数字开头。`ls` 不显示 DSN。
-
-命令简写：`list → ls`、`new → n`、`remove → rm / r`、`edit → e`、`connect → c`。简写与完整命令的参数及行为相同。
-
-自动化可用 `--dsn-env ENV_NAME` 从环境变量读取 DSN。`--dsn`、`--dsn-env`、`--prompt-dsn` 三选一。密码建议通过隐藏输入或环境变量传入，避免出现在 shell 历史或进程参数中。
-
-### 代理
-
-每个连接可保存自己的代理列表。`--proxy` 可重复，按从本机出发的顺序逐跳连接，最后一跳连接 DSN 中的数据库地址：
-
-```bash
-# 经 SSH 跳板访问内网 PostgreSQL
-dbh new pg --driver postgres --prompt-dsn --proxy ssh://ops@jump.example.com
-# 先经 SOCKS5，再经 SSH 跳板
-dbh new ch --driver clickhouse --prompt-dsn \
-  --proxy socks5://127.0.0.1:1080 --proxy 'ssh://ops@10.0.0.5:2222?identity=~/.ssh/ops_key'
-dbh edit pg --proxy socks5://user:pass@proxy:1080   # 替换整个列表
-dbh edit pg --no-proxy                              # 改为直连
-```
-
-- `socks5://[user:pass@]host:port`：主机名交给代理解析（等同 `socks5h`）。
-- `ssh://[user[:pass]@]host[:port]`：端口默认 22，用户默认当前用户。认证依次尝试 URL 中的密码、`identity=FILE`（可重复）、`SSH_AUTH_SOCK` 代理和 `~/.ssh/id_ed25519|id_ecdsa|id_rsa`（有口令的密钥请放进 ssh-agent）。主机密钥按 `~/.ssh/known_hosts` 严格校验，可用 `known_hosts=FILE` 指定，未知主机会拒绝连接。
-- 使用代理时，DSN 中的主机名由最后一跳解析，可直接写内网主机名。PostgreSQL、MySQL、ClickHouse（TCP 与 HTTP）、MongoDB 和 Redis（含 `rediss://`）支持代理，SQLite 和 Redis Unix socket 不支持；MySQL 需使用 `tcp(...)` 地址，PostgreSQL 不支持 Unix socket。`mongodb+srv://` 的 SRV 记录仍在本机解析。ClickHouse HTTP 使用代理列表时不再读取 `HTTP_PROXY` 环境变量。
-- 代理 URL 中的密码与 DSN 一样明文保存在配置文件；`ls` 的 `PROXIES` 列隐藏密码和参数。
-
-## 执行 SQL
-
-```bash
-dbh connect local --sql 'SELECT * FROM users;'
-# exec: NAME 是已保存连接，--db 是服务器数据库名
-dbh exec docker-pgsql --db dbh_test 'SELECT * FROM dbh_demo;'
-dbh exec docker-mysql --db dbh_test --sql 'SELECT * FROM dbh_demo;' --format json
+# 执行语句后退出
 dbh exec local 'SELECT * FROM users;'
-dbh connect local -f queries.sql
-printf 'SELECT 1; SELECT 2;' | dbh connect local
-dbh connect local --sql 'SELECT * FROM users' --format csv
-dbh connect local --sql 'SELECT * FROM users' --format json
-dbh exec local 'SELECT * FROM users' --format tsv   # 紧凑格式，适合 AI agent 读取
-```
+dbh exec pg --db app 'SELECT * FROM users WHERE id = $1' --param 42 --format tsv
 
-默认显示带边框和行分隔线的表格，单元格中的换行独立显示，长内容按终端宽度折行，中文和组合字符不会被拆开。列数过多时按记录显示字段/值表格，避免终端自动换行破坏行边界。CSV 包含列标题，NULL 输出为 `NULL`；JSON 每行一个对象（NDJSON），字段按结果列顺序排列，重名列依次加 `_2`、`_3` 后缀，避免 JOIN 结果丢失字段。TSV 为 agent 等程序读取设计：首行列名，每条记录一行，制表符分隔，值中的制表符、换行、回车和反斜杠转义为 `\t`、`\n`、`\r`、`\\`，NULL 输出为 `\N`、空字符串留空；没有边框、行分隔线和行数统计，体积约为表格输出的 1/7、JSON 的一半。不返回数据的 SQL 语句在表格模式下显示 `OK`，CSV/JSON/TSV 模式不输出状态文本。支持 NULL 和 `INSERT ... RETURNING`。每个 SQL 语句独立执行，批量模式遇错停止，以非零状态退出；需要原子性时显式使用 `BEGIN` / `COMMIT`。
+# 查看结构、诊断连接
+dbh tables pg
+dbh check pg
 
-表格默认每 500 行渲染一批，读完一批即输出；每批重复表头，列宽按该批内容计算，末尾显示总输出行数。`--table-batch-size N` 调整批大小。`--max-rows N` 限制每条语句的结果行数（默认 `0` 不限）；确有剩余行时，stderr 显示截断提示，适用于所有格式。行数上限只限制读取和显示，不限制数据库实际执行的写操作。
-
-脚本添加 `--stats` 后，stderr 显示每条语句的耗时、查询输出行数，以及 SQLite/PostgreSQL/MySQL 普通 `INSERT`、`UPDATE`、`DELETE` 等写语句的影响行数；包含返回结果的写语句显示返回行数。影响行数取自原次执行，遵循驱动语义。ClickHouse 异步写入及 MongoDB/Redis 命令不提供统一的影响行数，查看命令响应；耗时包含结果读取和输出。默认脚本结果不附带统计。
-
-### 参数绑定
-
-`exec` 的 `--param` 按顺序绑定 JSON 标量，可重复使用。支持字符串、数值、布尔值和 `null`；不接受数组或对象。保留数据库原生占位符，MySQL/SQLite 常用 `?`，PostgreSQL 用 `$1`、`$2`，ClickHouse 按驱动使用 `?`。绑定只允许一条 SQL，MongoDB/Redis 使用各自原生命令文档或参数。
-
-```bash
-dbh exec local 'SELECT * FROM users WHERE id = ?' --param 42 --format tsv
-dbh exec pg 'SELECT * FROM users WHERE name = $1 AND active = $2' \
-  --param '"Alice"' --param true --format tsv
-dbh exec local 'INSERT INTO users(name) VALUES (?)' --param '"O’Connor"' --stats
-```
-
-绑定值不会拼入 SQL 或写入 dbh 历史；占位符 SQL 仍按历史开关记录。敏感绑定值也应避免写入系统 shell 历史或共享进程命令行。
-
-`--timeout 30s` 控制连接和每条语句的超时，可修改。一个连接会话使用同一条底层连接，事务、临时表和会话设置可持续使用。
-
-MongoDB 使用原生 JSON 命令文档，不执行 SQL 或 mongosh JavaScript。例如：
-
-```bash
-dbh c mongo --sql '{"insert":"users","documents":[{"name":"Alice"}]}' --format json
-dbh c mongo --sql '{"find":"users","filter":{"name":"Alice"},"batchSize":100}' --format json
-dbh c mongo --sql '{"aggregate":"users","pipeline":[{"$match":{"name":"Alice"}}],"cursor":{}}' --format json
-```
-
-Redis 使用 redis-cli 风格命令，每行一条，不需要分号：
-
-```bash
-dbh exec cache 'SET greeting "hello dbh"'
-dbh exec cache --db 1 'HGETALL user:1' --format json
-printf 'RPUSH queue a b\nLRANGE queue 0 -1\n' | dbh c cache
-```
-
-参数按 redis-cli 规则解析：双引号支持 `\n`、`\t`、`\xHH` 等转义，单引号只转义 `\'`。字符串、整数和 nil 输出为单行 `value` 列（nil 显示为 `NULL`）；数组每个元素一行；哈希、`CONFIG GET` 等映射结果输出 `field`/`value` 两列；嵌套数组（如 `XRANGE`）在表格/CSV 中显示为 JSON 文本，JSON 输出保留嵌套结构。会话固定使用一条连接，`SELECT`、`MULTI`/`EXEC` 在同一会话中持续有效；连接中断不会自动重试命令，避免重复写入。仅支持单机部署，暂不支持 Cluster 和 Sentinel。
-
-MongoDB 沿用 `--sql` / `--file` / stdin 输入入口；多条命令用 `;` 分隔。JSON 输出保留完整文档、嵌套对象和 BSON 扩展 JSON 类型，并读取游标后续批次；表格/CSV 使用 `document` 列保存完整 JSON 文档。写入命令输出服务器响应，写入错误使批处理停止并以非零状态退出。
-
-## 结构查询与连接诊断
-
-结构查询无需进入交互终端，复用同一数据库连接与驱动元数据逻辑：
-
-```bash
-dbh tables pg --format tsv
-dbh describe local '"order items"' --format tsv
-dbh indexes mysql users --db app --format json
-dbh databases pg --format tsv
-dbh check pg --timeout 10s
-```
-
-`tables`、`describe`、`indexes`、`databases` 支持 `--db`、`--format table|csv|json|tsv` 和 `--timeout`。表或数据库列表使用 `name` 列；`describe` 依次输出字段与索引，CSV/JSON/TSV 不插入文本标题。
-
-`check NAME` 验证保存的配置、逐跳代理连接、数据库连接与认证，以及当前数据库访问。SSH 在握手后报告，SOCKS5 在实际建立到下一跳或数据库的通道后报告；失败区分代理跳、网络、认证和数据库阶段，退出码非零。诊断只显示错误分类与耗时，不显示 DSN、密码或服务器原始错误。`--timeout` 限制整次诊断。SQLite 连接诊断会遵循驱动行为，在文件不存在时创建数据库文件。
-
-## 交互终端
-
-```bash
+# 进入交互终端
 dbh connect local
 ```
 
-```text
-local/main> CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
-OK
-local/main> INSERT INTO users (name) VALUES ('Alice');
-OK
-local/main> \refresh
-local/main> SELECT *
-...> FROM users;
-┌────┬───────┐
-│ id │ name  │
-├────┼───────┤
-│ 1  │ Alice │
-└────┴───────┘
-(1 rows)
-local/main> \q
-```
+完整命令见 `dbh --help`。
 
-- 提示符显示 `连接名/当前数据库>`（SQLite 为 `main`），切库成功后立即更新，失败时保留原目标；使用简洁彩色提示符，保留普通终端滚动记录；设置 `NO_COLOR=1` 可关闭提示符颜色。
-- SQL 以 `;` 结束；未完成时按 Enter 继续换行，所有行仍可编辑。Alt-Enter 可直接插入换行。字符串、注释、PostgreSQL dollar quote 内的分号不会切分语句。
-- 在支持括号粘贴的终端中，多行粘贴保留换行、缩进和中文，整块留在输入区，按 Enter 后才执行；LF、CRLF 和 CR 换行均支持。粘贴中有多条 SQL 时，确认后按顺序执行。
-- 输入过程中自动显示 SQL 关键字、表名、列名和终端命令的候选，无需先按 Tab；候选按不区分大小写的包含匹配过滤，前缀匹配优先，例如 `\describe pl` 可匹配 `platform`、`apple` 和 `sample`。`\use ` 之后只提示数据库名，`\describe `、`\indexes ` 之后只提示表名，敲完空格即列出全部名称。`\format ` 提示 `table`、`csv`、`json`、`tsv`；SQL 字符串和注释内不显示候选，退出字符串或注释后恢复。候选超过半屏时只显示一部分并提示剩余行数，移动选择时菜单随之滚动。Tab 或 ↓（候选显示时）进入候选菜单，方向键在菜单中移动，Enter 只确认候选、不执行，再按 Enter 才提交；Shift-Tab 选择上一项。结构来自当前数据库，不调用大模型。修改表结构后执行 `\refresh` 更新候选项。`FROM`、`JOIN` 及同一 `FROM` 列表的逗号后只提示表；`FROM users u` 或 `FROM users AS u` 后输入 `u.` 可提示该表字段，也支持光标在前面的 `SELECT u.`。这些候选来自缓存，按键时不查询数据库；暂不推导 CTE、子查询结果和表达式的字段。
-- ↑/↓ 在多行输入中移动，到顶部/底部后回顾历史（在最后一行且有候选显示时，↓ 进入候选菜单）；Ctrl-R 搜索历史。匹配的历史 SQL 会作为灰色文字预览，在输入末尾按 → 接受。Ctrl-C 清除整块输入，在空输入区按 Ctrl-D 退出。
-- `\database` 在 MySQL/PostgreSQL/MongoDB/ClickHouse/Redis 中列出数据库，每行一个名称，与 `\tables` 一样不受 `\format` 影响。MySQL 使用 `SHOW DATABASES`，PostgreSQL 查询 `pg_database`，MongoDB 列出服务器数据库；列表范围由数据库权限决定。SQLite 不支持此命令。
-- `\use DATABASE` 或 `USE DATABASE;` 切换当前数据库，成功后刷新表/集合和字段提示，不修改保存的连接配置。MySQL 保留当前会话；PostgreSQL 重新建立连接，临时表、会话设置和未提交事务不保留，连接失败时仍保留旧连接；MongoDB 复用客户端并选择数据库，新库在写入数据后出现。SQLite 不支持切库。
-- `\tables` 列出表和视图；`\describe TABLE` 显示每个字段的名称、类型、是否可空、默认值、主键顺序和注释，并附上索引列表；`\indexes TABLE` 单独查看索引。支持 `schema.table` 和带引号的名称（如 `"a.b"`、`"order items"`），可直接使用 `\tables` 列出的名称；SQLite 表名不区分大小写。结果遵循当前 `\format`。
-- 索引显示名称、唯一性、主键标记及索引字段/定义。MySQL 联合索引按字段顺序逐行显示，包含索引类型、前缀长度和排序方向。SQLite 没有原生字段注释，注释显示为 `NULL`；`INTEGER PRIMARY KEY` 使用 rowid 时没有独立索引，因此不会出现在索引列表中。CSV/JSON 下字段与索引结果顺序输出，不插入文本标题。
-- `\history` 查看历史，`\clear` 清除待执行 SQL，`\format table|csv|json|tsv` 切换格式，`\help` 查看帮助。
+## 文档
 
-Redis 交互输入按 Enter 执行当前行，引号未闭合时继续换行。`\database` 列出有 key 的数据库编号和当前库，`\use N` 重新连接到第 N 号库；`\tables` 用 `SCAN` 列出当前库最多 1000 个 key；`\describe KEY` 显示类型、TTL（秒）、编码和长度，Redis 没有索引，`\indexes` 会提示不支持。候选包含常用命令名和扫描到的 key。
-
-MongoDB 交互输入使用 JSON 文档，完整文档按 Enter 即执行，也支持多行输入和 `;`。`\tables` 列出集合；字段提示采样集合的一条文档，`\describe COLLECTION` 显示样本文档与索引，`\indexes COLLECTION` 列出索引定义。
-
-历史按连接名存储，保留多行 SQL，默认保留最近 1000 条；重复 SQL 移至最新位置。全局 `--history-limit N` 调整保留条数，`0` 为不限，适用于启动读取、记录和当前交互会话。写入历史使用文件锁和原子替换。
-
-```bash
-dbh history local --search users    # 不区分大小写的文本搜索
-dbh history local --clear           # 清空该连接的历史
-dbh connect local --history-limit 200
-```
-
-`--no-history` 禁用本次历史读取与记录。交互执行后默认在 stderr 显示耗时与行数统计。
-
-当前分句器面向常规 SQL 和 PostgreSQL dollar quote 块；SQLite trigger、MySQL 存储过程等含内部未引用分号的复合语句以及 `DELIMITER` 客户端指令暂不支持。
-
-## 配置与历史
-
-默认使用系统用户配置目录中的 `dbh/`（Linux 通常是 `~/.config/dbh`），也可以设置 `DBH_CONFIG_DIR` 或使用全局 `--config-dir PATH`。
-
-```text
-connections.json          命名连接配置
-history/<name>.jsonl       每个连接的 SQL 历史
-```
-
-目录权限为 `0700`，配置和历史文件为 `0600`（Unix）。配置包含明文 DSN，历史可能包含 SQL 中的敏感值。配置修改使用文件锁与原子替换。删除连接后保留历史，再次使用相同名称可复用历史。
-
-## 开发与验证
-
-```bash
-make test
-make e2e   # 使用 Go 构建真实 CLI 并运行端到端测试
-make vet
-make lint  # 需要已安装 golangci-lint
-make fmt
-make clean
-```
-
-`make` 或 `make help` 查看可用命令；`make clean` 仅删除本地构建的 `bin/dbh`。
-
-e2e 测试由 Go `testing` 实现，通过 `os/exec` 启动真实 `dbh` 进程，覆盖连接管理与简写、环境变量配置、SQL 参数/文件/管道输入、输出格式、事务、错误退出和历史。Linux/macOS 上还通过 `creack/pty` 验证实时补全、Tab/方向键选择候选与 Enter 确认、多行粘贴与提交前编辑、换行兼容、彩色提示符、Ctrl-C 清空、历史回填与搜索、多行 SQL 和 Ctrl-D 退出。每个测试使用自动清理的临时配置，默认仅使用临时 SQLite 文件，不需要外部数据库。`make e2e` 等同于 `go test -tags=e2e -count=1 -v ./tests`，测试会在临时目录构建当前源码，避免复用过期二进制；普通 `go test ./...` 不运行这套 e2e。
-
-SQLite 测试使用真实数据库，覆盖 CLI 生命周期、SQL 查询和写入、事务回滚、返回结果、结构读取、补全、历史和文件权限。PostgreSQL/MySQL 使用各自的 Go 驱动，集成验证需要可访问的数据库。
-
-可设置 `DBH_TEST_POSTGRES_DSN` / `DBH_TEST_MYSQL_DSN` 后运行 `go test ./...` 启用集成测试，或运行 `make e2e` 启用真实 CLI 的 PostgreSQL/MySQL 测试；设置 `DBH_TEST_MONGO_DSN` 启用 MongoDB e2e。未设置的外部数据库测试会明确跳过。e2e 覆盖 `new --dsn-env` 创建连接、完整命令与简写、建表/插入/查询、事务回滚、中文与 NULL、表格/CSV/JSON 输出、文件/管道输入、删除连接后数据保留，以及 Linux/macOS 上的实时提示、表结构、索引、数据库列表与切换。设置 `DBH_TEST_MYSQL_ALT_DATABASE` / `DBH_TEST_POSTGRES_ALT_DATABASE` 可进一步验证真实跨库切换，需同一账号能访问的另一个独立测试库。MongoDB 验证文档读写、嵌套字段、64 位整数、多批游标、集合与索引以及原生 JSON 交互。测试会创建并清理随机名称的测试表或集合，请使用测试数据库，DSN 和密码通过环境变量传入。
-
-驱动及终端库：[pgx](https://github.com/jackc/pgx)、[go-sql-driver/mysql](https://github.com/go-sql-driver/mysql)、[modernc SQLite](https://github.com/modernc-org/sqlite)、[MongoDB Go Driver](https://github.com/mongodb/mongo-go-driver)、[ClickHouse Go Driver](https://github.com/ClickHouse/clickhouse-go)、[go-redis](https://github.com/redis/go-redis)、[readline](https://github.com/reeflective/readline)。
-
-`exec NAME [QUERY]` 支持位置参数语句、`--sql/-e`、`--file/-f` 或标准输入，执行完退出；支持 `--format`、`--timeout`、`--no-history`、`--param`、`--stats`、`--max-rows` 和 `--table-batch-size`。`--db` 可省略，默认使用连接 DSN 中的数据库；指定时先切换服务器数据库，不修改已保存配置。MySQL、PostgreSQL、MongoDB、ClickHouse 和 Redis（数据库编号）支持切换，SQLite 不支持 `--db`。MongoDB 的 QUERY 使用原生 JSON 命令。
-
-ClickHouse 使用官方 Go 驱动，支持原生 TCP（`clickhouse://`）和 HTTP/HTTPS DSN（HTTPS 需加 `?secure=true`）。`dbh exec ch --db app 'SELECT * FROM users;'` 可指定数据库。切库重新连接，原会话设置和临时表不保留，失败时保留当前连接。`\describe` 显示列类型、默认表达式、主键/排序键标记和注释；`\indexes` 显示主键表达式与数据跳过索引（ClickHouse 主键不是唯一约束）。ClickHouse 不支持这里用于关系型数据库的通用事务流程。
-
-设置 `DBH_TEST_REDIS_DSN`（如 `redis://127.0.0.1:6379/0`，使用独立测试实例）启用 Redis e2e，覆盖批量命令、引号解析、输出格式、错误退出、切库与交互终端；测试只创建并删除带随机前缀的 key。
-
-设置 `DBH_TEST_CLICKHOUSE_DSN` 启用 ClickHouse Go e2e（独立测试库）；可额外设置 `DBH_TEST_CLICKHOUSE_ALT_DATABASE` 验证跨库切换。测试会创建并清理带随机名称的表。
-
-## GitHub Actions 与发布
-
-分支提交、PR 和手动运行会触发 [CI](https://github.com/benenen/dbh/actions/workflows/ci.yml)。CI 在 Ubuntu 上执行格式检查、`go vet`、单元与 race 测试、真实 CLI/PTY 测试、lint、构建和 GoReleaser 配置检查。Go 版本取自 `go.mod`；未配置的外部数据库测试会跳过。
-
-推送 `v主版本.次版本.修订版本` 标签会触发 [Release](https://github.com/benenen/dbh/actions/workflows/release.yml)。例如，确认要发布当前提交后执行：
-
-```bash
-git tag -a v0.1.0 -m "Release v0.1.0"
-git push origin v0.1.0
-```
-
-Release 会先对标签指向的源码运行完整 CI，通过后用 GoReleaser 生成六个平台组合的二进制包、许可证、README 和 SHA-256 校验文件，并创建 GitHub Release。`v0.1.0-rc.1` 这类标签会标为预发布。也可以在 Actions 的 Release 页面选择 **Run workflow**，填写已经推送的标签；手动运行使用该标签源码，不使用页面选择分支的源码。
-
-发布使用仓库自带的 `GITHUB_TOKEN`，只有发布 job 具有 `contents: write` 权限，无需个人令牌。Actions 引用固定到 commit SHA，GoReleaser 和 lint 工具也固定版本。
-
-安装 GoReleaser v2 后，可先在本地验证和试打包：
-
-```bash
-make release-check
-make release-snapshot
-```
-
-试打包会重建 `dist/` 中的快照包与校验文件，不创建标签或 GitHub Release。正式包的 `dbh --version` 显示标签版本；快照包带有快照版本。打包配置见 [.goreleaser.yaml](.goreleaser.yaml)。
+- [安装](docs/install.md)：源码构建、预编译包、Shell 补全
+- [连接管理](docs/connections.md)：新建、编辑、删除连接，DSN 写法、命令简写与代理
+- [执行语句与输出格式](docs/exec.md)：输入方式、表格/CSV/JSON/TSV 输出、行数限制、统计与参数绑定
+- [各数据库说明](docs/drivers.md)：MongoDB、Redis、ClickHouse 的命令与差异
+- [结构查询与连接诊断](docs/schema.md)：`tables`、`describe`、`indexes`、`databases`、`check`
+- [交互终端](docs/shell.md)：实时补全、多行编辑、`\` 命令与历史
+- [配置与历史](docs/configuration.md)：配置目录、文件权限
+- [开发与验证](docs/development.md)：构建、测试与集成测试环境变量
+- [GitHub Actions 与发布](docs/release.md)：CI 与版本发布流程
 
 ## Agent 技能
 
