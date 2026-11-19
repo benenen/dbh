@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/benenen/dbh/internal/database"
@@ -74,45 +75,51 @@ func addMetadataCommands(root *cobra.Command, store func() (Store, error), names
 }
 
 func writeNames(cmd *cobra.Command, names []string, format string) error {
-	// Reuse the result encoder without opening another database session.
-	rows := make([][]string, len(names))
+	values := make([][]any, len(names))
 	for i, name := range names {
-		rows[i] = []string{name}
+		values[i] = []any{name}
+	}
+	return writeRows(cmd.OutOrStdout(), []string{"name"}, values, format)
+}
+
+// writeRows encodes metadata rows in the shared output formats without a
+// database session.
+func writeRows(out io.Writer, columns []string, values [][]any, format string) error {
+	text := make([][]string, len(values))
+	for i, row := range values {
+		text[i] = make([]string, len(row))
+		for j, value := range row {
+			text[i][j] = fmt.Sprint(value)
+		}
 	}
 	switch format {
 	case "table":
-		return renderTable(cmd.OutOrStdout(), []string{"name"}, rows, tableWidth(cmd.OutOrStdout()))
+		return renderTable(out, columns, text, tableWidth(out))
 	case "json":
-		for _, name := range names {
-			if err := jsonName(cmd, database.NewRow([]string{"name"}, []any{name})); err != nil {
+		encoder := json.NewEncoder(out)
+		for _, row := range values {
+			if err := encoder.Encode(database.NewRow(columns, row).Object); err != nil {
 				return err
 			}
 		}
 	case "csv":
-		w := csv.NewWriter(cmd.OutOrStdout())
-		if err := w.Write([]string{"name"}); err != nil {
+		w := csv.NewWriter(out)
+		if err := w.Write(columns); err != nil {
 			return err
 		}
-		for _, row := range rows {
-			if err := w.Write(row); err != nil {
-				return err
-			}
+		if err := w.WriteAll(text); err != nil {
+			return err
 		}
-		w.Flush()
 		return w.Error()
 	case "tsv":
-		if _, err := fmt.Fprintln(cmd.OutOrStdout(), "name"); err != nil {
+		if _, err := fmt.Fprintln(out, tsvLine(columns)); err != nil {
 			return err
 		}
-		for _, name := range names {
-			if _, err := fmt.Fprintln(cmd.OutOrStdout(), tsvLine([]string{name})); err != nil {
+		for _, row := range text {
+			if _, err := fmt.Fprintln(out, tsvLine(row)); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
-}
-
-func jsonName(cmd *cobra.Command, row database.Row) error {
-	return json.NewEncoder(cmd.OutOrStdout()).Encode(row.Object)
 }
