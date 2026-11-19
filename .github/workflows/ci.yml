@@ -37,7 +37,7 @@ jobs:
 
       - name: Check formatting
         run: |
-          git ls-files -z '*.go' ':!:third_party/**' | xargs -0 gofmt -l > "$RUNNER_TEMP/gofmt-files"
+          git ls-files -z '*.go' | xargs -0 gofmt -l > "$RUNNER_TEMP/gofmt-files"
           if [ -s "$RUNNER_TEMP/gofmt-files" ]; then
             cat "$RUNNER_TEMP/gofmt-files"
             exit 1

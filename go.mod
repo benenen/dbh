@@ -56,5 +56,5 @@ require (
 	modernc.org/memory v1.12.1 // indirect
 )
 
-// Local upstream patch: terminal cursor replies must not block keyboard input.
-replace github.com/reeflective/readline => ./third_party/readline
+// Patched fork: terminal cursor replies, prompt layout and live completion.
+replace github.com/reeflective/readline => github.com/BenLocal/readline v1.3.0-dbh.1
