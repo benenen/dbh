@@ -3,7 +3,7 @@
 
 ## 技术选型
 
-语言要求和固定依赖版本以 `go.mod` 为准。命令框架为 Cobra，终端编辑器为 reeflective/readline。关系型数据库沿用 `database/sql`：SQLite 使用 modernc 驱动，PostgreSQL 使用 pgx，MySQL 使用 go-sql-driver/mysql，ClickHouse 使用官方 clickhouse-go/v2 驱动；MongoDB 使用官方 Go Driver v2 执行原生 JSON 命令；Redis 使用 go-redis v9 执行 redis-cli 风格命令。各实现通过 `internal/database` 的驱动与会话接口共用 CLI、输出和配置体系。
+语言要求和固定依赖版本以 `go.mod` 为准。命令框架为 Cobra，终端编辑器为 reeflective/readline。关系型数据库沿用 `database/sql`：SQLite 使用 modernc 驱动，PostgreSQL 使用 pgx，MySQL 使用 go-sql-driver/mysql，ClickHouse 使用官方 clickhouse-go/v2 驱动；MongoDB 使用官方 Go Driver v2 执行原生 JSON 命令；Redis 使用 go-redis v9 执行 redis-cli 风格命令。各实现通过 `internal/database` 的驱动与会话接口共用 CLI、输出和配置体系。关系模型使用 `github.com/mevdschee/dbml-tools` 解析 DBML 和读取数据库结构，只导入 `lexer`、`parser`、`interpreter`、`introspect`；它通过 `replace` 使用 fork `github.com/BenLocal/dbml-tools` 的 tag `v0.9.11-dbh.1`（分支 `dbh-patches`，基于上游 v0.9.11），修复关键字同名字段丢失、PostgreSQL 多列外键重复和带类型转换的字符串默认值。上游发布包含这些修复的版本后删除 `replace`，并运行 `go test ./internal/erd/`、`make e2e` 和设置 `DBH_TEST_POSTGRES_DSN`/`DBH_TEST_MYSQL_DSN` 的 `TestExternalERDPull`。
 
 readline 暂通过 `go.mod` 的 `replace` 使用 fork `github.com/BenLocal/readline` 的 tag `v1.3.0-dbh.1`（分支 `dbh-patches`，基于上游 v1.3.0），修复终端光标回报阻塞键盘读取的问题，并允许 dbh 跳过前缀过滤以显示包含匹配的候选；补丁范围见该分支的 `DBH_PATCH.md`。更新依赖时必须保留这些修改或确认上游已支持，并运行 PTY 回归测试。
 

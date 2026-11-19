@@ -1,0 +1,4 @@
+interface:
+  display_name: "dbh ERD"
+  short_description: "让 agent 用 dbh erd 从数据库和代码生成 DBML 关系模型，并查询表关系与 JOIN 路径"
+  default_prompt: "使用 $dbh-erd 为这个项目生成或更新数据库关系模型，并汇报推断出的关系及证据。"

@@ -27,6 +27,10 @@ dbh exec pg --db app 'SELECT * FROM users WHERE id = $1' --param 42 --format tsv
 dbh tables pg
 dbh check pg
 
+# 生成关系模型到 .dbh/，查询表关系
+dbh erd pull pg --save
+dbh erd path orders users
+
 # 进入交互终端
 dbh connect local
 ```
@@ -40,6 +44,7 @@ dbh connect local
 - [执行语句与输出格式](docs/exec.md)：输入方式、表格/CSV/JSON/TSV 输出、行数限制、统计与参数绑定
 - [各数据库说明](docs/drivers.md)：MongoDB、Redis、ClickHouse 的命令与差异
 - [结构查询与连接诊断](docs/schema.md)：`tables`、`describe`、`indexes`、`databases`、`check`
+- [关系模型](docs/erd.md)：`erd` 生成 DBML 模型，查询表关系、JOIN 路径并预览
 - [交互终端](docs/shell.md)：实时补全、多行编辑、`\` 命令与历史
 - [配置与历史](docs/configuration.md)：配置目录、文件权限
 - [开发与验证](docs/development.md)：构建、测试与集成测试环境变量
@@ -48,3 +53,5 @@ dbh connect local
 ## Agent 技能
 
 仓库提供 [dbh-cli](skills/dbh-cli/SKILL.md) 技能，指导 agent 选择连接、执行查询、导出结果和查看数据库结构，覆盖六种驱动。使用时让 agent 读取该技能，例如“使用 dbh-cli 查询连接 docker-pgsql 的 dbh_test 数据库”。
+
+[dbh-erd](skills/dbh-erd/SKILL.md) 技能指导 agent 用 `dbh erd` 从数据库拉取结构、从项目代码补充数据库未声明的关系，并查询表关系，例如“使用 dbh-erd 为这个项目生成关系模型”。
