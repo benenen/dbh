@@ -1,0 +1,280 @@
+package erd
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const mainDBML = `Table users {
+  id integer [pk]
+  email varchar(255) [unique, not null]
+}
+
+Table orders {
+  id integer [pk]
+  user_id integer [not null, ref: > users.id]
+  product_id integer
+  region text
+  zone text
+}
+
+Table products {
+  id integer [pk]
+}
+
+Table billing.invoices {
+  id integer [pk]
+  order_id integer
+}
+
+Table regions {
+  region text
+  zone text
+}
+
+Ref fk_invoice_order: billing.invoices.order_id > orders.id [delete: cascade]
+Ref: orders.(region, zone) > regions.(region, zone)
+`
+
+func writeModel(t *testing.T, main, refs string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), DirName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mainFile, refsFile := ModelFiles(dir, DefaultModel)
+	if err := os.WriteFile(mainFile, []byte(main), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if refs != "" {
+		if err := os.WriteFile(refsFile, []byte(refs), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func load(t *testing.T, main, refs string) *Model {
+	t.Helper()
+	m, err := Load(writeModel(t, main, refs), DefaultModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestLoadSourcesAndNormalization(t *testing.T) {
+	m := load(t, mainDBML, `// app/order.go:3
+Ref: orders.product_id > products.id
+Ref: products.id < orders.product_id
+`)
+	if len(m.Errors) != 0 {
+		t.Fatalf("errors: %v", m.Errors)
+	}
+	if len(m.Tables) != 5 {
+		t.Fatalf("tables = %d", len(m.Tables))
+	}
+	got := m.RelationRows("", "")
+	want := [][]any{
+		{"", "orders", "user_id", ">", "users", "id", "", "", "declared"},
+		{"fk_invoice_order", "billing.invoices", "order_id", ">", "orders", "id", "cascade", "", "declared"},
+		{"", "orders", "region, zone", ">", "regions", "region, zone", "", "", "declared"},
+		{"", "orders", "product_id", ">", "products", "id", "", "", "inferred"},
+	}
+	if len(got.Values) != len(want) {
+		t.Fatalf("relations = %v", got.Values)
+	}
+	for i := range want {
+		for j := range want[i] {
+			if got.Values[i][j] != want[i][j] {
+				t.Fatalf("relation %d = %v, want %v", i, got.Values[i], want[i])
+			}
+		}
+	}
+	if m.Count(SourceInferred) != 1 || m.Count(SourceDeclared) != 3 {
+		t.Fatalf("counts declared=%d inferred=%d", m.Count(SourceDeclared), m.Count(SourceInferred))
+	}
+}
+
+func TestInferredDuplicateAndInvalid(t *testing.T) {
+	m := load(t, mainDBML, `// duplicate written in the other direction
+Ref: users.id < orders.user_id
+// stale
+Ref: orders.coupon_id > coupons.id
+Ref: orders.id > coupons.id
+`)
+	if len(m.Warnings) != 1 || m.Warnings[0].Line != 2 || !strings.Contains(m.Warnings[0].Message, "already declared") {
+		t.Fatalf("warnings = %v", m.Warnings)
+	}
+	if len(m.Errors) != 2 || m.Errors[0].Line != 4 || !strings.Contains(m.Errors[0].Message, `unknown column "orders.coupon_id"`) ||
+		m.Errors[1].Line != 5 || !strings.Contains(m.Errors[1].Message, `unknown table "coupons"`) {
+		t.Fatalf("errors = %v", m.Errors)
+	}
+	if err := m.Usable(); err != nil {
+		t.Fatalf("invalid inferred relations must not block queries: %v", err)
+	}
+	if m.Count(SourceInferred) != 0 {
+		t.Fatalf("inferred = %d", m.Count(SourceInferred))
+	}
+}
+
+func TestRefsFileOnlyAllowsRefs(t *testing.T) {
+	m := load(t, mainDBML, "Ref: orders.product_id > products.id\n\nTable extra {\n  id integer\n}\n")
+	if err := m.Usable(); err == nil || !strings.Contains(err.Error(), "only Ref declarations") || !strings.Contains(err.Error(), ":3:1:") {
+		t.Fatalf("Usable() = %v", err)
+	}
+}
+
+func TestMainFileErrorsBlockQueries(t *testing.T) {
+	m := load(t, "Table users {\n  id integer [pk\n}\n", "")
+	if err := m.Usable(); err == nil || !strings.Contains(err.Error(), "schema.dbml:") {
+		t.Fatalf("Usable() = %v", err)
+	}
+}
+
+func TestLookup(t *testing.T) {
+	m := load(t, mainDBML+"Table audit.orders {\n  id integer\n}\n", "")
+	if got, err := m.Lookup("invoices"); err != nil || got != "billing.invoices" {
+		t.Fatalf("Lookup(invoices) = %q, %v", got, err)
+	}
+	if got, err := m.Lookup("orders"); err != nil || got != "orders" {
+		t.Fatalf("exact display name wins: %q, %v", got, err)
+	}
+	if _, err := m.Lookup("ORDERS"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("Lookup(ORDERS) = %v", err)
+	}
+	if _, err := m.Lookup("nope"); err == nil {
+		t.Fatal("unknown table must fail")
+	}
+}
+
+func TestPath(t *testing.T) {
+	m := load(t, mainDBML, "Ref: billing.invoices.order_id > products.id\nRef: products.id > users.id\n")
+	steps, err := m.Path("billing.invoices", "users", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := PathRows(steps)
+	if len(rows.Values) != 2 || rows.Values[0][3] != "orders" || rows.Values[0][5] != SourceDeclared ||
+		rows.Values[1][2] != "user_id" || rows.Values[1][4] != "id" {
+		t.Fatalf("path = %v", rows.Values)
+	}
+	if _, err := m.Path("products", "users", true); err == nil {
+		t.Fatal("declared-only path must ignore inferred relations")
+	}
+	steps, err = m.Path("users", "orders", false)
+	if err != nil || steps[0].FromColumns[0] != "id" || steps[0].ToColumns[0] != "user_id" {
+		t.Fatalf("reverse step columns = %+v, %v", steps, err)
+	}
+}
+
+func TestNeighborhoodAndRender(t *testing.T) {
+	m := load(t, mainDBML, "// evidence\nRef: orders.product_id > products.id\n")
+	include := m.Neighborhood([]string{"products"}, 1)
+	if !include["orders"] || include["users"] {
+		t.Fatalf("neighborhood = %v", include)
+	}
+	var text, dot, mermaid strings.Builder
+	if err := RenderText(&text, m, include); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"(region, zone)", "┄┄▶ products.id", "◀┄┄ orders.product_id", "──▶ users.id"} {
+		if !strings.Contains(text.String(), want) {
+			t.Fatalf("text missing %q:\n%s", want, text.String())
+		}
+	}
+	if strings.Contains(text.String(), " \n") {
+		t.Fatalf("text has trailing spaces:\n%q", text.String())
+	}
+	if err := RenderDot(&dot, m, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(dot.String(), `"orders":c2 -> "products":c0 [style=dashed`) {
+		t.Fatalf("dot:\n%s", dot.String())
+	}
+	if err := RenderMermaid(&mermaid, m, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`billing_invoices["billing.invoices"] {`, "varchar(255) email UK", `orders }o..|| products : "product_id"`, `billing_invoices }o--|| orders`} {
+		if !strings.Contains(mermaid.String(), want) {
+			t.Fatalf("mermaid missing %q:\n%s", want, mermaid.String())
+		}
+	}
+}
+
+func TestFindDir(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	nested := filepath.Join(repo, "a", "b")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A .dbh above the repository root is not used.
+	if err := os.MkdirAll(filepath.Join(root, DirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir, create, err := FindDir(nested)
+	if err != nil || dir != "" || create != filepath.Join(repo, DirName) {
+		t.Fatalf("FindDir = %q, %q, %v", dir, create, err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "a", DirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir, _, err = FindDir(nested)
+	if err != nil || dir != filepath.Join(repo, "a", DirName) {
+		t.Fatalf("FindDir = %q, %v", dir, err)
+	}
+}
+
+func TestModelNamesAndList(t *testing.T) {
+	for _, bad := range []string{"", ".hidden", "../x", "a/b", "schema.refs"} {
+		if ValidModelName(bad) == nil {
+			t.Fatalf("%q must be invalid", bad)
+		}
+	}
+	dir := writeModel(t, mainDBML, "Ref: orders.product_id > products.id\n")
+	if err := os.WriteFile(filepath.Join(dir, "reporting.dbml"), []byte("Table t {\n  id int\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	names, err := List(dir)
+	if err != nil || strings.Join(names, ",") != "reporting,schema" {
+		t.Fatalf("List = %v, %v", names, err)
+	}
+	if _, err := Load(dir, "missing"); err == nil || !strings.Contains(err.Error(), "erd pull NAME --save") {
+		t.Fatalf("Load(missing) = %v", err)
+	}
+}
+
+func TestSaveReplacesAtomically(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DirName, "schema.dbml")
+	for _, content := range []string{"Table a {\n  id int\n}\n", "Table b {\n  id int\n}\n"} {
+		if err := Save(path, content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(data), "Table b") {
+		t.Fatalf("saved = %q, %v", data, err)
+	}
+	entries, _ := os.ReadDir(filepath.Dir(path))
+	if len(entries) != 1 {
+		t.Fatalf("temporary files left: %v", entries)
+	}
+}
+
+// Columns named like DBML keywords survive parsing (patched dbml-tools fork).
+func TestKeywordNamedColumns(t *testing.T) {
+	m := load(t, "Table orders {\n  \"id\" integer [pk]\n  \"note\" TEXT\n  \"records\" int\n  Note: 'orders table'\n}\n", "")
+	if err := m.Usable(); err != nil {
+		t.Fatal(err)
+	}
+	columns := m.Tables[0].Columns
+	if len(columns) != 3 || columns[1].Name != "note" || columns[2].Name != "records" || m.Tables[0].Note != "orders table" {
+		t.Fatalf("table = %+v", m.Tables[0])
+	}
+}

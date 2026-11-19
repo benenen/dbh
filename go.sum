@@ -1,5 +1,7 @@
 filippo.io/edwards25519 v1.2.0 h1:crnVqOiS4jqYleHd9vaKZ+HKtHfllngJIiOpNpoJsjo=
 filippo.io/edwards25519 v1.2.0/go.mod h1:xzAOLCNug/yB62zG1bQ8uziwrIqIuxhctzJT18Q77mc=
+github.com/BenLocal/dbml-tools v0.9.11-dbh.1 h1:534G6a66bs5b65pFfDSiu/NkVmmBb4B/aeyzk2aRhgs=
+github.com/BenLocal/dbml-tools v0.9.11-dbh.1/go.mod h1:Qpi7jEz5VIVYZYK8BfGHvN9G8M7VoqArviuQFUg3DmE=
 github.com/BenLocal/readline v1.3.0-dbh.1 h1:KxkqmGcG2tN0HpMgDPw78Z4R5Ys822yjqGOvnnK/igk=
 github.com/BenLocal/readline v1.3.0-dbh.1/go.mod h1:bOpqx2/VqGlIoobyWR1Vgt/p5FiMfIHj4OicPuw6RfU=
 github.com/ClickHouse/ch-go v0.74.0 h1:uYs2m4wIt0ZHSM1E72rg0maCfzhR2V3xWb/vZEgpeWE=

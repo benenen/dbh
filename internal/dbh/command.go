@@ -389,6 +389,7 @@ func NewCommand() *cobra.Command {
 	root.AddCommand(historyCommand)
 	addMetadataCommands(root, store, names)
 	addCheckCommand(root, store, names)
+	addERDCommands(root, store, names)
 	return root
 }
 

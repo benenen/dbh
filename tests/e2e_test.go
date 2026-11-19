@@ -49,6 +49,7 @@ func TestMain(m *testing.M) {
 type fixture struct {
 	t                      *testing.T
 	root, config, database string
+	dir                    string // working directory; empty uses the test's
 	env                    map[string]string
 }
 
@@ -87,6 +88,7 @@ func (f *fixture) invoke(stdin string, success bool, args ...string) result {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Env = f.environment()
+	cmd.Dir = f.dir
 	cmd.Stdin = strings.NewReader(stdin)
 	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr

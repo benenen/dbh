@@ -8,6 +8,7 @@ require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/gofrs/flock v0.13.1
 	github.com/jackc/pgx/v5 v5.11.0
+	github.com/mevdschee/dbml-tools v0.9.11
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/reeflective/readline v1.3.0
 	github.com/rivo/uniseg v0.4.7
@@ -58,3 +59,6 @@ require (
 
 // Patched fork: terminal cursor replies, prompt layout and live completion.
 replace github.com/reeflective/readline => github.com/BenLocal/readline v1.3.0-dbh.1
+
+// Patched fork: keyword-named columns, PostgreSQL composite keys and defaults.
+replace github.com/mevdschee/dbml-tools => github.com/BenLocal/dbml-tools v0.9.11-dbh.1

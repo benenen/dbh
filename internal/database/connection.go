@@ -118,7 +118,30 @@ func ConnectSQL(ctx context.Context, db *sql.DB) (Connection, error) {
 	}
 	return &sqlConnection{db: db, conn: conn}, nil
 }
+
+// SQLPool is implemented by database/sql connections. ReleasePool returns the
+// session connection to its single-connection pool and hands the pool to code
+// that needs *sql.DB, which then reuses the same physical connection. Afterwards
+// the Connection only supports Close.
+type SQLPool interface {
+	ReleasePool() (*sql.DB, error)
+}
+
+var errReleased = errors.New("connection was released to its pool")
+
+func (c *sqlConnection) ReleasePool() (*sql.DB, error) {
+	if c.conn == nil {
+		return nil, errReleased
+	}
+	err := c.conn.Close()
+	c.conn = nil
+	return c.db, err
+}
+
 func (c *sqlConnection) Query(ctx context.Context, query string, args ...any) (Rows, error) {
+	if c.conn == nil {
+		return nil, errReleased
+	}
 	rows, err := c.conn.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -126,10 +149,18 @@ func (c *sqlConnection) Query(ctx context.Context, query string, args ...any) (R
 	return &sqlRows{Rows: rows}, nil
 }
 func (c *sqlConnection) Exec(ctx context.Context, query string, args ...any) error {
+	if c.conn == nil {
+		return errReleased
+	}
 	_, err := c.conn.ExecContext(ctx, query, args...)
 	return err
 }
-func (c *sqlConnection) Close() error { return errors.Join(c.conn.Close(), c.db.Close()) }
+func (c *sqlConnection) Close() error {
+	if c.conn == nil {
+		return c.db.Close()
+	}
+	return errors.Join(c.conn.Close(), c.db.Close())
+}
 
 type sqlRows struct{ *sql.Rows }
 
@@ -157,6 +188,9 @@ func (r *sqlRows) Row() (Row, error) {
 }
 
 func (c *sqlConnection) ExecResult(ctx context.Context, query string, args ...any) (int64, bool, error) {
+	if c.conn == nil {
+		return 0, false, errReleased
+	}
 	result, err := c.conn.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, false, err
