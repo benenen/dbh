@@ -37,7 +37,9 @@ flowchart TD
 2. **目录剪枝**：
    - 命中 `.dbh` 后立即记录路径，不再递归进入 `.dbh` 内部；
    - 跳过所有其他隐藏目录（名称以 `.` 开头，如 `.git`、`.cache`、`.next`、`.gradle`、`.venv`、`.idea`、`.vscode`）；
-   - 跳过常见依赖、构建与产物目录：`node_modules`、`vendor`、`target`、`dist`、`build`、`out`、`bin`、`obj`、`logs`、`tmp`、`coverage`、`__pycache__`、`Pods`、`DerivedData`、`third_party`、`testdata`。
+   - 跳过常见依赖、构建与产物目录：`node_modules`、`vendor`、`target`、`dist`、`build`、`out`、`bin`、`obj`、`logs`、`tmp`、`coverage`、`__pycache__`、`Pods`、`DerivedData`、`third_party`、`testdata`；
+   - **`.gitignore` 剪枝**：读取沿途各目录的 `.gitignore` 规则，自动跳过自定义忽略的大目录（如 `data/`、`uploads/`、`storage/`），支持 `!pattern` 取消忽略；同时明确保护 `.dbh` 本身，即使 `.gitignore` 中包含 `.dbh/` 也不会被跳过；
+   - **最大深度限制**：最多向下递归 8 层（`maxScanDepth = 8`），防止极深目录树拖慢扫描。
 3. **有界并发防死锁**：使用容量为 `min(NumCPU, 8)` 的信号量 channel 限制并发 goroutine 数量；当并发槽位已满时，当前协程直接同步递归扫描子目录，避免等待自身释放槽位造成死锁。
 4. **稳定顺序**：并发扫描结束后对 `.dbh` 绝对路径排序，确保后续加载与输出顺序确定。
 
@@ -62,7 +64,7 @@ flowchart TD
 | 命令 | 扫描范围 | 合并方式 | `--dir` 作用 | `--model` 默认值 |
 |---|---|---|---|---|
 | `tables` / `relations` / `path` / `show` / `check` | 默认扫描工程内所有 `.dbh/` | 合并为单一逻辑模型查询/校验 | 限定单个 `.dbh/` | 空（加载全部模型） |
-| `status` | 默认扫描工程内所有 `.dbh/` | 不合并，按每个模型文件逐行展示路径与状态 | 限定单个 `.dbh/` | 空（列出全部模型） |
+| `status` | 默认扫描工程内所有 `.dbh/` | 按模型文件逐行展示，但使用全局合并后的表集合校验各 `.refs.dbml`（跨 `.dbh/` 引用记为 `ok`） | 限定单个 `.dbh/` | 空（列出全部模型） |
 | `pull --save` | 不做全工程扫描 | 只写入当前或向上最近的单个 `.dbh/`（无则在工程根/当前目录创建） | 指定写入目标目录（自动补 `.dbh`） | `schema` |
 
 ## 性能参考

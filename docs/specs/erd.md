@@ -35,10 +35,12 @@
 | `.dbh/<model>.dbml` | 数据库实际结构：表、字段、索引、枚举、数据库中的外键 | `erd pull --save` 生成，可随时覆盖重新生成 |
 | `.dbh/<model>.refs.dbml` | 从代码推断的关系，只含 `Ref` 和注释 | Agent 或人维护，`pull` 从不改动 |
 
-- 默认模型名为 `schema`，即 `.dbh/schema.dbml` 与 `.dbh/schema.refs.dbml`；多个库时用 `--model M` 区分，如 `.dbh/reporting.dbml`。
+- 默认模型名为 `schema`，即 `.dbh/schema.dbml` 与 `.dbh/schema.refs.dbml`；多个库时用 `--model M` 区分，如 `.dbh/reporting.dbml`。查询类命令未指定 `--model` 时加载全部模型，`pull` 未指定 `--model` 时默认使用 `schema`。
 - 模型名只允许字母、数字、`_`、`-`、`.`，不以 `.` 开头，不以 `.refs` 结尾，路径不能逃逸 `.dbh/`。
 - `.refs.dbml` 可选；不存在时模型只有 declared 关系。
-- 定位 `.dbh/`：从当前工作目录逐级向上查找，找到第一个 `.dbh/` 目录即停止；到达 Git 仓库根目录（含 `.git` 的目录）或文件系统根目录仍未找到时，视为没有模型。
+- 定位 `.dbh/`：
+  - 查询类命令（`status`、`check`、`tables`、`relations`、`path`、`show`）默认从工程根目录（最近的 `.git` 所在目录，不在 Git 仓库内则为当前目录）并发递归扫描所有 `.dbh/`（跳过其他隐藏目录、常见构建/依赖目录、`.gitignore` 忽略的目录以及深度超过 8 层的子树），两阶段合并表与关系，从而支持跨 `.dbh/` 的推断关联与 `path` 寻路；传入 `--dir PATH` 时限定单个 `.dbh/`。详细流程见 [ERD 多 `.dbh/` 扫描与合并流程](../erd-scan.md)。
+  - 写命令 `pull --save` 仍从当前目录向上查找最近的单个 `.dbh/`（到达 Git 根目录未找到则在根目录创建，不在仓库内则在当前目录创建），传入 `--dir PATH` 时写入指定目录。
 - 查询时每次重新读取并解析文件，编辑后立即生效。
 - 模型与连接配置互不影响：`dbh remove` 不动 `.dbh/`，`.dbh/` 也不记录连接名。
 
@@ -60,17 +62,17 @@
 
 ## 命令
 
-命令组 `dbh erd`，简写 `er`，完整名与简写行为相同。除 `pull` 外都只读 `.dbh/` 中的文件，不连接数据库。`--model M` 选择模型，默认 `schema`。
+命令组 `dbh erd`，简写 `er`，完整名与简写行为相同。除 `pull` 外都只读 `.dbh/` 中的文件，不连接数据库。`--dir PATH` 限定单个 `.dbh/` 目录，`--model M` 选择模型（查询命令默认加载全部模型，`pull` 默认 `schema`）。
 
 | 命令 | 作用 |
 |---|---|
-| `erd pull NAME [--db DB] [--schema S] [--model M] [--save \| -o FILE]` | 用连接 `NAME` 读取数据库结构，输出 DBML（默认 stdout）；`--save` 写入 `.dbh/<model>.dbml` |
-| `erd check [--model M]` | 校验模型两个文件；错误与警告以 `FILE:行:列: 信息` 输出到 stderr，有错误时退出码非零 |
-| `erd status` | 列出 `.dbh/` 中的模型 |
-| `erd tables [--model M] [--format F]` | 列出模型中的表 |
-| `erd relations [--model M] [--table T] [--source S] [--format F]` | 列出关系；`--table` 只看与该表相关的关系（两端任一匹配），`--source declared\|inferred` 只看一类 |
-| `erd show [TABLE...] [--model M] [--depth N] [--format text\|dot\|mermaid]` | 终端预览；给出 TABLE 时只显示这些表及 N 层内相邻的表（默认 1） |
-| `erd path FROM TO [--model M] [--declared-only] [--format F]` | 两表之间的最短关联路径，供写 JOIN 参考 |
+| `erd pull NAME [--db DB] [--schema S] [--dir PATH] [--model M] [--save \| -o FILE]` | 用连接 `NAME` 读取数据库结构，输出 DBML（默认 stdout）；`--save` 写入 `.dbh/<model>.dbml` |
+| `erd check [--dir PATH] [--model M]` | 校验模型文件（多 `.dbh/` 时按合并后的表集合校验跨目录推断关系）；错误与警告以 `FILE:行:列: 信息` 输出到 stderr，有错误时退出码非零 |
+| `erd status [--dir PATH] [--model M] [--format F]` | 列出工程内所有 `.dbh/` 中的模型；多 `.dbh/` 时结合全局表集合校验各 `.refs.dbml` |
+| `erd tables [--dir PATH] [--model M] [--format F]` | 列出模型中的表 |
+| `erd relations [--dir PATH] [--model M] [--table T] [--source S] [--format F]` | 列出关系；`--table` 只看与该表相关的关系（两端任一匹配），`--source declared\|inferred` 只看一类 |
+| `erd show [TABLE...] [--dir PATH] [--model M] [--depth N] [--format text\|dot\|mermaid]` | 终端预览；给出 TABLE 时只显示这些表及 N 层内相邻的表（默认 1） |
+| `erd path FROM TO [--dir PATH] [--model M] [--declared-only] [--format F]` | 两表之间的最短关联路径，供写 JOIN 参考 |
 
 ### `pull`
 
