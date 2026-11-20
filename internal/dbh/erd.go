@@ -76,42 +76,13 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 		if !validFormat(statusFormat) {
 			return fmt.Errorf("invalid output format")
 		}
-		if model != "" {
-			if err := erd.ValidModelName(model); err != nil {
-				return err
-			}
-		}
 		dirs, err := erdDirs(dirFlag)
 		if err != nil {
 			return err
 		}
-		rows := erd.Rows{Columns: []string{"model", "file", "refs_file", "tables", "declared", "inferred", "state"}}
-		for _, dir := range dirs {
-			models, err := erd.List(dir)
-			if err != nil {
-				return err
-			}
-			for _, name := range models {
-				if model != "" && name != model {
-					continue
-				}
-				mainFile, refsFile := erd.ModelFiles(dir, name)
-				row := []any{name, erd.DisplayPath(mainFile), "", 0, 0, 0, "invalid"}
-				if _, err := os.Stat(refsFile); err == nil {
-					row[2] = erd.DisplayPath(refsFile)
-				}
-				if m, err := erd.Load(dir, name); err == nil {
-					row[3], row[4], row[5] = len(m.Tables), m.Count(erd.SourceDeclared), m.Count(erd.SourceInferred)
-					switch {
-					case len(m.Errors) > 0:
-					case len(m.Warnings) > 0:
-						row[6] = "warning"
-					default:
-						row[6] = "ok"
-					}
-				}
-				rows.Values = append(rows.Values, row)
-			}
+		rows, err := erd.StatusRows(dirs, model)
+		if err != nil {
+			return err
 		}
 		return writeERDRows(cmd.OutOrStdout(), rows, statusFormat)
 	}}

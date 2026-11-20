@@ -126,7 +126,7 @@ func TestERDScansAllProjectDirs(t *testing.T) {
 	equal(t, f.run("erd", "path", "orders", "users", "--format", "tsv"),
 		"step\tfrom_table\tfrom_columns\tto_table\tto_columns\tsource\n1\torders\tuser_id\tusers\tid\tinferred\n")
 	status := f.run("erd", "status", "--format", "tsv")
-	contains(t, status, "schema\t.dbh/schema.dbml\t.dbh/schema.refs.dbml\t")
+	contains(t, status, "schema\t.dbh/schema.dbml\t.dbh/schema.refs.dbml\t1\t0\t1\tok\n")
 	contains(t, status, "users\t../svc-b/.dbh/users.dbml\t\t1\t0\t0\tok\n")
 
 	// --dir limits queries to one .dbh directory.

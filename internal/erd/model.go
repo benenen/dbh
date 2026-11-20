@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -57,6 +58,8 @@ func FindDir(start string) (dir string, create string, err error) {
 	}
 }
 
+const maxScanDepth = 8
+
 var skipScanDirs = map[string]bool{
 	"node_modules": true,
 	"vendor":       true,
@@ -74,6 +77,73 @@ var skipScanDirs = map[string]bool{
 	"DerivedData":  true,
 	"third_party":  true,
 	"testdata":     true,
+}
+
+type ignoreRule struct {
+	base     string // directory where the .gitignore lives
+	pattern  string
+	anchored bool
+	negated  bool
+}
+
+func loadGitignore(dir string) []ignoreRule {
+	data, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	if err != nil {
+		return nil
+	}
+	var rules []ignoreRule
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		negated := false
+		if strings.HasPrefix(line, "!") {
+			negated = true
+			line = strings.TrimSpace(line[1:])
+			if line == "" {
+				continue
+			}
+		}
+		line = strings.TrimSuffix(line, "/")
+		if line == "" {
+			continue
+		}
+		anchored := strings.HasPrefix(line, "/")
+		line = strings.TrimPrefix(line, "/")
+		line = strings.TrimPrefix(line, "**/")
+		if strings.Contains(line, "/") {
+			anchored = true
+		}
+		rules = append(rules, ignoreRule{
+			base:     dir,
+			pattern:  line,
+			anchored: anchored,
+			negated:  negated,
+		})
+	}
+	return rules
+}
+
+func isIgnoredDir(rules []ignoreRule, fullPath, name string) bool {
+	ignored := false
+	for _, r := range rules {
+		var matched bool
+		if r.anchored {
+			rel, err := filepath.Rel(r.base, fullPath)
+			if err != nil {
+				continue
+			}
+			rel = filepath.ToSlash(rel)
+			matched, _ = path.Match(r.pattern, rel)
+		} else {
+			matched, _ = path.Match(r.pattern, name)
+		}
+		if matched {
+			ignored = !r.negated
+		}
+	}
+	return ignored
 }
 
 // ProjectRoot returns the nearest ancestor directory containing .git, or start
@@ -99,7 +169,8 @@ func ProjectRoot(start string) (string, error) {
 
 // FindAllDirs scans the project root (the Git repository root when available,
 // otherwise start) in parallel for every .dbh directory, pruning hidden
-// directories and common build/dependency folders. Returns sorted absolute paths.
+// directories, common build/dependency folders, .gitignore-matched directories,
+// and trees deeper than maxScanDepth. Returns sorted absolute paths.
 func FindAllDirs(start string) ([]string, error) {
 	root, err := ProjectRoot(start)
 	if err != nil {
@@ -125,8 +196,8 @@ func FindAllDirs(start string) ([]string, error) {
 		sem      = make(chan struct{}, workers)
 	)
 
-	var scan func(dir string)
-	scan = func(dir string) {
+	var scan func(dir string, depth int, inherited []ignoreRule)
+	scan = func(dir string, depth int, inherited []ignoreRule) {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrNotExist) {
@@ -139,6 +210,18 @@ func FindAllDirs(start string) ([]string, error) {
 			mu.Unlock()
 			return
 		}
+		rules := inherited
+		for _, entry := range entries {
+			if !entry.IsDir() && entry.Name() == ".gitignore" {
+				if local := loadGitignore(dir); len(local) > 0 {
+					combined := make([]ignoreRule, len(inherited)+len(local))
+					copy(combined, inherited)
+					copy(combined[len(inherited):], local)
+					rules = combined
+				}
+				break
+			}
+		}
 		for _, entry := range entries {
 			if !entry.IsDir() {
 				continue
@@ -150,27 +233,33 @@ func FindAllDirs(start string) ([]string, error) {
 				mu.Unlock()
 				continue
 			}
+			if depth >= maxScanDepth {
+				continue
+			}
 			if strings.HasPrefix(name, ".") || skipScanDirs[name] {
 				continue
 			}
 			child := filepath.Join(dir, name)
+			if len(rules) > 0 && isIgnoredDir(rules, child, name) {
+				continue
+			}
 			select {
 			case sem <- struct{}{}:
 				wg.Add(1)
-				go func(p string) {
+				go func(p string, d int, r []ignoreRule) {
 					defer func() {
 						<-sem
 						wg.Done()
 					}()
-					scan(p)
-				}(child)
+					scan(p, d, r)
+				}(child, depth+1, rules)
 			default:
-				scan(child)
+				scan(child, depth+1, rules)
 			}
 		}
 	}
 
-	scan(root)
+	scan(root, 0, nil)
 	wg.Wait()
 	if firstErr != nil {
 		return nil, firstErr
@@ -439,6 +528,116 @@ func LoadAll(dirs []string, modelFilter string) (*Model, error) {
 		}
 	}
 	return m, nil
+}
+
+// StatusRows returns one status row per model file across dirs. When multiple
+// .dbh directories exist, each model's .refs.dbml is validated against the
+// combined table set so cross-.dbh inferred relations are counted and marked ok.
+func StatusRows(dirs []string, modelFilter string) (Rows, error) {
+	if modelFilter != "" {
+		if err := ValidModelName(modelFilter); err != nil {
+			return Rows{}, err
+		}
+	}
+	type item struct {
+		name     string
+		mainFile string
+		refsFile string
+		hasRefs  bool
+		tables   int
+		declared int
+		inferred int
+		hasError bool
+		hasWarn  bool
+	}
+	var items []item
+	merged := &Model{Name: "all", refsFiles: map[string]bool{}}
+	type parsedMain struct {
+		file string
+		db   *interpreter.Database
+	}
+	var mains []parsedMain
+
+	for _, dir := range dirs {
+		names, err := List(dir)
+		if err != nil {
+			return Rows{}, err
+		}
+		for _, name := range names {
+			if modelFilter != "" && name != modelFilter {
+				continue
+			}
+			mainFile, refsFile := ModelFiles(dir, name)
+			it := item{name: name, mainFile: mainFile, refsFile: refsFile}
+			if _, err := os.Stat(refsFile); err == nil {
+				it.hasRefs = true
+			}
+			mainSource, err := os.ReadFile(mainFile)
+			if err != nil {
+				it.hasError = true
+				items = append(items, it)
+				continue
+			}
+			local := &Model{Name: name, File: mainFile, refsFiles: map[string]bool{}}
+			if mainDB := local.parse(mainFile, string(mainSource), false); mainDB != nil {
+				local.addTables(mainDB)
+				local.addRelations(mainDB.Refs, SourceDeclared, mainFile)
+				merged.addTables(mainDB)
+				mains = append(mains, parsedMain{file: mainFile, db: mainDB})
+			}
+			it.tables = len(local.Tables)
+			it.declared = local.Count(SourceDeclared)
+			it.hasError = len(local.Errors) > 0
+			it.hasWarn = len(local.Warnings) > 0
+			items = append(items, it)
+		}
+	}
+	for _, pm := range mains {
+		merged.addRelations(pm.db.Refs, SourceDeclared, pm.file)
+	}
+
+	rows := Rows{Columns: []string{"model", "file", "refs_file", "tables", "declared", "inferred", "state"}}
+	for i := range items {
+		it := &items[i]
+		refsDisplay := ""
+		if it.hasRefs {
+			refsDisplay = DisplayPath(it.refsFile)
+			refsSource, err := os.ReadFile(it.refsFile)
+			if err != nil {
+				it.hasError = true
+			} else {
+				probe := &Model{
+					Name:      it.name,
+					RefsFile:  it.refsFile,
+					Tables:    merged.Tables,
+					Relations: append([]Relation(nil), merged.Relations...),
+					refsFiles: map[string]bool{it.refsFile: true},
+				}
+				if refsDB := probe.parse(it.refsFile, string(refsSource), true); refsDB != nil {
+					probe.addRelations(refsDB.Refs, SourceInferred, it.refsFile)
+				}
+				it.inferred = probe.Count(SourceInferred)
+				if len(probe.Errors) > 0 {
+					it.hasError = true
+				}
+				if len(probe.Warnings) > 0 {
+					it.hasWarn = true
+				}
+			}
+		}
+		state := "ok"
+		switch {
+		case it.hasError:
+			state = "invalid"
+		case it.hasWarn:
+			state = "warning"
+		}
+		rows.Values = append(rows.Values, []any{
+			it.name, DisplayPath(it.mainFile), refsDisplay,
+			it.tables, it.declared, it.inferred, state,
+		})
+	}
+	return rows, nil
 }
 
 // Usable reports whether queries can run: only invalid inferred relations,

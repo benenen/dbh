@@ -289,13 +289,20 @@ func TestFindAllDirs(t *testing.T) {
 		filepath.Join(repo, DirName),
 		filepath.Join(repo, "svc-a", DirName),
 		filepath.Join(repo, "svc-b", "nested", DirName),
+		filepath.Join(repo, "keep", DirName),
+		filepath.Join(repo, "data", "raw", DirName),
 		filepath.Join(repo, ".cache", "sub", DirName),
 		filepath.Join(repo, "node_modules", "pkg", DirName),
 		filepath.Join(repo, "vendor", "mod", DirName),
+		filepath.Join(repo, "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9", DirName),
 	} {
 		if err := os.MkdirAll(p, 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// .gitignore prunes data/ and honors !keep/, but never hides .dbh itself.
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".dbh/\ndata/\nkeep/\n!keep/\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	// Calling from a nested directory still scans every .dbh under the repo root.
 	got, err := FindAllDirs(filepath.Join(repo, "svc-a"))
@@ -304,6 +311,7 @@ func TestFindAllDirs(t *testing.T) {
 	}
 	want := []string{
 		filepath.Join(repo, DirName),
+		filepath.Join(repo, "keep", DirName),
 		filepath.Join(repo, "svc-a", DirName),
 		filepath.Join(repo, "svc-b", "nested", DirName),
 	}
@@ -389,6 +397,23 @@ Table accounts {
 	}
 	if len(onlyBilling.Tables) != 2 {
 		t.Fatalf("billing tables = %d, want 2", len(onlyBilling.Tables))
+	}
+
+	// StatusRows validates cross-.dbh inferred relations against the combined table set.
+	statusRows, err := StatusRows([]string{dirA, dirB}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statusRows.Values) != 2 {
+		t.Fatalf("status rows = %v", statusRows.Values)
+	}
+	// svc-a schema: 2 tables, 1 declared, 1 cross-.dbh inferred, ok.
+	if statusRows.Values[0][3] != 2 || statusRows.Values[0][4] != 1 || statusRows.Values[0][5] != 1 || statusRows.Values[0][6] != "ok" {
+		t.Fatalf("svc-a status = %v", statusRows.Values[0])
+	}
+	// svc-b billing: 2 tables, 1 declared, 0 inferred, ok.
+	if statusRows.Values[1][3] != 2 || statusRows.Values[1][4] != 1 || statusRows.Values[1][5] != 0 || statusRows.Values[1][6] != "ok" {
+		t.Fatalf("svc-b status = %v", statusRows.Values[1])
 	}
 }
 
