@@ -1,11 +1,23 @@
 ---
 name: dbh-erd
-description: 用 dbh erd 在项目 .dbh/ 维护 DBML 关系模型：拉取库结构、从代码补充未声明的关系、查询表关系与 JOIN 路径；生成关系图或查询表如何关联时触发。
+description: 用 dbh erd 维护查询项目 .dbh/ DBML 关系模型（支持 init 从代码和库生成关系文件、查表字段依赖与 JOIN 路径）；涉及数据库逻辑、SQL/ORM 排查或字段影响分析时触发。
 ---
 
 # 用 dbh erd 维护关系模型
 
 `dbh erd`（简写 `er`）在项目根目录的 `.dbh/` 中维护 DBML 关系模型。Agent 通过终端直接运行本机 `dbh` 并读取实际输出。
+
+## 子命令
+
+### `init [NAME] [--db DB] [--model M]`
+
+根据当前代码和数据库，在当前 `.dbh/` 中初始化生成数据库关系文件（`<model>.dbml` 与 `<model>.refs.dbml`）：
+
+1. **确定位置**：若当前目录希望独立存放模型（而不是落到外层 Git 根目录），先确保当前目录存在 `.dbh/`；否则 `dbh erd pull --save` 会在 Git 根目录（无 Git 仓库则在当前目录）创建 `.dbh/`。
+2. **确定连接与库**：未显式传入 `NAME` 时，运行 `dbh list` 并结合项目配置（如 `.env`、`config.*`、`docker-compose.*`，不输出密码或明文 DSN）匹配连接与库名；无法唯一确定时询问用户。用 `dbh check NAME --timeout 10s` 验证连通性。
+3. **生成结构文件**：执行下节“生成或更新模型”第 2–3 步，生成 `.dbh/<model>.dbml`。
+4. **提取代码关系**：执行下节第 4–6 步，扫描当前代码中的 ORM 关联、迁移脚本和业务 SQL `JOIN`，将确认的隐式关系连同源码位置注释写入 `.dbh/<model>.refs.dbml`。
+5. **校验并汇报**：运行 `dbh erd check` 和 `dbh erd status`，修正所有 error 后按第 8 步汇报结果。
 
 ## 准备
 
