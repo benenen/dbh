@@ -23,6 +23,8 @@ type Session struct {
 	Notice          io.Writer
 	Stats           bool
 	CurrentDatabase string
+	BeforeOutput    func()
+	Pager           func(columns []string, rows [][]string) (bool, error)
 	backend         database.Driver
 	dsn             string
 	proxy           *proxy.Chain
@@ -156,9 +158,15 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 	}()
 	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
+	beforeOutput := func() {
+		if s.BeforeOutput != nil {
+			s.BeforeOutput()
+		}
+	}
 	if s.Stats && affectedStatement(query, s.backend.Syntax()) {
 		if executor, ok := s.Conn.(database.ResultExecutor); ok {
 			affected, affectedKnown, err = executor.ExecResult(ctx, query, args...)
+			beforeOutput()
 			if err != nil {
 				return err
 			}
@@ -172,9 +180,11 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 	// ensures SQLite steps commands which do not return columns.
 	rows, err := s.Conn.Query(ctx, query, args...)
 	if err != nil {
+		beforeOutput()
 		return err
 	}
 	defer func() {
+		beforeOutput()
 		closeErr := rows.Close()
 		if err == nil {
 			err = closeErr
@@ -197,6 +207,7 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 		var jsonOut *json.Encoder
 		switch format {
 		case "csv":
+			beforeOutput()
 			csvOut = csv.NewWriter(out)
 			if len(cols) > 0 {
 				if err := csvOut.Write(cols); err != nil {
@@ -204,8 +215,10 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 				}
 			}
 		case "json":
+			beforeOutput()
 			jsonOut = json.NewEncoder(out)
 		case "tsv":
+			beforeOutput()
 			if len(cols) > 0 {
 				if _, err := fmt.Fprintln(out, tsvLine(cols)); err != nil {
 					return err
@@ -239,7 +252,8 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 			switch format {
 			case "table":
 				tableRows = append(tableRows, fields)
-				if len(tableRows) == batchSize {
+				if s.Pager == nil && len(tableRows) == batchSize {
+					beforeOutput()
 					if err := renderTable(out, cols, tableRows, tableWidth(out)); err != nil {
 						return err
 					}
@@ -272,8 +286,17 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 			return err
 		}
 		if format == "table" {
+			beforeOutput()
 			if len(cols) > 0 {
-				if len(tableRows) > 0 || count == 0 {
+				paged := false
+				if s.Pager != nil {
+					var pagerErr error
+					paged, pagerErr = s.Pager(cols, tableRows)
+					if pagerErr != nil {
+						return pagerErr
+					}
+				}
+				if !paged && (len(tableRows) > 0 || count == 0) {
 					if err := renderTable(out, cols, tableRows, tableWidth(out)); err != nil {
 						return err
 					}

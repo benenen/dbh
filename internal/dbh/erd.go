@@ -232,7 +232,9 @@ func erdPullCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 		if cmd.Flags().Changed("schema") && p.Driver != "postgres" {
 			return fmt.Errorf("--schema is only supported for PostgreSQL")
 		}
+		stopSpinner := startSpinner(cmd.ErrOrStderr(), "Reading schema")
 		dbml, err := pullDBML(cmd.Context(), p, db, cmd.Flags().Changed("db"), schema, timeout)
+		stopSpinner()
 		if err != nil {
 			return err
 		}

@@ -48,6 +48,8 @@ func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 			names = c.databases
 		case `\format`:
 			names = []string{"table", "csv", "json", "tsv"}
+		case `\pager`:
+			names = []string{"auto", "on", "off"}
 		}
 		return matching(names, name), name
 	}
@@ -124,7 +126,7 @@ func matching(words []string, text string) []string {
 func commandArgument(line []rune) (command, name string, ok bool) {
 	text := string(line)
 	text = strings.TrimLeft(text[strings.LastIndex(text, "\n")+1:], " \t")
-	for _, command := range []string{`\use`, `\describe`, `\indexes`, `\format`} {
+	for _, command := range []string{`\use`, `\describe`, `\indexes`, `\format`, `\pager`} {
 		rest, found := strings.CutPrefix(text, command)
 		if !found || rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
 			continue
@@ -197,7 +199,7 @@ func (c *completer) refresh(ctx context.Context, s *Session) error {
 	if native := s.backend.Syntax().CompletionWords; len(native) > 0 {
 		words = append([]string{}, native...)
 	}
-	words = append(words, `\help`, `\q`, `\database`, `\use`, `\tables`, `\describe`, `\indexes`, `\history`, `\refresh`, `\clear`, `\format`)
+	words = append(words, `\help`, `\q`, `\database`, `\use`, `\tables`, `\describe`, `\indexes`, `\history`, `\refresh`, `\clear`, `\format`, `\pager`)
 	// SQLite has no database list; \use then offers no candidates.
 	c.databases, _ = s.Databases(ctx)
 	tables, err := s.Tables(ctx)
@@ -263,6 +265,7 @@ Ctrl-C clears input; Ctrl-D exits.
 \refresh            Refresh schema completion (use after DDL)
 \clear              Clear pending query
 \format table|csv|json|tsv  Change output format
+\pager auto|on|off  Scroll wide/tall table results in an interactive pager
 `
 
 func acceptSQLInput(line, driver string) bool {
@@ -307,6 +310,17 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 	rl.Config.Vars["completion-ignore-case"] = true
 	rl.Config.Vars["history-autosuggest"] = !noHistory
 	rl.Config.Vars["cursor-position-probe"] = false
+	pagerMode := "auto"
+	s.Pager = func(columns []string, rows [][]string) (bool, error) {
+		if !shouldUsePager(pagerMode, out, columns, rows) {
+			return false, nil
+		}
+		if err := runTablePager(columns, rows); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	pendingSearchLine := ""
 	rl.Keymap.Register(map[string]func(){
 		"dbh-newline": func() {
 			rl.Line().Insert(rl.Cursor().Pos(), '\n')
@@ -330,9 +344,20 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 			rl.Display.AcceptLine()
 			rl.History.Accept(false, false, readline.ErrInterrupt)
 		},
+		"dbh-fuzzy-history": func() {
+			pendingSearchLine = string(*rl.Line())
+			rl.Keymap.Commands()["abort"]()
+			rl.Display.AcceptLine()
+			rl.History.Accept(false, false, errFuzzyHistory)
+		},
 	})
 	for _, keymap := range []string{"emacs", "menu-select", "isearch"} {
 		if err := rl.Config.Bind(keymap, "\x03", "dbh-interrupt", false); err != nil {
+			return err
+		}
+	}
+	for _, keymap := range []string{"emacs", "menu-select"} {
+		if err := rl.Config.Bind(keymap, "\x12", "dbh-fuzzy-history", false); err != nil {
 			return err
 		}
 	}
@@ -413,6 +438,22 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 	_, _ = fmt.Fprintln(out, "Connected to", p.Name, "("+p.Driver+"). Type \\help for help.")
 	for {
 		line, err := rl.Readline()
+		if errors.Is(err, errFuzzyHistory) {
+			selected, ok, pickErr := pickHistory(history.entries, pendingSearchLine)
+			if pickErr != nil {
+				_, _ = fmt.Fprintln(errOut, "History search:", pickErr)
+			}
+			restore := pendingSearchLine
+			if ok {
+				restore = selected
+			}
+			pendingSearchLine = ""
+			if restore != "" {
+				rl.Line().Set([]rune(restore)...)
+				rl.History.Accept(true, false, nil)
+			}
+			continue
+		}
 		if errors.Is(err, readline.ErrInterrupt) {
 			continue
 		}
@@ -502,6 +543,14 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 				} else {
 					format = fields[1]
 				}
+			case `\pager`:
+				if len(fields) == 1 {
+					_, _ = fmt.Fprintln(out, "Pager:", pagerMode)
+				} else if len(fields) != 2 || !validPagerMode(fields[1]) {
+					_, _ = fmt.Fprintln(errOut, `Usage: \pager auto|on|off`)
+				} else {
+					pagerMode = fields[1]
+				}
 			default:
 				_, _ = fmt.Fprintln(errOut, "Unknown command. Type \\help.")
 			}
@@ -527,12 +576,17 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 				}
 				history.entries = retainHistory(append(history.entries, entry), store.HistoryLimit)
 			}
-			if err := s.Execute(ctx, q, format, out); err != nil {
+			stopSpinner := startSpinner(errOut, "Running query")
+			s.BeforeOutput = stopSpinner
+			execErr := s.Execute(ctx, q, format, out)
+			stopSpinner()
+			s.BeforeOutput = nil
+			if execErr != nil {
 				label := "SQL error:"
 				if syntax := s.backend.Syntax(); syntax.JSONCommands || syntax.LineCommands {
 					label = "Command error:"
 				}
-				_, _ = fmt.Fprintln(errOut, label, err)
+				_, _ = fmt.Fprintln(errOut, label, execErr)
 				break
 			}
 			if _, use, _ := parseUseDatabase(q, s.backend.Syntax()); use {

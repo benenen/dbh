@@ -318,12 +318,17 @@ func NewCommand() *cobra.Command {
 							return err
 						}
 					}
+					stopSpinner := startSpinner(cmd.ErrOrStderr(), "Running query")
+					session.BeforeOutput = stopSpinner
 					execute := func() error { return session.Execute(cmd.Context(), q, format, cmd.OutOrStdout()) }
 					if len(bound) > 0 {
 						execute = func() error { return session.executeArgs(cmd.Context(), q, format, cmd.OutOrStdout(), bound...) }
 					}
-					if err := execute(); err != nil {
-						return err
+					execErr := execute()
+					stopSpinner()
+					session.BeforeOutput = nil
+					if execErr != nil {
+						return execErr
 					}
 				}
 				return nil
