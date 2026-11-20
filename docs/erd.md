@@ -20,7 +20,7 @@ Ref: orders.product_id > products.id
 
 多个库时用 `--model` 区分，例如 `--model reporting` 对应 `.dbh/reporting.dbml` 和 `.dbh/reporting.refs.dbml`。模型名只用字母、数字、`_`、`-`、`.`。
 
-dbh 从当前目录逐级向上查找 `.dbh/`，到 Git 仓库根目录为止，因此在子目录中运行也会使用项目根目录的模型。模型与连接配置互不影响：`dbh remove` 不会删除 `.dbh/`。
+查询命令（`status`、`check`、`tables`、`relations`、`path`、`show`）默认从工程根目录（Git 仓库根目录，不在仓库内则为当前目录）递归扫描**所有** `.dbh/` 目录，并合并其中的模型进行查询；未指定 `--model` 时加载全部模型，显式传入 `--model` 时只加载同名模型，传入 `--dir PATH` 时仅限定单个 `.dbh/` 目录。不同 `.dbh/` 中出现同名表时按表名合并字段与关系，跨 `.dbh/` 的推断关系同样可解析。`pull --save` 仍只写入当前或向上最近的单个 `.dbh/`（也可配合 `--dir` 指定目标目录）。详细扫描与合并流程见 [ERD 多 `.dbh/` 扫描与合并流程](erd-scan.md)。模型与连接配置互不影响：`dbh remove` 不会删除 `.dbh/`。
 
 ## 生成结构
 

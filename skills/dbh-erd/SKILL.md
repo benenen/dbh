@@ -26,7 +26,7 @@ description: 用 dbh erd 维护查询项目 .dbh/ DBML 关系模型（支持 ini
 - 依据用户给出的目标选择连接；多个连接都符合且无法确定时，询问连接名或数据库名。没有合适的连接时，请用户用 `dbh new NAME --driver DRIVER --prompt-dsn` 自行保存，不要把 DSN 或密码写进命令历史、仓库或回复。
 - 指定了配置目录时，所有命令带同样的 `--config-dir PATH`（或设置 `DBH_CONFIG_DIR`）。
 - `dbh check NAME --timeout 10s` 验证配置、代理、认证和数据库访问，失败时退出码非零。
-- `.dbh/` 从当前目录逐级向上查找，到 Git 仓库根目录为止；在项目内任意子目录运行即可。除 `pull` 外的 `erd` 子命令只读 `.dbh/` 中的文件，不连接数据库。
+- 查询类子命令（`status`、`check`、`tables`、`relations`、`path`、`show`）默认从工程根目录（Git 仓库根目录，无 Git 则当前目录）递归扫描所有 `.dbh/` 并合并其中的关系模型；可用 `--dir PATH` 限定单个 `.dbh/`，用 `--model M` 限定单个模型名。除 `pull` 外的 `erd` 子命令只读 `.dbh/` 中的文件，不连接数据库。`pull --save` 仍只写入当前或向上最近的单个 `.dbh/`（可配合 `--dir` 指定）。
 
 ## 模型约定
 
