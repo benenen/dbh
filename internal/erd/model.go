@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/mevdschee/dbml-tools/interpreter"
 	"github.com/mevdschee/dbml-tools/lexer"
@@ -53,6 +55,128 @@ func FindDir(start string) (dir string, create string, err error) {
 		}
 		d = parent
 	}
+}
+
+var skipScanDirs = map[string]bool{
+	"node_modules": true,
+	"vendor":       true,
+	"target":       true,
+	"dist":         true,
+	"build":        true,
+	"out":          true,
+	"bin":          true,
+	"obj":          true,
+	"logs":         true,
+	"tmp":          true,
+	"coverage":     true,
+	"__pycache__":  true,
+	"Pods":         true,
+	"DerivedData":  true,
+	"third_party":  true,
+	"testdata":     true,
+}
+
+// ProjectRoot returns the nearest ancestor directory containing .git, or start
+// itself when not inside a Git repository.
+func ProjectRoot(start string) (string, error) {
+	start, err := filepath.Abs(start)
+	if err != nil {
+		return "", err
+	}
+	for d := start; ; {
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			return d, nil
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return start, nil
+		}
+		d = parent
+	}
+}
+
+// FindAllDirs scans the project root (the Git repository root when available,
+// otherwise start) in parallel for every .dbh directory, pruning hidden
+// directories and common build/dependency folders. Returns sorted absolute paths.
+func FindAllDirs(start string) ([]string, error) {
+	root, err := ProjectRoot(start)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.ReadDir(root); err != nil {
+		return nil, err
+	}
+
+	workers := runtime.NumCPU()
+	if workers > 8 {
+		workers = 8
+	}
+	if workers < 1 {
+		workers = 1
+	}
+
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		dirs     []string
+		firstErr error
+		sem      = make(chan struct{}, workers)
+	)
+
+	var scan func(dir string)
+	scan = func(dir string) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrNotExist) {
+				return
+			}
+			mu.Lock()
+			if firstErr == nil {
+				firstErr = err
+			}
+			mu.Unlock()
+			return
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			if name == DirName {
+				mu.Lock()
+				dirs = append(dirs, filepath.Join(dir, name))
+				mu.Unlock()
+				continue
+			}
+			if strings.HasPrefix(name, ".") || skipScanDirs[name] {
+				continue
+			}
+			child := filepath.Join(dir, name)
+			select {
+			case sem <- struct{}{}:
+				wg.Add(1)
+				go func(p string) {
+					defer func() {
+						<-sem
+						wg.Done()
+					}()
+					scan(p)
+				}(child)
+			default:
+				scan(child)
+			}
+		}
+	}
+
+	scan(root)
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	sort.Strings(dirs)
+	return dirs, nil
 }
 
 func ModelFiles(dir, model string) (main, refs string) {
@@ -151,6 +275,17 @@ type Model struct {
 	Relations []Relation
 	Errors    []Issue
 	Warnings  []Issue
+	refsFiles map[string]bool
+}
+
+func (m *Model) isRefsFile(file string) bool {
+	if file == "" {
+		return false
+	}
+	if file == m.RefsFile {
+		return true
+	}
+	return m.refsFiles[file]
 }
 
 func (m *Model) Count(source string) int {
@@ -176,7 +311,7 @@ func Load(dir, name string) (*Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Model{Name: name, File: mainFile}
+	m := &Model{Name: name, File: mainFile, refsFiles: map[string]bool{}}
 	mainDB := m.parse(mainFile, string(mainSource), false)
 	if mainDB != nil {
 		m.addTables(mainDB)
@@ -188,6 +323,7 @@ func Load(dir, name string) (*Model, error) {
 	}
 	if err == nil {
 		m.RefsFile = refsFile
+		m.refsFiles[refsFile] = true
 		if refsDB := m.parse(refsFile, string(refsSource), true); refsDB != nil {
 			m.addRelations(refsDB.Refs, SourceInferred, refsFile)
 		}
@@ -195,11 +331,121 @@ func Load(dir, name string) (*Model, error) {
 	return m, nil
 }
 
-// usable reports whether queries can run: only invalid inferred relations,
+type modelEntry struct {
+	dir  string
+	name string
+}
+
+// LoadAll reads and merges models from dirs. When modelFilter is empty, every
+// model in every directory is loaded; otherwise only models with that name are
+// loaded. Tables with the same display name are merged across models, and
+// inferred relations are resolved after all tables are loaded so cross-.dbh
+// relations work.
+func LoadAll(dirs []string, modelFilter string) (*Model, error) {
+	if modelFilter != "" {
+		if err := ValidModelName(modelFilter); err != nil {
+			return nil, err
+		}
+	}
+	var entries []modelEntry
+	for _, dir := range dirs {
+		if modelFilter != "" {
+			mainFile, _ := ModelFiles(dir, modelFilter)
+			if _, err := os.Stat(mainFile); err == nil {
+				entries = append(entries, modelEntry{dir: dir, name: modelFilter})
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return nil, err
+			}
+			continue
+		}
+		names, err := List(dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range names {
+			entries = append(entries, modelEntry{dir: dir, name: name})
+		}
+	}
+	if len(entries) == 0 {
+		if modelFilter != "" {
+			if len(dirs) == 1 {
+				mainFile, _ := ModelFiles(dirs[0], modelFilter)
+				return nil, fmt.Errorf("no ERD model %q (looked for %s); run dbh erd pull NAME --save", modelFilter, DisplayPath(mainFile))
+			}
+			return nil, fmt.Errorf("no ERD model %q found in %d .dbh directories; run dbh erd pull NAME --save", modelFilter, len(dirs))
+		}
+		return nil, errors.New("no ERD models found in .dbh directories; run dbh erd pull NAME --save")
+	}
+	if len(entries) == 1 {
+		return Load(entries[0].dir, entries[0].name)
+	}
+
+	mergedName := modelFilter
+	if mergedName == "" {
+		mergedName = entries[0].name
+		for _, e := range entries[1:] {
+			if e.name != mergedName {
+				mergedName = "all"
+				break
+			}
+		}
+	}
+	m := &Model{Name: mergedName, refsFiles: map[string]bool{}}
+
+	type parsedMain struct {
+		file string
+		db   *interpreter.Database
+	}
+	var mains []parsedMain
+	var refsFiles []string
+
+	// Phase 1: parse all main .dbml files and merge tables first so relations
+	// (including cross-.dbh declared or inferred refs) can resolve all tables.
+	for _, e := range entries {
+		mainFile, refsFile := ModelFiles(e.dir, e.name)
+		mainSource, err := os.ReadFile(mainFile)
+		if err != nil {
+			return nil, err
+		}
+		if m.File == "" {
+			m.File = mainFile
+		}
+		if mainDB := m.parse(mainFile, string(mainSource), false); mainDB != nil {
+			m.addTables(mainDB)
+			mains = append(mains, parsedMain{file: mainFile, db: mainDB})
+		}
+		if _, err := os.Stat(refsFile); err == nil {
+			refsFiles = append(refsFiles, refsFile)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	for _, pm := range mains {
+		m.addRelations(pm.db.Refs, SourceDeclared, pm.file)
+	}
+
+	// Phase 2: parse and resolve all .refs.dbml files against the merged tables.
+	for _, refsFile := range refsFiles {
+		refsSource, err := os.ReadFile(refsFile)
+		if err != nil {
+			return nil, err
+		}
+		if m.RefsFile == "" {
+			m.RefsFile = refsFile
+		}
+		m.refsFiles[refsFile] = true
+		if refsDB := m.parse(refsFile, string(refsSource), true); refsDB != nil {
+			m.addRelations(refsDB.Refs, SourceInferred, refsFile)
+		}
+	}
+	return m, nil
+}
+
+// Usable reports whether queries can run: only invalid inferred relations,
 // which were already dropped, may remain as errors.
 func (m *Model) Usable() error {
 	for _, issue := range m.Errors {
-		if issue.File != m.RefsFile || !strings.HasPrefix(issue.Message, "relation ") {
+		if !m.isRefsFile(issue.File) || !strings.HasPrefix(issue.Message, "relation ") {
 			return fmt.Errorf("invalid ERD model %q:\n%s", m.Name, issue)
 		}
 	}
@@ -242,14 +488,35 @@ func issueAt(file string, pos lexer.Position, message string) Issue {
 }
 
 func (m *Model) addTables(db *interpreter.Database) {
+	indexByDisplay := make(map[string]int, len(m.Tables))
+	for i, existing := range m.Tables {
+		indexByDisplay[existing.Display()] = i
+	}
 	for _, t := range db.Tables {
-		table := Table{Schema: schemaName(t.SchemaName), Name: t.Name, Columns: t.Fields}
+		table := Table{Schema: schemaName(t.SchemaName), Name: t.Name, Columns: append([]interpreter.Column(nil), t.Fields...)}
 		if t.Alias != nil {
 			table.Alias = *t.Alias
 		}
 		if t.Note != nil {
 			table.Note = t.Note.Value
 		}
+		display := table.Display()
+		if idx, ok := indexByDisplay[display]; ok {
+			existing := &m.Tables[idx]
+			for _, col := range table.Columns {
+				if _, exists := existing.column(col.Name); !exists {
+					existing.Columns = append(existing.Columns, col)
+				}
+			}
+			if existing.Alias == "" && table.Alias != "" {
+				existing.Alias = table.Alias
+			}
+			if existing.Note == "" && table.Note != "" {
+				existing.Note = table.Note
+			}
+			continue
+		}
+		indexByDisplay[display] = len(m.Tables)
 		m.Tables = append(m.Tables, table)
 	}
 }

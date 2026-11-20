@@ -1,6 +1,7 @@
 package erd
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -276,5 +277,150 @@ func TestKeywordNamedColumns(t *testing.T) {
 	columns := m.Tables[0].Columns
 	if len(columns) != 3 || columns[1].Name != "note" || columns[2].Name != "records" || m.Tables[0].Note != "orders table" {
 		t.Fatalf("table = %+v", m.Tables[0])
+	}
+}
+
+func TestFindAllDirs(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	for _, p := range []string{
+		filepath.Join(root, DirName),
+		filepath.Join(repo, ".git"),
+		filepath.Join(repo, DirName),
+		filepath.Join(repo, "svc-a", DirName),
+		filepath.Join(repo, "svc-b", "nested", DirName),
+		filepath.Join(repo, ".cache", "sub", DirName),
+		filepath.Join(repo, "node_modules", "pkg", DirName),
+		filepath.Join(repo, "vendor", "mod", DirName),
+	} {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Calling from a nested directory still scans every .dbh under the repo root.
+	got, err := FindAllDirs(filepath.Join(repo, "svc-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		filepath.Join(repo, DirName),
+		filepath.Join(repo, "svc-a", DirName),
+		filepath.Join(repo, "svc-b", "nested", DirName),
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("FindAllDirs = %v, want %v", got, want)
+	}
+}
+
+func TestLoadAllMergesModelsAndCrossDirRefs(t *testing.T) {
+	root := t.TempDir()
+	dirA := filepath.Join(root, "svc-a", DirName)
+	dirB := filepath.Join(root, "svc-b", DirName)
+	if err := os.MkdirAll(dirA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dirB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirA, "schema.dbml"), []byte(`Table users {
+  id integer [pk]
+  email text
+}
+Table orders {
+  id integer [pk]
+  user_id integer [ref: > users.id]
+  account_id integer
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Cross-.dbh inferred relation pointing to a table defined in svc-b.
+	if err := os.WriteFile(filepath.Join(dirA, "schema.refs.dbml"), []byte("Ref: orders.account_id > accounts.id\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirB, "billing.dbml"), []byte(`Table users {
+  id integer [pk]
+  billing_tier text
+  Note: 'billing user view'
+}
+Table accounts {
+  id integer [pk]
+  owner_id integer [ref: > users.id]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := LoadAll([]string{dirA, dirB}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Usable(); err != nil {
+		t.Fatalf("Usable() = %v", err)
+	}
+	if len(m.Errors) != 0 {
+		t.Fatalf("errors = %v", m.Errors)
+	}
+	if len(m.Tables) != 3 {
+		t.Fatalf("tables = %d, want 3 (users merged)", len(m.Tables))
+	}
+	// Merged users table must have id, email, billing_tier and the note.
+	var users Table
+	for _, tbl := range m.Tables {
+		if tbl.Name == "users" {
+			users = tbl
+		}
+	}
+	if len(users.Columns) != 3 || users.Note != "billing user view" {
+		t.Fatalf("merged users = %+v", users)
+	}
+	if m.Count(SourceDeclared) != 2 || m.Count(SourceInferred) != 1 {
+		t.Fatalf("declared=%d inferred=%d", m.Count(SourceDeclared), m.Count(SourceInferred))
+	}
+	steps, err := m.Path("orders", "accounts", false)
+	if err != nil || len(steps) != 1 || steps[0].FromColumns[0] != "account_id" {
+		t.Fatalf("cross-dir path = %+v, %v", steps, err)
+	}
+
+	// Filtering by model name loads only matching models.
+	onlyBilling, err := LoadAll([]string{dirA, dirB}, "billing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(onlyBilling.Tables) != 2 {
+		t.Fatalf("billing tables = %d, want 2", len(onlyBilling.Tables))
+	}
+}
+
+func BenchmarkFindAllDirs(b *testing.B) {
+	repo := filepath.Join(b.TempDir(), "monorepo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		b.Fatal(err)
+	}
+	// Simulate a large monorepo: 50 services x 20 subdirs = 1,000+ directories, plus ignored trees.
+	for i := 0; i < 50; i++ {
+		svc := filepath.Join(repo, fmt.Sprintf("svc-%02d", i))
+		if i%10 == 0 {
+			if err := os.MkdirAll(filepath.Join(svc, DirName), 0o755); err != nil {
+				b.Fatal(err)
+			}
+		}
+		for j := 0; j < 20; j++ {
+			if err := os.MkdirAll(filepath.Join(svc, fmt.Sprintf("pkg-%02d", j)), 0o755); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+	for i := 0; i < 200; i++ {
+		if err := os.MkdirAll(filepath.Join(repo, "node_modules", fmt.Sprintf("dep-%03d", i)), 0o755); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dirs, err := FindAllDirs(repo)
+		if err != nil || len(dirs) != 5 {
+			b.Fatalf("FindAllDirs = %d, %v", len(dirs), err)
+		}
 	}
 }

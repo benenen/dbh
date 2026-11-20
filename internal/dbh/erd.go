@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/benenen/dbh/internal/database"
@@ -14,14 +15,15 @@ import (
 )
 
 func addERDCommands(root *cobra.Command, store func() (Store, error), names cobra.CompletionFunc) {
-	var model string
-	group := &cobra.Command{Use: "erd", Aliases: []string{"er"}, Short: "Query the DBML relationship model in .dbh/", Args: cobra.NoArgs}
-	group.PersistentFlags().StringVar(&model, "model", erd.DefaultModel, "Model name: .dbh/<model>.dbml and .dbh/<model>.refs.dbml")
+	var model, dirFlag string
+	group := &cobra.Command{Use: "erd", Aliases: []string{"er"}, Short: "Query the DBML relationship models in .dbh/", Args: cobra.NoArgs}
+	group.PersistentFlags().StringVar(&model, "model", "", "Model name: .dbh/<model>.dbml and .dbh/<model>.refs.dbml (default: all models for queries, \"schema\" for pull)")
+	group.PersistentFlags().StringVar(&dirFlag, "dir", "", "Limit to one .dbh directory (default: scan every .dbh directory in the project)")
 
 	// open loads the model for queries; invalid inferred relations are skipped
 	// with a warning.
 	open := func(cmd *cobra.Command) (*erd.Model, error) {
-		m, err := loadERD(model)
+		m, err := loadERD(dirFlag, model)
 		if err != nil {
 			return nil, err
 		}
@@ -36,7 +38,7 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 		return m, nil
 	}
 	tableNames := func(cmd *cobra.Command, args []string, _ string) ([]cobra.Completion, cobra.ShellCompDirective) {
-		m, err := loadERD(model)
+		m, err := loadERD(dirFlag, model)
 		if err != nil {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
@@ -51,10 +53,10 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 		_ = c.RegisterFlagCompletionFunc("format", cobra.FixedCompletions([]string{"table", "csv", "json", "tsv"}, cobra.ShellCompDirectiveNoFileComp))
 	}
 
-	group.AddCommand(erdPullCommand(store, names, &model))
+	group.AddCommand(erdPullCommand(store, names, &model, &dirFlag))
 
 	check := &cobra.Command{Use: "check", Short: "Validate the model and its inferred relations", Args: cobra.NoArgs, ValidArgsFunction: cobra.NoFileCompletions, RunE: func(cmd *cobra.Command, args []string) error {
-		m, err := loadERD(model)
+		m, err := loadERD(dirFlag, model)
 		if err != nil {
 			return err
 		}
@@ -62,7 +64,7 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 			return err
 		}
 		if len(m.Errors) > 0 {
-			return fmt.Errorf("ERD model %q has %d error(s)", model, len(m.Errors))
+			return fmt.Errorf("ERD model %q has %d error(s)", m.Name, len(m.Errors))
 		}
 		_, err = fmt.Fprintf(cmd.OutOrStdout(), "OK: %d tables, %d declared and %d inferred relations\n", len(m.Tables), m.Count(erd.SourceDeclared), m.Count(erd.SourceInferred))
 		return err
@@ -74,32 +76,42 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 		if !validFormat(statusFormat) {
 			return fmt.Errorf("invalid output format")
 		}
-		dir, err := erdDir()
-		if err != nil {
-			return err
+		if model != "" {
+			if err := erd.ValidModelName(model); err != nil {
+				return err
+			}
 		}
-		models, err := erd.List(dir)
+		dirs, err := erdDirs(dirFlag)
 		if err != nil {
 			return err
 		}
 		rows := erd.Rows{Columns: []string{"model", "file", "refs_file", "tables", "declared", "inferred", "state"}}
-		for _, name := range models {
-			mainFile, refsFile := erd.ModelFiles(dir, name)
-			row := []any{name, erd.DisplayPath(mainFile), "", 0, 0, 0, "invalid"}
-			if _, err := os.Stat(refsFile); err == nil {
-				row[2] = erd.DisplayPath(refsFile)
+		for _, dir := range dirs {
+			models, err := erd.List(dir)
+			if err != nil {
+				return err
 			}
-			if m, err := erd.Load(dir, name); err == nil {
-				row[3], row[4], row[5] = len(m.Tables), m.Count(erd.SourceDeclared), m.Count(erd.SourceInferred)
-				switch {
-				case len(m.Errors) > 0:
-				case len(m.Warnings) > 0:
-					row[6] = "warning"
-				default:
-					row[6] = "ok"
+			for _, name := range models {
+				if model != "" && name != model {
+					continue
 				}
+				mainFile, refsFile := erd.ModelFiles(dir, name)
+				row := []any{name, erd.DisplayPath(mainFile), "", 0, 0, 0, "invalid"}
+				if _, err := os.Stat(refsFile); err == nil {
+					row[2] = erd.DisplayPath(refsFile)
+				}
+				if m, err := erd.Load(dir, name); err == nil {
+					row[3], row[4], row[5] = len(m.Tables), m.Count(erd.SourceDeclared), m.Count(erd.SourceInferred)
+					switch {
+					case len(m.Errors) > 0:
+					case len(m.Warnings) > 0:
+						row[6] = "warning"
+					default:
+						row[6] = "ok"
+					}
+				}
+				rows.Values = append(rows.Values, row)
 			}
-			rows.Values = append(rows.Values, row)
 		}
 		return writeERDRows(cmd.OutOrStdout(), rows, statusFormat)
 	}}
@@ -216,7 +228,7 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 	root.AddCommand(group)
 }
 
-func erdPullCommand(store func() (Store, error), names cobra.CompletionFunc, model *string) *cobra.Command {
+func erdPullCommand(store func() (Store, error), names cobra.CompletionFunc, model, dirFlag *string) *cobra.Command {
 	var db, schema, output string
 	var save bool
 	var timeout time.Duration
@@ -228,7 +240,11 @@ func erdPullCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 	c.Flags().DurationVar(&timeout, "timeout", 60*time.Second, "Connection and schema read timeout")
 	c.MarkFlagsMutuallyExclusive("save", "output")
 	c.RunE = func(cmd *cobra.Command, args []string) error {
-		if err := erd.ValidModelName(*model); err != nil {
+		targetModel := *model
+		if targetModel == "" {
+			targetModel = erd.DefaultModel
+		}
+		if err := erd.ValidModelName(targetModel); err != nil {
 			return err
 		}
 		if timeout <= 0 {
@@ -256,21 +272,30 @@ func erdPullCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 			_, err = io.WriteString(cmd.OutOrStdout(), dbml)
 			return err
 		}
-		dir, create, err := erd.FindDir(".")
-		if err != nil {
-			return err
+		var dir string
+		if *dirFlag != "" {
+			dir, err = resolveSaveERDDir(*dirFlag)
+			if err != nil {
+				return err
+			}
+		} else {
+			var create string
+			dir, create, err = erd.FindDir(".")
+			if err != nil {
+				return err
+			}
+			if dir == "" {
+				dir = create
+			}
 		}
-		if dir == "" {
-			dir = create
-		}
-		mainFile, _ := erd.ModelFiles(dir, *model)
+		mainFile, _ := erd.ModelFiles(dir, targetModel)
 		if err := erd.Save(mainFile, dbml); err != nil {
 			return err
 		}
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Saved %s\n", erd.DisplayPath(mainFile)); err != nil {
 			return err
 		}
-		m, err := erd.Load(dir, *model)
+		m, err := erd.Load(dir, targetModel)
 		if err != nil {
 			return err
 		}
@@ -313,26 +338,70 @@ func pullDBML(ctx context.Context, p Profile, db string, switchDB bool, schema s
 	return dbml, nil
 }
 
-func erdDir() (string, error) {
-	dir, _, err := erd.FindDir(".")
+func resolveSaveERDDir(flagDir string) (string, error) {
+	abs, err := filepath.Abs(flagDir)
 	if err != nil {
 		return "", err
 	}
-	if dir == "" {
-		return "", errors.New("no .dbh directory found; run dbh erd pull NAME --save")
+	if filepath.Base(abs) == erd.DirName {
+		return abs, nil
 	}
-	return dir, nil
+	return filepath.Join(abs, erd.DirName), nil
 }
 
-func loadERD(model string) (*erd.Model, error) {
-	if err := erd.ValidModelName(model); err != nil {
-		return nil, err
+func resolveReadERDDir(flagDir string) (string, error) {
+	abs, err := filepath.Abs(flagDir)
+	if err != nil {
+		return "", err
 	}
-	dir, err := erdDir()
+	if filepath.Base(abs) != erd.DirName {
+		nested := filepath.Join(abs, erd.DirName)
+		if info, err := os.Stat(nested); err == nil && info.IsDir() {
+			return nested, nil
+		}
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("no .dbh directory found at %s", erd.DisplayPath(abs))
+		}
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", erd.DisplayPath(abs))
+	}
+	return abs, nil
+}
+
+func erdDirs(dirFlag string) ([]string, error) {
+	if dirFlag != "" {
+		dir, err := resolveReadERDDir(dirFlag)
+		if err != nil {
+			return nil, err
+		}
+		return []string{dir}, nil
+	}
+	dirs, err := erd.FindAllDirs(".")
 	if err != nil {
 		return nil, err
 	}
-	return erd.Load(dir, model)
+	if len(dirs) == 0 {
+		return nil, errors.New("no .dbh directory found; run dbh erd pull NAME --save")
+	}
+	return dirs, nil
+}
+
+func loadERD(dirFlag, model string) (*erd.Model, error) {
+	if model != "" {
+		if err := erd.ValidModelName(model); err != nil {
+			return nil, err
+		}
+	}
+	dirs, err := erdDirs(dirFlag)
+	if err != nil {
+		return nil, err
+	}
+	return erd.LoadAll(dirs, model)
 }
 
 func writeIssues(w io.Writer, m *erd.Model) error {

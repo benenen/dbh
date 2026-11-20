@@ -95,3 +95,53 @@ func TestERDRejectsInvalidModels(t *testing.T) {
 		t.Fatal("model changed")
 	}
 }
+
+func TestERDScansAllProjectDirs(t *testing.T) {
+	f := newFixture(t)
+	repo := filepath.Join(f.root, "monorepo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "svc-a", ".dbh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "svc-b", ".dbh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(repo, "svc-a", ".dbh", "schema.dbml"), `Table orders {
+  id integer [pk]
+  user_id integer
+}
+`)
+	writeFile(t, filepath.Join(repo, "svc-a", ".dbh", "schema.refs.dbml"), "// cross-service ref\nRef: orders.user_id > users.id\n")
+	writeFile(t, filepath.Join(repo, "svc-b", ".dbh", "users.dbml"), `Table users {
+  id integer [pk]
+  email text
+}
+`)
+
+	// Run from svc-a; queries still scan every .dbh under the repo root.
+	f.dir = filepath.Join(repo, "svc-a")
+	equal(t, f.run("erd", "check"), "OK: 2 tables, 0 declared and 1 inferred relations\n")
+	equal(t, f.run("erd", "path", "orders", "users", "--format", "tsv"),
+		"step\tfrom_table\tfrom_columns\tto_table\tto_columns\tsource\n1\torders\tuser_id\tusers\tid\tinferred\n")
+	status := f.run("erd", "status", "--format", "tsv")
+	contains(t, status, "schema\t.dbh/schema.dbml\t.dbh/schema.refs.dbml\t")
+	contains(t, status, "users\t../svc-b/.dbh/users.dbml\t\t1\t0\t0\tok\n")
+
+	// --dir limits queries to one .dbh directory.
+	onlyB := f.run("erd", "tables", "--dir", filepath.Join(repo, "svc-b"), "--format", "tsv")
+	contains(t, onlyB, "users\t2\t0\t\n")
+	excludes(t, onlyB, "orders")
+
+	// --model filters by model name across directories.
+	onlyUsersModel := f.run("erd", "tables", "--model", "users", "--format", "tsv")
+	contains(t, onlyUsersModel, "users\t2\t0\t\n")
+	excludes(t, onlyUsersModel, "orders")
+
+	// pull --save --dir writes to the specified service's .dbh.
+	f.sql(`CREATE TABLE items(id INTEGER PRIMARY KEY);`, "--no-history")
+	saved := f.run("erd", "pull", "demo", "--save", "--dir", filepath.Join(repo, "svc-c"))
+	contains(t, saved, "svc-c/.dbh/schema.dbml")
+	contains(t, readFile(t, filepath.Join(repo, "svc-c", ".dbh", "schema.dbml")), `Table "items"`)
+}
