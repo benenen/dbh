@@ -79,7 +79,7 @@ func Save(path, content string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, ".pull-*.dbml")
+	f, err := os.CreateTemp(dir, ".erd-*.tmp")
 	if err != nil {
 		return err
 	}

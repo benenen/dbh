@@ -26,7 +26,7 @@ func (m *Model) TableRows() Rows {
 // RelationRows lists relations touching table (any when empty) from source
 // (any when empty).
 func (m *Model) RelationRows(table, source string) Rows {
-	rows := Rows{Columns: []string{"name", "from_table", "from_columns", "relation", "to_table", "to_columns", "on_delete", "on_update", "source"}}
+	rows := Rows{Columns: []string{"name", "from_table", "from_columns", "relation", "to_table", "to_columns", "condition", "on_delete", "on_update", "source"}}
 	for _, r := range m.Relations {
 		if table != "" && r.From != table && r.To != table {
 			continue
@@ -35,16 +35,16 @@ func (m *Model) RelationRows(table, source string) Rows {
 			continue
 		}
 		rows.Values = append(rows.Values, []any{r.Name, r.From, strings.Join(r.FromColumns, ", "), r.Op,
-			r.To, strings.Join(r.ToColumns, ", "), r.OnDelete, r.OnUpdate, r.Source})
+			r.To, strings.Join(r.ToColumns, ", "), r.Condition, r.OnDelete, r.OnUpdate, r.Source})
 	}
 	return rows
 }
 
 func PathRows(steps []Step) Rows {
-	rows := Rows{Columns: []string{"step", "from_table", "from_columns", "to_table", "to_columns", "source"}}
+	rows := Rows{Columns: []string{"step", "from_table", "from_columns", "to_table", "to_columns", "condition", "source"}}
 	for i, s := range steps {
 		rows.Values = append(rows.Values, []any{i + 1, s.From, strings.Join(s.FromColumns, ", "), s.To,
-			strings.Join(s.ToColumns, ", "), s.Relation.Source})
+			strings.Join(s.ToColumns, ", "), s.Relation.Condition, s.Relation.Source})
 	}
 	return rows
 }

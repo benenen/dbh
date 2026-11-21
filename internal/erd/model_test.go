@@ -79,10 +79,10 @@ Ref: products.id < orders.product_id
 	}
 	got := m.RelationRows("", "")
 	want := [][]any{
-		{"", "orders", "user_id", ">", "users", "id", "", "", "declared"},
-		{"fk_invoice_order", "billing.invoices", "order_id", ">", "orders", "id", "cascade", "", "declared"},
-		{"", "orders", "region, zone", ">", "regions", "region, zone", "", "", "declared"},
-		{"", "orders", "product_id", ">", "products", "id", "", "", "inferred"},
+		{"", "orders", "user_id", ">", "users", "id", "", "", "", "declared"},
+		{"fk_invoice_order", "billing.invoices", "order_id", ">", "orders", "id", "", "cascade", "", "declared"},
+		{"", "orders", "region, zone", ">", "regions", "region, zone", "", "", "", "declared"},
+		{"", "orders", "product_id", ">", "products", "id", "", "", "", "inferred"},
 	}
 	if len(got.Values) != len(want) {
 		t.Fatalf("relations = %v", got.Values)
@@ -158,7 +158,7 @@ func TestPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows := PathRows(steps)
-	if len(rows.Values) != 2 || rows.Values[0][3] != "orders" || rows.Values[0][5] != SourceDeclared ||
+	if len(rows.Values) != 2 || rows.Values[0][3] != "orders" || rows.Values[0][6] != SourceDeclared ||
 		rows.Values[1][2] != "user_id" || rows.Values[1][4] != "id" {
 		t.Fatalf("path = %v", rows.Values)
 	}
@@ -414,6 +414,117 @@ Table accounts {
 	// svc-b billing: 2 tables, 1 declared, 0 inferred, ok.
 	if statusRows.Values[1][3] != 2 || statusRows.Values[1][4] != 1 || statusRows.Values[1][5] != 0 || statusRows.Values[1][6] != "ok" {
 		t.Fatalf("svc-b status = %v", statusRows.Values[1])
+	}
+}
+
+func TestConditionalRelations(t *testing.T) {
+	schema := `Table events {
+  id integer [pk]
+  a integer
+  b integer
+}
+
+Table c {
+  id integer [pk]
+}
+
+Table d {
+  id integer [pk]
+}
+`
+	refs := `// app/models/event.go:12
+// when: a = 1
+Ref: events.b > c.id
+
+// app/models/event.go:15
+Ref: events.b > d.id // when: a = 2
+
+// distinct condition on the same endpoints is preserved
+// WHEN: a = 3
+// when: b > 0
+Ref: events.b > c.id
+`
+	m := load(t, schema, refs)
+	if len(m.Errors) != 0 || len(m.Warnings) != 0 {
+		t.Fatalf("errors=%v warnings=%v", m.Errors, m.Warnings)
+	}
+	got := m.RelationRows("events", "")
+	want := [][]any{
+		{"", "events", "b", ">", "c", "id", "a = 1", "", "", "inferred"},
+		{"", "events", "b", ">", "d", "id", "a = 2", "", "", "inferred"},
+		{"", "events", "b", ">", "c", "id", "a = 3 AND b > 0", "", "", "inferred"},
+	}
+	if len(got.Values) != len(want) {
+		t.Fatalf("relations = %v, want %v", got.Values, want)
+	}
+	for i := range want {
+		for j := range want[i] {
+			if got.Values[i][j] != want[i][j] {
+				t.Fatalf("relation %d = %v, want %v", i, got.Values[i], want[i])
+			}
+		}
+	}
+
+	steps, err := m.Path("events", "d", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pathRows := PathRows(steps)
+	if len(pathRows.Values) != 1 || pathRows.Values[0][5] != "a = 2" || pathRows.Values[0][6] != SourceInferred {
+		t.Fatalf("path = %v", pathRows.Values)
+	}
+
+	var text, dot, mermaid strings.Builder
+	if err := RenderText(&text, m, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"┄┄▶ c.id", "when a = 1, inferred", "┄┄▶ d.id", "when a = 2, inferred"} {
+		if !strings.Contains(text.String(), want) {
+			t.Fatalf("text missing %q:\n%s", want, text.String())
+		}
+	}
+	if err := RenderDot(&dot, m, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(dot.String(), `label="when a = 1, inferred"`) {
+		t.Fatalf("dot:\n%s", dot.String())
+	}
+	if err := RenderMermaid(&mermaid, m, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(mermaid.String(), `events }o..|| d : "b (when a = 2)"`) {
+		t.Fatalf("mermaid:\n%s", mermaid.String())
+	}
+	var htmlOut strings.Builder
+	if err := RenderHTML(&htmlOut, m, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<!DOCTYPE html>", "<title>ERD - schema</title>", `"condition":"a = 1"`, `"condition":"a = 2"`, `"name":"events"`, `id="erd-data"`} {
+		if !strings.Contains(htmlOut.String(), want) {
+			t.Fatalf("html missing %q", want)
+		}
+	}
+}
+
+func TestConditionalCommentIsolation(t *testing.T) {
+	schema := `Table t {
+  id integer [pk]
+  a integer
+  b integer
+}
+Table c {
+  id integer [pk]
+}
+`
+	// Blank line separates a stray `// when:` comment from the following Ref.
+	refs := `// when: a = 99
+
+// plain evidence comment
+Ref: t.b > c.id
+`
+	m := load(t, schema, refs)
+	if len(m.Relations) != 1 || m.Relations[0].Condition != "" {
+		t.Fatalf("relations = %+v", m.Relations)
 	}
 }
 

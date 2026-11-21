@@ -1,0 +1,1316 @@
+package erd
+
+import (
+	"encoding/json"
+	"fmt"
+	"html"
+	"io"
+)
+
+type htmlModel struct {
+	Name      string         `json:"name"`
+	Tables    []htmlTable    `json:"tables"`
+	Relations []htmlRelation `json:"relations"`
+}
+
+type htmlTable struct {
+	Name    string       `json:"name"`
+	Note    string       `json:"note,omitempty"`
+	Columns []htmlColumn `json:"columns"`
+}
+
+type htmlColumn struct {
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	PK        bool   `json:"pk,omitempty"`
+	Unique    bool   `json:"unique,omitempty"`
+	NotNull   bool   `json:"notNull,omitempty"`
+	Increment bool   `json:"increment,omitempty"`
+}
+
+type htmlRelation struct {
+	Name        string   `json:"name,omitempty"`
+	From        string   `json:"from"`
+	FromColumns []string `json:"fromColumns"`
+	Op          string   `json:"op"`
+	To          string   `json:"to"`
+	ToColumns   []string `json:"toColumns"`
+	Condition   string   `json:"condition,omitempty"`
+	OnDelete    string   `json:"onDelete,omitempty"`
+	OnUpdate    string   `json:"onUpdate,omitempty"`
+	Source      string   `json:"source"`
+}
+
+// RenderHTML writes a self-contained, offline interactive HTML ER diagram.
+func RenderHTML(out io.Writer, m *Model, include map[string]bool) error {
+	payload := htmlModel{
+		Name:      m.Name,
+		Tables:    make([]htmlTable, 0, len(m.Tables)),
+		Relations: make([]htmlRelation, 0, len(m.Relations)),
+	}
+	for _, t := range m.Tables {
+		name := t.Display()
+		if include != nil && !include[name] {
+			continue
+		}
+		cols := make([]htmlColumn, 0, len(t.Columns))
+		for _, c := range t.Columns {
+			cols = append(cols, htmlColumn{
+				Name:      c.Name,
+				Type:      columnType(c),
+				PK:        c.PK,
+				Unique:    c.Unique,
+				NotNull:   c.NotNull != nil && *c.NotNull && !c.PK,
+				Increment: c.Increment != nil && *c.Increment,
+			})
+		}
+		payload.Tables = append(payload.Tables, htmlTable{
+			Name:    name,
+			Note:    t.Note,
+			Columns: cols,
+		})
+	}
+	for _, r := range m.Relations {
+		if include != nil && (!include[r.From] || !include[r.To]) {
+			continue
+		}
+		payload.Relations = append(payload.Relations, htmlRelation{
+			Name:        r.Name,
+			From:        r.From,
+			FromColumns: r.FromColumns,
+			Op:          r.Op,
+			To:          r.To,
+			ToColumns:   r.ToColumns,
+			Condition:   r.Condition,
+			OnDelete:    r.OnDelete,
+			OnUpdate:    r.OnUpdate,
+			Source:      r.Source,
+		})
+	}
+	rawJSON, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	title := m.Name
+	if title == "" {
+		title = DefaultModel
+	}
+	_, err = fmt.Fprintf(out, htmlTemplate, html.EscapeString(title), string(rawJSON))
+	return err
+}
+
+const htmlTemplate = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ERD - %s</title>
+<style>
+:root {
+  --bg: #f8fafc;
+  --grid: #cbd5e1;
+  --bar-bg: rgba(255, 255, 255, 0.94);
+  --bar-border: #e2e8f0;
+  --text: #0f172a;
+  --muted: #64748b;
+  --card-bg: #ffffff;
+  --card-border: #cbd5e1;
+  --card-header: #1e293b;
+  --card-header-text: #f8fafc;
+  --row-hover: #f1f5f9;
+  --accent: #4f46e5;
+  --accent-soft: #eef2ff;
+  --declared: #334155;
+  --inferred: #6366f1;
+  --pk-bg: #fef3c7;
+  --pk-fg: #b45309;
+  --uk-bg: #dbeafe;
+  --uk-fg: #1d4ed8;
+  --fk-bg: #ede9fe;
+  --fk-fg: #6d28d9;
+  --cond-bg: #fffbeb;
+  --cond-border: #f59e0b;
+  --cond-fg: #92400e;
+  --btn-bg: #ffffff;
+  --btn-hover: #f1f5f9;
+  --tooltip-bg: #0f172a;
+  --tooltip-fg: #f8fafc;
+}
+[data-theme="dark"] {
+  --bg: #0b1120;
+  --grid: #1e293b;
+  --bar-bg: rgba(15, 23, 42, 0.94);
+  --bar-border: #1e293b;
+  --text: #f1f5f9;
+  --muted: #94a3b8;
+  --card-bg: #111827;
+  --card-border: #334155;
+  --card-header: #1e293b;
+  --card-header-text: #f8fafc;
+  --row-hover: #1f2937;
+  --accent: #818cf8;
+  --accent-soft: #1e1b4b;
+  --declared: #94a3b8;
+  --inferred: #818cf8;
+  --pk-bg: #451a03;
+  --pk-fg: #fbbf24;
+  --uk-bg: #172554;
+  --uk-fg: #60a5fa;
+  --fk-bg: #2e1065;
+  --fk-fg: #c4b5fd;
+  --cond-bg: #451a03;
+  --cond-border: #d97706;
+  --cond-fg: #fde68a;
+  --btn-bg: #1e293b;
+  --btn-hover: #334155;
+  --tooltip-bg: #f8fafc;
+  --tooltip-fg: #0f172a;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%%;
+  height: 100%%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+#toolbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  background: var(--bar-bg);
+  border-bottom: 1px solid var(--bar-border);
+  backdrop-filter: blur(8px);
+  z-index: 20;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 14px;
+  white-space: nowrap;
+}
+.brand-badge {
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 5px;
+  letter-spacing: 0.03em;
+}
+.stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.stat-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--btn-hover);
+  border: 1px solid var(--bar-border);
+}
+.search-wrap {
+  position: relative;
+  flex: 1;
+  max-width: 320px;
+  min-width: 140px;
+}
+#search {
+  width: 100%%;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--card-border);
+  background: var(--btn-bg);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+#search:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.controls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+.toggle-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 7px;
+  border: 1px solid var(--card-border);
+  background: var(--btn-bg);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.toggle-pill input { margin: 0; accent-color: var(--accent); }
+.btn {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--card-border);
+  background: var(--btn-bg);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--btn-hover); }
+select.btn { padding: 0 8px; }
+#stage {
+  position: fixed;
+  top: 52px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  cursor: grab;
+  background-image: radial-gradient(var(--grid) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+#stage.panning { cursor: grabbing; }
+#canvas {
+  width: 100%%;
+  height: 100%%;
+  display: block;
+}
+#legend {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--bar-bg);
+  border: 1px solid var(--bar-border);
+  font-size: 11px;
+  color: var(--muted);
+  backdrop-filter: blur(8px);
+  z-index: 15;
+  pointer-events: none;
+}
+.legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.legend-line { width: 22px; height: 2px; background: var(--declared); }
+.legend-line.inferred { background: none; border-top: 2px dashed var(--inferred); }
+#selection-panel {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  display: none;
+  max-width: 440px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bar-bg);
+  border: 1px solid var(--bar-border);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  backdrop-filter: blur(8px);
+  font-size: 12px;
+  line-height: 1.5;
+  z-index: 16;
+}
+#selection-panel .sp-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+#selection-panel .sp-item {
+  padding: 4px 0;
+  border-top: 1px solid var(--bar-border);
+  color: var(--text);
+}
+#selection-panel .sp-meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+#tooltip {
+  position: fixed;
+  display: none;
+  max-width: 360px;
+  padding: 8px 11px;
+  border-radius: 8px;
+  background: var(--tooltip-bg);
+  color: var(--tooltip-fg);
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.22);
+  pointer-events: none;
+  z-index: 30;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.table-group { cursor: move; }
+.table-group.dimmed { opacity: 0.22; }
+.edge-group.dimmed { opacity: 0.14; }
+.edge-hit { fill: none; stroke: transparent; stroke-width: 14; cursor: pointer; }
+.edge-path { fill: none; stroke-width: 1.75; transition: stroke-width 0.12s; }
+.edge-group.active .edge-path { stroke-width: 2.6; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <div class="brand">
+    <span class="brand-badge">ERD</span>
+    <span id="model-name"></span>
+  </div>
+  <div class="stats" id="stats"></div>
+  <div class="search-wrap">
+    <input id="search" type="search" placeholder="Search tables or columns... (/)" autocomplete="off">
+  </div>
+  <div class="controls">
+    <label class="toggle-pill"><input type="checkbox" id="toggle-declared" checked><span id="lbl-declared">Declared</span></label>
+    <label class="toggle-pill"><input type="checkbox" id="toggle-inferred" checked><span id="lbl-inferred">Inferred</span></label>
+    <button class="btn" id="btn-zoom-out" title="Zoom out">-</button>
+    <button class="btn" id="btn-zoom-in" title="Zoom in">+</button>
+    <button class="btn" id="btn-fit" title="Fit diagram to screen">Fit</button>
+    <button class="btn" id="btn-reset" title="Reset auto layout">Reset</button>
+    <button class="btn" id="btn-svg" title="Download SVG">SVG</button>
+    <select class="btn" id="lang-select" title="Language">
+      <option value="en" selected>EN</option>
+      <option value="cn_zh">中文</option>
+    </select>
+    <button class="btn" id="btn-theme" title="Toggle light/dark theme">Theme</button>
+  </div>
+</div>
+<div id="stage">
+  <svg id="canvas" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <filter id="card-shadow" x="-8%%" y="-8%%" width="116%%" height="120%%">
+        <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.09"/>
+      </filter>
+    </defs>
+    <g id="viewport">
+      <g id="edges-layer"></g>
+      <g id="tables-layer"></g>
+    </g>
+  </svg>
+</div>
+<div id="selection-panel"></div>
+<div id="legend">
+  <span class="legend-item"><span class="legend-line"></span><span id="leg-declared"></span></span>
+  <span class="legend-item"><span class="legend-line inferred"></span><span id="leg-inferred"></span></span>
+  <span class="legend-item" id="leg-many-to-one"></span>
+  <span class="legend-item" id="leg-one-to-one"></span>
+  <span class="legend-item" id="leg-many-to-many"></span>
+</div>
+<div id="tooltip"></div>
+<script id="erd-data" type="application/json">%s</script>
+<script>
+(() => {
+  const DATA = JSON.parse(document.getElementById('erd-data').textContent);
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const HEADER_H = 34;
+  const ROW_H = 26;
+  const PAD_X = 12;
+  const PAD_BOTTOM = 8;
+  const MIN_W = 220;
+  const MAX_W = 420;
+
+  const stage = document.getElementById('stage');
+  const svg = document.getElementById('canvas');
+  const viewport = document.getElementById('viewport');
+  const edgesLayer = document.getElementById('edges-layer');
+  const tablesLayer = document.getElementById('tables-layer');
+  const selectionPanel = document.getElementById('selection-panel');
+  const tooltip = document.getElementById('tooltip');
+  const searchInput = document.getElementById('search');
+  const toggleDeclared = document.getElementById('toggle-declared');
+  const toggleInferred = document.getElementById('toggle-inferred');
+  const langSelect = document.getElementById('lang-select');
+
+  const I18N = {
+    en: {
+      tablesStat: n => n + (n === 1 ? ' table' : ' tables'),
+      declaredStat: n => n + ' declared',
+      inferredStat: n => n + ' inferred',
+      searchPlaceholder: 'Search tables or columns... (/)',
+      declaredToggle: 'Declared',
+      inferredToggle: 'Inferred',
+      fit: 'Fit',
+      reset: 'Reset',
+      theme: 'Theme',
+      legDeclared: 'Declared FK',
+      legInferred: 'Inferred ref',
+      legManyToOne: '> Many-to-one (N:1)',
+      legOneToOne: '- One-to-one (1:1)',
+      legManyToMany: '<> Many-to-many (N:M)',
+      manyToOne: 'Many-to-one',
+      oneToOne: 'One-to-one',
+      manyToMany: 'Many-to-many',
+      sourceDeclared: 'Declared FK',
+      sourceInferred: 'Inferred ref',
+      sentence: (op, from, to, cond) => {
+        const prefix = cond ? ('When ' + cond + ', ') : '';
+        if (op === '-') {
+          return prefix + (cond ? 'one ' : 'One ') + from + ' refers to one ' + to;
+        }
+        if (op === '<>') {
+          return prefix + (cond ? 'many ' : 'Many ') + from + ' relate to many ' + to;
+        }
+        return prefix + (cond ? 'many ' : 'Many ') + from + ' refer to one ' + to;
+      },
+      tipRelation: (label, short, op) => 'Relation: ' + label + ' (' + short + ', ' + op + ')',
+      tipName: v => 'Name: ' + v,
+      tipCondition: v => 'Condition: ' + v,
+      tipOnDelete: v => 'On delete: ' + v,
+      tipOnUpdate: v => 'On update: ' + v,
+      tipSource: v => 'Source: ' + v,
+      panelTitle: (name, n) => name + ' relations (' + n + ')',
+      panelEmpty: 'No relations under current filter'
+    },
+    cn_zh: {
+      tablesStat: n => n + ' 张表',
+      declaredStat: n => n + ' 条外键',
+      inferredStat: n => n + ' 条推断',
+      searchPlaceholder: '搜索表名或字段名... (/)',
+      declaredToggle: '外键',
+      inferredToggle: '推断',
+      fit: '适应',
+      reset: '重置',
+      theme: '主题',
+      legDeclared: '数据库外键 (declared)',
+      legInferred: '代码推断 (inferred)',
+      legManyToOne: '> 多对一 (N:1)',
+      legOneToOne: '- 一对一 (1:1)',
+      legManyToMany: '<> 多对多 (N:M)',
+      manyToOne: '多对一',
+      oneToOne: '一对一',
+      manyToMany: '多对多',
+      sourceDeclared: '数据库外键 (declared)',
+      sourceInferred: '代码推断 (inferred)',
+      sentence: (op, from, to, cond) => {
+        const prefix = cond ? ('当 ' + cond + ' 时，') : '';
+        if (op === '-') return prefix + '一条 ' + from + ' 对应一条 ' + to;
+        if (op === '<>') return prefix + '多条 ' + from + ' 对应多条 ' + to;
+        return prefix + '多条 ' + from + ' 对应一条 ' + to;
+      },
+      tipRelation: (label, short, op) => '关系：' + label + ' (' + short + '，' + op + ')',
+      tipName: v => '名称：' + v,
+      tipCondition: v => '条件：' + v,
+      tipOnDelete: v => '删除行为：on delete ' + v,
+      tipOnUpdate: v => '更新行为：on update ' + v,
+      tipSource: v => '来源：' + v,
+      panelTitle: (name, n) => name + ' 的关联关系 (' + n + ')',
+      panelEmpty: '当前筛选条件下无关联关系'
+    }
+  };
+
+  let currentLang = 'en';
+  try {
+    const paramLang = new URLSearchParams(window.location.search).get('lang');
+    if (paramLang && I18N[paramLang]) currentLang = paramLang;
+  } catch (_) {}
+  langSelect.value = currentLang;
+
+  document.getElementById('model-name').textContent = DATA.name || 'schema';
+  const declaredCount = DATA.relations.filter(r => r.source === 'declared').length;
+  const inferredCount = DATA.relations.filter(r => r.source === 'inferred').length;
+  const statsEl = document.getElementById('stats');
+
+  function applyLanguage() {
+    const tr = I18N[currentLang] || I18N.en;
+    document.documentElement.lang = currentLang === 'cn_zh' ? 'zh-CN' : 'en';
+    statsEl.innerHTML = '';
+    [
+      tr.tablesStat(DATA.tables.length),
+      tr.declaredStat(declaredCount),
+      tr.inferredStat(inferredCount)
+    ].forEach(txt => {
+      const s = document.createElement('span');
+      s.className = 'stat-pill';
+      s.textContent = txt;
+      statsEl.appendChild(s);
+    });
+    searchInput.placeholder = tr.searchPlaceholder;
+    document.getElementById('lbl-declared').textContent = tr.declaredToggle;
+    document.getElementById('lbl-inferred').textContent = tr.inferredToggle;
+    document.getElementById('btn-fit').textContent = tr.fit;
+    document.getElementById('btn-reset').textContent = tr.reset;
+    document.getElementById('btn-theme').textContent = tr.theme;
+    document.getElementById('leg-declared').textContent = tr.legDeclared;
+    document.getElementById('leg-inferred').textContent = tr.legInferred;
+    document.getElementById('leg-many-to-one').textContent = tr.legManyToOne;
+    document.getElementById('leg-one-to-one').textContent = tr.legOneToOne;
+    document.getElementById('leg-many-to-many').textContent = tr.legManyToMany;
+    edgeItems.forEach(item => {
+      item.desc = describeRelation(item.rel);
+      item.tipText = buildEdgeTooltip(item.rel, item.desc);
+    });
+    applyFiltersAndHighlight();
+  }
+
+  // Measure text width using a hidden canvas context for crisp card sizing.
+  const measureCtx = document.createElement('canvas').getContext('2d');
+  function measureText(text, font) {
+    measureCtx.font = font;
+    return measureCtx.measureText(text || '').width;
+  }
+
+  // Track which columns are outgoing foreign keys.
+  const fkCols = new Map();
+  DATA.relations.forEach(r => {
+    if (!fkCols.has(r.from)) fkCols.set(r.from, new Set());
+    r.fromColumns.forEach(c => fkCols.get(r.from).add(c));
+  });
+
+  const nodes = new Map();
+  DATA.tables.forEach(t => {
+    const colIndex = new Map();
+    let maxColW = measureText(t.name, '600 13px -apple-system, sans-serif') + PAD_X * 2 + 16;
+    const fks = fkCols.get(t.name) || new Set();
+    t.columns.forEach((c, idx) => {
+      colIndex.set(c.name, idx);
+      let badgeW = 0;
+      if (c.pk) badgeW += 26;
+      if (c.unique && !c.pk) badgeW += 26;
+      if (fks.has(c.name)) badgeW += 26;
+      const nameW = measureText(c.name, '500 12px -apple-system, sans-serif');
+      const typeLabel = c.type + (c.notNull ? ' *' : '');
+      const typeW = measureText(typeLabel, '11px ui-monospace, monospace');
+      const rowW = PAD_X * 2 + badgeW + nameW + 24 + typeW;
+      if (rowW > maxColW) maxColW = rowW;
+    });
+    const w = Math.max(MIN_W, Math.min(MAX_W, Math.ceil(maxColW)));
+    const h = HEADER_H + Math.max(1, t.columns.length) * ROW_H + PAD_BOTTOM;
+    nodes.set(t.name, { table: t, colIndex, fks, w, h, x: 0, y: 0 });
+  });
+
+  function el(tag, attrs, parent) {
+    const node = document.createElementNS(SVG_NS, tag);
+    if (attrs) {
+      for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
+    }
+    if (parent) parent.appendChild(node);
+    return node;
+  }
+
+  // Automatic layered layout grouped by connected components.
+  function autoLayout() {
+    const adj = new Map();
+    const outDeg = new Map();
+    const inDeg = new Map();
+    for (const name of nodes.keys()) {
+      adj.set(name, new Set());
+      outDeg.set(name, 0);
+      inDeg.set(name, 0);
+    }
+    DATA.relations.forEach(r => {
+      if (!nodes.has(r.from) || !nodes.has(r.to)) return;
+      if (r.from !== r.to) {
+        adj.get(r.from).add(r.to);
+        adj.get(r.to).add(r.from);
+        outDeg.set(r.from, outDeg.get(r.from) + 1);
+        inDeg.set(r.to, inDeg.get(r.to) + 1);
+      }
+    });
+
+    const visited = new Set();
+    const components = [];
+    const isolated = [];
+    for (const name of nodes.keys()) {
+      if (visited.has(name)) continue;
+      if (adj.get(name).size === 0) {
+        visited.add(name);
+        isolated.push(name);
+        continue;
+      }
+      const comp = [];
+      const queue = [name];
+      visited.add(name);
+      while (queue.length) {
+        const cur = queue.shift();
+        comp.push(cur);
+        for (const nb of adj.get(cur)) {
+          if (!visited.has(nb)) {
+            visited.add(nb);
+            queue.push(nb);
+          }
+        }
+      }
+      components.push(comp);
+    }
+    components.sort((a, b) => b.length - a.length);
+
+    let cursorY = 40;
+    const COL_GAP = 140;
+    const ROW_GAP = 36;
+
+    components.forEach(comp => {
+      // Pick roots: referenced tables with outDeg === 0, else highest (inDeg - outDeg).
+      let roots = comp.filter(n => outDeg.get(n) === 0);
+      if (roots.length === 0) {
+        roots = [comp.slice().sort((a, b) => (inDeg.get(b) - outDeg.get(b)) - (inDeg.get(a) - outDeg.get(a)))[0]];
+      }
+      const layerOf = new Map();
+      const q = [];
+      roots.forEach(r => { layerOf.set(r, 0); q.push(r); });
+      while (q.length) {
+        const cur = q.shift();
+        const lv = layerOf.get(cur);
+        for (const nb of adj.get(cur)) {
+          if (!layerOf.has(nb)) {
+            layerOf.set(nb, lv + 1);
+            q.push(nb);
+          }
+        }
+      }
+      const layers = [];
+      comp.forEach(n => {
+        const lv = layerOf.get(n) || 0;
+        while (layers.length <= lv) layers.push([]);
+        layers[lv].push(n);
+      });
+      // Barycenter ordering to reduce crossings.
+      const orderInPrev = new Map();
+      layers.forEach((layer, lv) => {
+        if (lv > 0) {
+          layer.sort((a, b) => {
+            const score = n => {
+              let sum = 0, cnt = 0;
+              for (const nb of adj.get(n)) {
+                if (orderInPrev.has(nb)) { sum += orderInPrev.get(nb); cnt++; }
+              }
+              return cnt ? sum / cnt : 1e9;
+            };
+            return score(a) - score(b);
+          });
+        }
+        orderInPrev.clear();
+        layer.forEach((n, i) => orderInPrev.set(n, i));
+      });
+
+      let cursorX = 40;
+      let compMaxY = cursorY;
+      layers.forEach(layer => {
+        let y = cursorY;
+        let maxW = 0;
+        layer.forEach(name => {
+          const nd = nodes.get(name);
+          nd.x = cursorX;
+          nd.y = y;
+          y += nd.h + ROW_GAP;
+          if (nd.w > maxW) maxW = nd.w;
+        });
+        if (y > compMaxY) compMaxY = y;
+        cursorX += maxW + COL_GAP;
+      });
+      cursorY = compMaxY + 48;
+    });
+
+    // Arrange isolated tables in a grid below connected components.
+    if (isolated.length > 0) {
+      const cols = Math.max(1, Math.min(4, Math.ceil(Math.sqrt(isolated.length))));
+      let x = 40, y = cursorY, rowMaxH = 0;
+      isolated.forEach((name, idx) => {
+        const nd = nodes.get(name);
+        if (idx > 0 && idx %% cols === 0) {
+          x = 40;
+          y += rowMaxH + ROW_GAP;
+          rowMaxH = 0;
+        }
+        nd.x = x;
+        nd.y = y;
+        x += nd.w + 48;
+        if (nd.h > rowMaxH) rowMaxH = nd.h;
+      });
+    }
+  }
+
+  let selectedTable = null;
+  let searchQuery = '';
+  const tableEls = new Map();
+  const edgeItems = [];
+
+  function colY(nd, colName) {
+    const idx = nd.colIndex.has(colName) ? nd.colIndex.get(colName) : 0;
+    return nd.y + HEADER_H + idx * ROW_H + ROW_H / 2;
+  }
+
+  function renderTables() {
+    tablesLayer.innerHTML = '';
+    tableEls.clear();
+    for (const [name, nd] of nodes.entries()) {
+      const g = el('g', { class: 'table-group', 'data-table': name, transform: 'translate(' + nd.x + ',' + nd.y + ')' }, tablesLayer);
+      el('rect', {
+        class: 'card-bg',
+        x: 0, y: 0, width: nd.w, height: nd.h, rx: 8, ry: 8,
+        fill: 'var(--card-bg)', stroke: 'var(--card-border)', 'stroke-width': 1.25,
+        filter: 'url(#card-shadow)'
+      }, g);
+
+      // Header with top rounded corners.
+      const r = 8;
+      const hdPath = 'M 0 ' + r + ' A ' + r + ' ' + r + ' 0 0 1 ' + r + ' 0 L ' + (nd.w - r) + ' 0 A ' + r + ' ' + r + ' 0 0 1 ' + nd.w + ' ' + r + ' L ' + nd.w + ' ' + HEADER_H + ' L 0 ' + HEADER_H + ' Z';
+      el('path', { d: hdPath, fill: 'var(--card-header)' }, g);
+
+      const title = el('text', {
+        x: PAD_X, y: 22, fill: 'var(--card-header-text)',
+        'font-size': 13, 'font-weight': 600
+      }, g);
+      title.textContent = name;
+
+      if (nd.table.note) {
+        const noteDot = el('text', {
+          x: nd.w - PAD_X, y: 21, fill: '#94a3b8', 'font-size': 11, 'text-anchor': 'end'
+        }, g);
+        noteDot.textContent = 'i';
+        g.addEventListener('mouseenter', ev => showTooltip(ev, name + '\n' + nd.table.note));
+        g.addEventListener('mousemove', moveTooltip);
+        g.addEventListener('mouseleave', hideTooltip);
+      }
+
+      nd.table.columns.forEach((c, idx) => {
+        const ry = HEADER_H + idx * ROW_H;
+        if (idx > 0) {
+          el('line', { x1: 0, y1: ry, x2: nd.w, y2: ry, stroke: 'var(--bar-border)', 'stroke-width': 1 }, g);
+        }
+        let cx = PAD_X;
+        const drawBadge = (label, bg, fg) => {
+          el('rect', { x: cx, y: ry + 5, width: 22, height: 16, rx: 4, fill: bg }, g);
+          const bt = el('text', {
+            x: cx + 11, y: ry + 16.5, fill: fg, 'font-size': 9, 'font-weight': 700, 'text-anchor': 'middle'
+          }, g);
+          bt.textContent = label;
+          cx += 26;
+        };
+        if (c.pk) drawBadge('PK', 'var(--pk-bg)', 'var(--pk-fg)');
+        if (c.unique && !c.pk) drawBadge('UK', 'var(--uk-bg)', 'var(--uk-fg)');
+        if (nd.fks.has(c.name)) drawBadge('FK', 'var(--fk-bg)', 'var(--fk-fg)');
+
+        const colTxt = el('text', {
+          x: cx, y: ry + 17, fill: 'var(--text)',
+          'font-size': 12, 'font-weight': c.pk ? 600 : 400
+        }, g);
+        colTxt.textContent = c.name;
+
+        const typeTxt = el('text', {
+          x: nd.w - PAD_X, y: ry + 17, fill: 'var(--muted)',
+          'font-size': 11, 'text-anchor': 'end', class: 'mono'
+        }, g);
+        typeTxt.textContent = c.type + (c.notNull ? ' *' : '');
+      });
+
+      setupDrag(g, nd);
+      tableEls.set(name, g);
+    }
+  }
+
+  function describeRelation(r) {
+    const tr = I18N[currentLang] || I18N.en;
+    const fromSide = r.from + '.' + r.fromColumns.join(', ');
+    const toSide = r.to + '.' + r.toColumns.join(', ');
+    let short = 'N:1', label = tr.manyToOne;
+    if (r.op === '-') {
+      short = '1:1';
+      label = tr.oneToOne;
+    } else if (r.op === '<>') {
+      short = 'N:M';
+      label = tr.manyToMany;
+    }
+    const sentence = tr.sentence(r.op, fromSide, toSide, r.condition);
+    const sourceLabel = r.source === 'declared' ? tr.sourceDeclared : tr.sourceInferred;
+    return { short, label, sentence, sourceLabel };
+  }
+
+  function buildEdgeTooltip(r, desc) {
+    const tr = I18N[currentLang] || I18N.en;
+    const infoLines = [
+      desc.sentence,
+      tr.tipRelation(desc.label, desc.short, r.op)
+    ];
+    if (r.name) infoLines.push(tr.tipName(r.name));
+    if (r.condition) infoLines.push(tr.tipCondition(r.condition));
+    if (r.onDelete) infoLines.push(tr.tipOnDelete(r.onDelete));
+    if (r.onUpdate) infoLines.push(tr.tipOnUpdate(r.onUpdate));
+    infoLines.push(tr.tipSource(desc.sourceLabel));
+    return infoLines.join('\n');
+  }
+
+  function renderEdges() {
+    edgesLayer.innerHTML = '';
+    edgeItems.length = 0;
+
+    // Group parallel edges between the same table pair to offset control points.
+    const pairCount = new Map();
+    const pairSeen = new Map();
+    DATA.relations.forEach(r => {
+      const k = r.from < r.to ? r.from + '|' + r.to : r.to + '|' + r.from;
+      pairCount.set(k, (pairCount.get(k) || 0) + 1);
+    });
+
+    DATA.relations.forEach((r, idx) => {
+      if (!nodes.has(r.from) || !nodes.has(r.to)) return;
+      const k = r.from < r.to ? r.from + '|' + r.to : r.to + '|' + r.from;
+      const slot = pairSeen.get(k) || 0;
+      pairSeen.set(k, slot + 1);
+      const total = pairCount.get(k) || 1;
+      const offset = (slot - (total - 1) / 2) * 24;
+      const desc = describeRelation(r);
+
+      const g = el('g', { class: 'edge-group', 'data-source': r.source, 'data-from': r.from, 'data-to': r.to }, edgesLayer);
+      const color = r.source === 'inferred' ? 'var(--inferred)' : 'var(--declared)';
+      const hit = el('path', { class: 'edge-hit' }, g);
+      const path = el('path', {
+        class: 'edge-path',
+        stroke: color,
+        'stroke-dasharray': r.source === 'inferred' ? '6 4' : 'none'
+      }, g);
+      const fromMark = el('path', { fill: 'none', stroke: color, 'stroke-width': 1.6 }, g);
+      const toMark = el('path', { fill: 'none', stroke: color, 'stroke-width': 1.6 }, g);
+
+      let labelGroup = null, labelRect = null, labelText = null, pillText = '';
+      if (r.condition) {
+        pillText = desc.short + ' · when ' + r.condition;
+        labelGroup = el('g', {}, g);
+        labelRect = el('rect', {
+          rx: 5, ry: 5, height: 20,
+          fill: 'var(--cond-bg)', stroke: 'var(--cond-border)', 'stroke-width': 1
+        }, labelGroup);
+        labelText = el('text', {
+          'font-size': 10.5, 'font-weight': 500, fill: 'var(--cond-fg)',
+          'text-anchor': 'middle', 'dominant-baseline': 'central', class: 'mono'
+        }, labelGroup);
+        labelText.textContent = pillText;
+      }
+
+      const item = { rel: r, desc, tipText: buildEdgeTooltip(r, desc), pillText, g, hit, path, fromMark, toMark, labelGroup, labelRect, labelText, offset };
+      const onEnter = ev => { g.classList.add('active'); showTooltip(ev, item.tipText); };
+      const onLeave = () => { g.classList.remove('active'); hideTooltip(); };
+      hit.addEventListener('mouseenter', onEnter);
+      hit.addEventListener('mousemove', moveTooltip);
+      hit.addEventListener('mouseleave', onLeave);
+      if (labelGroup) {
+        labelGroup.style.cursor = 'pointer';
+        labelGroup.addEventListener('mouseenter', onEnter);
+        labelGroup.addEventListener('mousemove', moveTooltip);
+        labelGroup.addEventListener('mouseleave', onLeave);
+      }
+
+      edgeItems.push(item);
+      updateEdge(item);
+    });
+  }
+
+  function crowFoot(x, y, dir, many) {
+    // dir = +1 means edge leaves to the right; -1 means edge leaves to the left.
+    if (many) {
+      return 'M ' + (x + dir * 10) + ' ' + y + ' L ' + x + ' ' + (y - 6) +
+             ' M ' + (x + dir * 10) + ' ' + y + ' L ' + x + ' ' + (y + 6) +
+             ' M ' + (x + dir * 10) + ' ' + y + ' L ' + x + ' ' + y;
+    }
+    return 'M ' + (x + dir * 8) + ' ' + (y - 6) + ' L ' + (x + dir * 8) + ' ' + (y + 6);
+  }
+
+  function updateEdge(item) {
+    const r = item.rel;
+    const fromNd = nodes.get(r.from);
+    const toNd = nodes.get(r.to);
+    const y1 = colY(fromNd, r.fromColumns[0]);
+    const y2 = colY(toNd, r.toColumns[0]);
+
+    let d, midX, midY, x1, x2, dir1, dir2;
+    if (r.from === r.to) {
+      x1 = fromNd.x + fromNd.w;
+      x2 = toNd.x + toNd.w;
+      dir1 = 1;
+      dir2 = 1;
+      const loop = 56 + Math.abs(item.offset);
+      const cy1 = y1;
+      const cy2 = y2 === y1 ? y2 + 24 : y2;
+      d = 'M ' + x1 + ' ' + cy1 + ' C ' + (x1 + loop) + ' ' + cy1 + ', ' + (x2 + loop) + ' ' + cy2 + ', ' + x2 + ' ' + cy2;
+      midX = x1 + loop * 0.78;
+      midY = (cy1 + cy2) / 2;
+    } else {
+      const fromCenter = fromNd.x + fromNd.w / 2;
+      const toCenter = toNd.x + toNd.w / 2;
+      if (fromCenter <= toCenter) {
+        x1 = fromNd.x + fromNd.w; dir1 = 1;
+        x2 = toNd.x; dir2 = -1;
+      } else {
+        x1 = fromNd.x; dir1 = -1;
+        x2 = toNd.x + toNd.w; dir2 = 1;
+      }
+      const dx = Math.max(48, Math.min(180, Math.abs(x2 - x1) * 0.45));
+      const c1x = x1 + dir1 * dx;
+      const c2x = x2 + dir2 * dx;
+      const c1y = y1 + item.offset;
+      const c2y = y2 + item.offset;
+      d = 'M ' + x1 + ' ' + y1 + ' C ' + c1x + ' ' + c1y + ', ' + c2x + ' ' + c2y + ', ' + x2 + ' ' + y2;
+      // Cubic Bezier midpoint at t = 0.5
+      midX = 0.125 * x1 + 0.375 * c1x + 0.375 * c2x + 0.125 * x2;
+      midY = 0.125 * y1 + 0.375 * c1y + 0.375 * c2y + 0.125 * y2;
+    }
+
+    item.path.setAttribute('d', d);
+    item.hit.setAttribute('d', d);
+    item.fromMark.setAttribute('d', crowFoot(x1, y1, dir1, r.op === '>' || r.op === '<>'));
+    item.toMark.setAttribute('d', crowFoot(x2, y2, dir2, r.op === '<>'));
+
+    if (item.labelGroup) {
+      const w = Math.ceil(measureText(item.pillText, '500 10.5px ui-monospace, monospace')) + 14;
+      item.labelRect.setAttribute('x', midX - w / 2);
+      item.labelRect.setAttribute('y', midY - 10);
+      item.labelRect.setAttribute('width', w);
+      item.labelText.setAttribute('x', midX);
+      item.labelText.setAttribute('y', midY);
+    }
+  }
+
+  function updateConnectedEdges(tableName) {
+    edgeItems.forEach(item => {
+      if (item.rel.from === tableName || item.rel.to === tableName) {
+        updateEdge(item);
+      }
+    });
+  }
+
+  function applyFiltersAndHighlight() {
+    const showDeclared = toggleDeclared.checked;
+    const showInferred = toggleInferred.checked;
+    const q = searchQuery.trim().toLowerCase();
+
+    const matchedTables = new Set();
+    if (q) {
+      for (const [name, nd] of nodes.entries()) {
+        if (name.toLowerCase().includes(q) || nd.table.columns.some(c => c.name.toLowerCase().includes(q))) {
+          matchedTables.add(name);
+        }
+      }
+    }
+
+    const activeTables = new Set();
+    if (selectedTable) {
+      activeTables.add(selectedTable);
+      edgeItems.forEach(item => {
+        const visible = item.rel.source === 'declared' ? showDeclared : showInferred;
+        if (!visible) return;
+        if (item.rel.from === selectedTable) activeTables.add(item.rel.to);
+        if (item.rel.to === selectedTable) activeTables.add(item.rel.from);
+      });
+    }
+
+    for (const [name, g] of tableEls.entries()) {
+      const cardRect = g.querySelector('.card-bg');
+      const isSelected = name === selectedTable;
+      const isMatch = q && matchedTables.has(name);
+      const dimmed = (selectedTable && !activeTables.has(name)) || (q && !matchedTables.has(name));
+      g.classList.toggle('dimmed', Boolean(dimmed));
+      cardRect.setAttribute('stroke', (isSelected || isMatch) ? 'var(--accent)' : 'var(--card-border)');
+      cardRect.setAttribute('stroke-width', (isSelected || isMatch) ? '2.2' : '1.25');
+    }
+
+    edgeItems.forEach(item => {
+      const visible = item.rel.source === 'declared' ? showDeclared : showInferred;
+      item.g.style.display = visible ? '' : 'none';
+      const touches = selectedTable && (item.rel.from === selectedTable || item.rel.to === selectedTable);
+      const dimmed = (selectedTable && !touches) || (q && (!matchedTables.has(item.rel.from) && !matchedTables.has(item.rel.to)));
+      item.g.classList.toggle('dimmed', Boolean(dimmed));
+      item.g.classList.toggle('active', Boolean(touches));
+    });
+
+    if (!selectedTable) {
+      selectionPanel.style.display = 'none';
+      return;
+    }
+    const related = edgeItems.filter(item => {
+      const visible = item.rel.source === 'declared' ? showDeclared : showInferred;
+      return visible && (item.rel.from === selectedTable || item.rel.to === selectedTable);
+    });
+    const tr = I18N[currentLang] || I18N.en;
+    selectionPanel.innerHTML = '';
+    const titleEl = document.createElement('div');
+    titleEl.className = 'sp-title';
+    titleEl.textContent = tr.panelTitle(selectedTable, related.length);
+    selectionPanel.appendChild(titleEl);
+    if (related.length === 0) {
+      const emptyEl = document.createElement('div');
+      emptyEl.className = 'sp-meta';
+      emptyEl.textContent = tr.panelEmpty;
+      selectionPanel.appendChild(emptyEl);
+    } else {
+      related.forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'sp-item';
+        const line = document.createElement('div');
+        line.textContent = item.desc.sentence;
+        const meta = document.createElement('div');
+        meta.className = 'sp-meta';
+        meta.textContent = item.desc.label + ' (' + item.desc.short + ') · ' + item.desc.sourceLabel;
+        row.appendChild(line);
+        row.appendChild(meta);
+        selectionPanel.appendChild(row);
+      });
+    }
+    selectionPanel.style.display = 'block';
+  }
+
+  // Pan & zoom state.
+  let tx = 0, ty = 0, scale = 1;
+  function applyTransform() {
+    viewport.setAttribute('transform', 'translate(' + tx + ',' + ty + ') scale(' + scale + ')');
+  }
+
+  function fitToScreen() {
+    if (nodes.size === 0) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const nd of nodes.values()) {
+      if (nd.x < minX) minX = nd.x;
+      if (nd.y < minY) minY = nd.y;
+      if (nd.x + nd.w > maxX) maxX = nd.x + nd.w;
+      if (nd.y + nd.h > maxY) maxY = nd.y + nd.h;
+    }
+    const pad = 48;
+    const rect = stage.getBoundingClientRect();
+    const contentW = Math.max(1, maxX - minX + pad * 2);
+    const contentH = Math.max(1, maxY - minY + pad * 2);
+    scale = Math.min(1.1, Math.max(0.15, Math.min(rect.width / contentW, rect.height / contentH)));
+    tx = (rect.width - (maxX - minX) * scale) / 2 - minX * scale;
+    ty = (rect.height - (maxY - minY) * scale) / 2 - minY * scale;
+    applyTransform();
+  }
+
+  function focusTable(name) {
+    const nd = nodes.get(name);
+    if (!nd) return;
+    const rect = stage.getBoundingClientRect();
+    scale = Math.max(scale, 0.9);
+    tx = rect.width / 2 - (nd.x + nd.w / 2) * scale;
+    ty = rect.height / 2 - (nd.y + nd.h / 2) * scale;
+    applyTransform();
+  }
+
+  function setupDrag(g, nd) {
+    let dragging = false, moved = false, startX = 0, startY = 0, origX = 0, origY = 0;
+    g.addEventListener('pointerdown', ev => {
+      if (ev.button !== 0) return;
+      ev.stopPropagation();
+      dragging = true;
+      moved = false;
+      startX = ev.clientX;
+      startY = ev.clientY;
+      origX = nd.x;
+      origY = nd.y;
+      g.setPointerCapture(ev.pointerId);
+      tablesLayer.appendChild(g);
+    });
+    g.addEventListener('pointermove', ev => {
+      if (!dragging) return;
+      const dx = (ev.clientX - startX) / scale;
+      const dy = (ev.clientY - startY) / scale;
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true;
+      nd.x = Math.round(origX + dx);
+      nd.y = Math.round(origY + dy);
+      g.setAttribute('transform', 'translate(' + nd.x + ',' + nd.y + ')');
+      updateConnectedEdges(nd.table.name);
+    });
+    g.addEventListener('pointerup', ev => {
+      if (!dragging) return;
+      dragging = false;
+      g.releasePointerCapture(ev.pointerId);
+      if (!moved) {
+        selectedTable = selectedTable === nd.table.name ? null : nd.table.name;
+        applyFiltersAndHighlight();
+      }
+    });
+    g.addEventListener('dblclick', ev => {
+      ev.stopPropagation();
+      selectedTable = nd.table.name;
+      applyFiltersAndHighlight();
+      focusTable(nd.table.name);
+    });
+  }
+
+  // Stage panning.
+  let panning = false, panMoved = false, panStartX = 0, panStartY = 0, panOrigX = 0, panOrigY = 0;
+  stage.addEventListener('pointerdown', ev => {
+    if (ev.button !== 0) return;
+    panning = true;
+    panMoved = false;
+    panStartX = ev.clientX;
+    panStartY = ev.clientY;
+    panOrigX = tx;
+    panOrigY = ty;
+    stage.classList.add('panning');
+    stage.setPointerCapture(ev.pointerId);
+  });
+  stage.addEventListener('pointermove', ev => {
+    if (!panning) return;
+    const dx = ev.clientX - panStartX;
+    const dy = ev.clientY - panStartY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) panMoved = true;
+    tx = panOrigX + dx;
+    ty = panOrigY + dy;
+    applyTransform();
+  });
+  stage.addEventListener('pointerup', ev => {
+    if (!panning) return;
+    panning = false;
+    stage.classList.remove('panning');
+    stage.releasePointerCapture(ev.pointerId);
+    if (!panMoved && selectedTable) {
+      selectedTable = null;
+      applyFiltersAndHighlight();
+    }
+  });
+
+  // Wheel zoom around pointer.
+  stage.addEventListener('wheel', ev => {
+    ev.preventDefault();
+    const rect = stage.getBoundingClientRect();
+    const mx = ev.clientX - rect.left;
+    const my = ev.clientY - rect.top;
+    const factor = ev.deltaY < 0 ? 1.1 : 0.9;
+    const next = Math.min(2.5, Math.max(0.12, scale * factor));
+    tx = mx - (mx - tx) * (next / scale);
+    ty = my - (my - ty) * (next / scale);
+    scale = next;
+    applyTransform();
+  }, { passive: false });
+
+  function zoomBy(factor) {
+    const rect = stage.getBoundingClientRect();
+    const cx = rect.width / 2, cy = rect.height / 2;
+    const next = Math.min(2.5, Math.max(0.12, scale * factor));
+    tx = cx - (cx - tx) * (next / scale);
+    ty = cy - (cy - ty) * (next / scale);
+    scale = next;
+    applyTransform();
+  }
+
+  function showTooltip(ev, text) {
+    tooltip.textContent = text;
+    tooltip.style.display = 'block';
+    moveTooltip(ev);
+  }
+  function moveTooltip(ev) {
+    const pad = 12;
+    let x = ev.clientX + pad;
+    let y = ev.clientY + pad;
+    const rect = tooltip.getBoundingClientRect();
+    if (x + rect.width > window.innerWidth - 8) x = ev.clientX - rect.width - pad;
+    if (y + rect.height > window.innerHeight - 8) y = ev.clientY - rect.height - pad;
+    tooltip.style.left = Math.max(8, x) + 'px';
+    tooltip.style.top = Math.max(8, y) + 'px';
+  }
+  function hideTooltip() {
+    tooltip.style.display = 'none';
+  }
+
+  // Export current SVG with resolved CSS variables for standalone viewing.
+  function exportSVG() {
+    if (nodes.size === 0) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const nd of nodes.values()) {
+      if (nd.x < minX) minX = nd.x;
+      if (nd.y < minY) minY = nd.y;
+      if (nd.x + nd.w > maxX) maxX = nd.x + nd.w;
+      if (nd.y + nd.h > maxY) maxY = nd.y + nd.h;
+    }
+    const pad = 32;
+    const w = Math.ceil(maxX - minX + pad * 2);
+    const h = Math.ceil(maxY - minY + pad * 2);
+    const clone = svg.cloneNode(true);
+    clone.setAttribute('width', w);
+    clone.setAttribute('height', h);
+    clone.setAttribute('viewBox', (minX - pad) + ' ' + (minY - pad) + ' ' + w + ' ' + h);
+    clone.querySelector('#viewport').removeAttribute('transform');
+    const style = getComputedStyle(document.documentElement);
+    let raw = new XMLSerializer().serializeToString(clone);
+    raw = raw.replace(/var\((--[a-zA-Z0-9-]+)\)/g, (_, name) => style.getPropertyValue(name).trim() || '#334155');
+    const blob = new Blob([raw], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (DATA.name || 'erd') + '.svg';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  document.getElementById('btn-zoom-in').addEventListener('click', () => zoomBy(1.2));
+  document.getElementById('btn-zoom-out').addEventListener('click', () => zoomBy(0.8));
+  document.getElementById('btn-fit').addEventListener('click', fitToScreen);
+  document.getElementById('btn-reset').addEventListener('click', () => {
+    autoLayout();
+    renderTables();
+    renderEdges();
+    applyFiltersAndHighlight();
+    fitToScreen();
+  });
+  document.getElementById('btn-svg').addEventListener('click', exportSVG);
+  langSelect.addEventListener('change', () => {
+    currentLang = I18N[langSelect.value] ? langSelect.value : 'en';
+    applyLanguage();
+  });
+  document.getElementById('btn-theme').addEventListener('click', () => {
+    const next = document.documentElement.getAttribute('data-theme') === 'dark' ? '' : 'dark';
+    if (next) document.documentElement.setAttribute('data-theme', next);
+    else document.documentElement.removeAttribute('data-theme');
+  });
+  toggleDeclared.addEventListener('change', applyFiltersAndHighlight);
+  toggleInferred.addEventListener('change', applyFiltersAndHighlight);
+  searchInput.addEventListener('input', () => {
+    searchQuery = searchInput.value;
+    applyFiltersAndHighlight();
+  });
+  searchInput.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' && searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      for (const [name, nd] of nodes.entries()) {
+        if (name.toLowerCase().includes(q) || nd.table.columns.some(c => c.name.toLowerCase().includes(q))) {
+          selectedTable = name;
+          applyFiltersAndHighlight();
+          focusTable(name);
+          break;
+        }
+      }
+    }
+  });
+  window.addEventListener('keydown', ev => {
+    if (ev.key === '/' && document.activeElement !== searchInput) {
+      ev.preventDefault();
+      searchInput.focus();
+    } else if (ev.key === 'Escape') {
+      selectedTable = null;
+      searchInput.value = '';
+      searchQuery = '';
+      searchInput.blur();
+      applyFiltersAndHighlight();
+    }
+  });
+
+  autoLayout();
+  renderTables();
+  renderEdges();
+  applyLanguage();
+  fitToScreen();
+})();
+</script>
+</body>
+</html>
+`

@@ -80,6 +80,9 @@ func relationNotes(r *Relation) string {
 	case "<>":
 		notes = append(notes, "many-to-many")
 	}
+	if r.Condition != "" {
+		notes = append(notes, "when "+r.Condition)
+	}
 	if r.OnDelete != "" {
 		notes = append(notes, "on delete "+r.OnDelete)
 	}
@@ -295,7 +298,11 @@ func RenderMermaid(out io.Writer, m *Model, include map[string]bool) error {
 		case "<>":
 			right = "o{"
 		}
-		fmt.Fprintf(&b, "  %s %s%s%s %s : %q\n", id(r.From), left, line, right, id(r.To), strings.Join(r.FromColumns, ", "))
+		label := strings.Join(r.FromColumns, ", ")
+		if r.Condition != "" {
+			label = fmt.Sprintf("%s (when %s)", label, r.Condition)
+		}
+		fmt.Fprintf(&b, "  %s %s%s%s %s : %q\n", id(r.From), left, line, right, id(r.To), label)
 	}
 	_, err := io.WriteString(out, b.String())
 	return err

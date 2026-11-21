@@ -1,18 +1,41 @@
 package dbh
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/benenen/dbh/internal/database"
 	"github.com/benenen/dbh/internal/erd"
 	"github.com/spf13/cobra"
 )
+
+var openBrowser = defaultOpenBrowser
+
+func defaultOpenBrowser(target string) error {
+	var name string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		name, args = "open", []string{target}
+	case "windows":
+		name, args = "rundll32", []string{"url.dll,FileProtocolHandler", target}
+	default:
+		name, args = "xdg-open", []string{target}
+	}
+	cmd := exec.Command(name, args...)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("cannot open browser with %s: %w", name, err)
+	}
+	return nil
+}
 
 func addERDCommands(root *cobra.Command, store func() (Store, error), names cobra.CompletionFunc) {
 	var model, dirFlag string
@@ -130,11 +153,18 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 	_ = relations.RegisterFlagCompletionFunc("source", cobra.FixedCompletions([]string{erd.SourceDeclared, erd.SourceInferred}, cobra.ShellCompDirectiveNoFileComp))
 	group.AddCommand(relations)
 
-	var showFormat string
+	var showFormat, showOutput string
+	var showOpen bool
 	var depth int
-	show := &cobra.Command{Use: "show [TABLE...]", Short: "Preview tables and relations as text, Graphviz dot or Mermaid", ValidArgsFunction: tableNames, RunE: func(cmd *cobra.Command, args []string) error {
+	show := &cobra.Command{Use: "show [TABLE...]", Short: "Preview tables and relations as text, Graphviz dot, Mermaid or HTML", ValidArgsFunction: tableNames, RunE: func(cmd *cobra.Command, args []string) error {
 		if depth < 0 {
 			return fmt.Errorf("depth must be nonnegative")
+		}
+		if showOpen && !cmd.Flags().Changed("format") {
+			showFormat = "html"
+		}
+		if showOpen && showFormat != "html" {
+			return fmt.Errorf("--open is only supported with --format html")
 		}
 		var render func(io.Writer, *erd.Model, map[string]bool) error
 		switch showFormat {
@@ -144,8 +174,10 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 			render = erd.RenderDot
 		case "mermaid":
 			render = erd.RenderMermaid
+		case "html":
+			render = erd.RenderHTML
 		default:
-			return fmt.Errorf("show format must be text, dot or mermaid")
+			return fmt.Errorf("show format must be text, dot, mermaid or html")
 		}
 		m, err := open(cmd)
 		if err != nil {
@@ -161,11 +193,50 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 			}
 			include = m.Neighborhood(start, depth)
 		}
+		if showOutput != "" || showOpen {
+			var buf bytes.Buffer
+			if err := render(&buf, m, include); err != nil {
+				return err
+			}
+			target := showOutput
+			if target != "" {
+				if err := erd.Save(target, buf.String()); err != nil {
+					return err
+				}
+			} else {
+				f, err := os.CreateTemp("", "dbh-erd-*.html")
+				if err != nil {
+					return err
+				}
+				target = f.Name()
+				if _, err := f.WriteString(buf.String()); err != nil {
+					_ = f.Close()
+					return err
+				}
+				if err := f.Close(); err != nil {
+					return err
+				}
+			}
+			if showOpen {
+				absTarget, err := filepath.Abs(target)
+				if err == nil {
+					target = absTarget
+				}
+				if err := openBrowser(target); err != nil {
+					return fmt.Errorf("%w (saved at %s)", err, target)
+				}
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "Opened %s\n", erd.DisplayPath(target))
+				return err
+			}
+			return nil
+		}
 		return render(cmd.OutOrStdout(), m, include)
 	}}
-	show.Flags().StringVar(&showFormat, "format", "text", "text, dot or mermaid")
+	show.Flags().StringVar(&showFormat, "format", "text", "text, dot, mermaid or html")
 	show.Flags().IntVar(&depth, "depth", 1, "Include tables up to this many relations away from TABLE")
-	_ = show.RegisterFlagCompletionFunc("format", cobra.FixedCompletions([]string{"text", "dot", "mermaid"}, cobra.ShellCompDirectiveNoFileComp))
+	show.Flags().StringVarP(&showOutput, "output", "o", "", "Write the rendered diagram to this file")
+	show.Flags().BoolVar(&showOpen, "open", false, "Open the rendered HTML diagram in the default browser")
+	_ = show.RegisterFlagCompletionFunc("format", cobra.FixedCompletions([]string{"text", "dot", "mermaid", "html"}, cobra.ShellCompDirectiveNoFileComp))
 	group.AddCommand(show)
 
 	var pathFormat string

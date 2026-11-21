@@ -334,6 +334,7 @@ type Relation struct {
 	Op          string // ">", "-" or "<>"
 	To          string
 	ToColumns   []string
+	Condition   string
 	OnDelete    string
 	OnUpdate    string
 	Source      string
@@ -346,6 +347,9 @@ func (r Relation) key() string {
 	b := r.To + "(" + strings.Join(sortedCopy(r.ToColumns), ",") + ")"
 	if a > b {
 		a, b = b, a
+	}
+	if r.Condition != "" {
+		return a + "|" + b + "|" + r.Condition
 	}
 	return a + "|" + b
 }
@@ -404,7 +408,7 @@ func Load(dir, name string) (*Model, error) {
 	mainDB := m.parse(mainFile, string(mainSource), false)
 	if mainDB != nil {
 		m.addTables(mainDB)
-		m.addRelations(mainDB.Refs, SourceDeclared, mainFile)
+		m.addRelations(mainDB.Refs, SourceDeclared, mainFile, string(mainSource))
 	}
 	refsSource, err := os.ReadFile(refsFile)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -414,7 +418,7 @@ func Load(dir, name string) (*Model, error) {
 		m.RefsFile = refsFile
 		m.refsFiles[refsFile] = true
 		if refsDB := m.parse(refsFile, string(refsSource), true); refsDB != nil {
-			m.addRelations(refsDB.Refs, SourceInferred, refsFile)
+			m.addRelations(refsDB.Refs, SourceInferred, refsFile, string(refsSource))
 		}
 	}
 	return m, nil
@@ -482,8 +486,9 @@ func LoadAll(dirs []string, modelFilter string) (*Model, error) {
 	m := &Model{Name: mergedName, refsFiles: map[string]bool{}}
 
 	type parsedMain struct {
-		file string
-		db   *interpreter.Database
+		file   string
+		source string
+		db     *interpreter.Database
 	}
 	var mains []parsedMain
 	var refsFiles []string
@@ -501,7 +506,7 @@ func LoadAll(dirs []string, modelFilter string) (*Model, error) {
 		}
 		if mainDB := m.parse(mainFile, string(mainSource), false); mainDB != nil {
 			m.addTables(mainDB)
-			mains = append(mains, parsedMain{file: mainFile, db: mainDB})
+			mains = append(mains, parsedMain{file: mainFile, source: string(mainSource), db: mainDB})
 		}
 		if _, err := os.Stat(refsFile); err == nil {
 			refsFiles = append(refsFiles, refsFile)
@@ -510,7 +515,7 @@ func LoadAll(dirs []string, modelFilter string) (*Model, error) {
 		}
 	}
 	for _, pm := range mains {
-		m.addRelations(pm.db.Refs, SourceDeclared, pm.file)
+		m.addRelations(pm.db.Refs, SourceDeclared, pm.file, pm.source)
 	}
 
 	// Phase 2: parse and resolve all .refs.dbml files against the merged tables.
@@ -524,7 +529,7 @@ func LoadAll(dirs []string, modelFilter string) (*Model, error) {
 		}
 		m.refsFiles[refsFile] = true
 		if refsDB := m.parse(refsFile, string(refsSource), true); refsDB != nil {
-			m.addRelations(refsDB.Refs, SourceInferred, refsFile)
+			m.addRelations(refsDB.Refs, SourceInferred, refsFile, string(refsSource))
 		}
 	}
 	return m, nil
@@ -553,8 +558,9 @@ func StatusRows(dirs []string, modelFilter string) (Rows, error) {
 	var items []item
 	merged := &Model{Name: "all", refsFiles: map[string]bool{}}
 	type parsedMain struct {
-		file string
-		db   *interpreter.Database
+		file   string
+		source string
+		db     *interpreter.Database
 	}
 	var mains []parsedMain
 
@@ -581,9 +587,9 @@ func StatusRows(dirs []string, modelFilter string) (Rows, error) {
 			local := &Model{Name: name, File: mainFile, refsFiles: map[string]bool{}}
 			if mainDB := local.parse(mainFile, string(mainSource), false); mainDB != nil {
 				local.addTables(mainDB)
-				local.addRelations(mainDB.Refs, SourceDeclared, mainFile)
+				local.addRelations(mainDB.Refs, SourceDeclared, mainFile, string(mainSource))
 				merged.addTables(mainDB)
-				mains = append(mains, parsedMain{file: mainFile, db: mainDB})
+				mains = append(mains, parsedMain{file: mainFile, source: string(mainSource), db: mainDB})
 			}
 			it.tables = len(local.Tables)
 			it.declared = local.Count(SourceDeclared)
@@ -593,7 +599,7 @@ func StatusRows(dirs []string, modelFilter string) (Rows, error) {
 		}
 	}
 	for _, pm := range mains {
-		merged.addRelations(pm.db.Refs, SourceDeclared, pm.file)
+		merged.addRelations(pm.db.Refs, SourceDeclared, pm.file, pm.source)
 	}
 
 	rows := Rows{Columns: []string{"model", "file", "refs_file", "tables", "declared", "inferred", "state"}}
@@ -614,7 +620,7 @@ func StatusRows(dirs []string, modelFilter string) (Rows, error) {
 					refsFiles: map[string]bool{it.refsFile: true},
 				}
 				if refsDB := probe.parse(it.refsFile, string(refsSource), true); refsDB != nil {
-					probe.addRelations(refsDB.Refs, SourceInferred, it.refsFile)
+					probe.addRelations(refsDB.Refs, SourceInferred, it.refsFile, string(refsSource))
 				}
 				it.inferred = probe.Count(SourceInferred)
 				if len(probe.Errors) > 0 {
@@ -742,7 +748,8 @@ func (m *Model) resolve(schema *string, name string) (*Table, bool) {
 	return nil, false
 }
 
-func (m *Model) addRelations(refs []interpreter.Ref, source, file string) {
+func (m *Model) addRelations(refs []interpreter.Ref, source, file, rawSource string) {
+	lines := strings.Split(rawSource, "\n")
 	seen := map[string]string{}
 	for _, r := range m.Relations {
 		seen[r.key()] = r.Source
@@ -753,7 +760,11 @@ func (m *Model) addRelations(refs []interpreter.Ref, source, file string) {
 		}
 		left, right := ref.Endpoints[0], ref.Endpoints[1]
 		line := left.Token.Start.Line // TokenPos lines are 1-based
-		rel := Relation{Source: source, File: file, Line: line}
+		condition := extractRefCondition(lines, line)
+		if condition == "" && ref.Token.Start.Line > 0 && ref.Token.Start.Line != line {
+			condition = extractRefCondition(lines, ref.Token.Start.Line)
+		}
+		rel := Relation{Source: source, File: file, Line: line, Condition: condition}
 		if ref.Name != nil {
 			rel.Name = *ref.Name
 		}
@@ -822,7 +833,72 @@ func (m *Model) endpoint(ep interpreter.RefEndpoint) (*Table, []string, string) 
 }
 
 func (r Relation) describe() string {
-	return fmt.Sprintf("%s %s %s", endpointText(r.From, r.FromColumns), r.Op, endpointText(r.To, r.ToColumns))
+	base := fmt.Sprintf("%s %s %s", endpointText(r.From, r.FromColumns), r.Op, endpointText(r.To, r.ToColumns))
+	if r.Condition != "" {
+		return base + " (when " + r.Condition + ")"
+	}
+	return base
+}
+
+// extractRefCondition reads `// when: <expr>` directives from the contiguous
+// comment block immediately above a Ref line or from its trailing comment.
+func extractRefCondition(lines []string, line int) string {
+	if line < 1 || line > len(lines) {
+		return ""
+	}
+	var conds []string
+	for idx := line - 2; idx >= 0; idx-- {
+		trimmed := strings.TrimSpace(lines[idx])
+		if !strings.HasPrefix(trimmed, "//") {
+			break
+		}
+		if cond := parseWhenComment(trimmed[2:]); cond != "" {
+			conds = append(conds, cond)
+		}
+	}
+	for i, j := 0, len(conds)-1; i < j; i, j = i+1, j-1 {
+		conds[i], conds[j] = conds[j], conds[i]
+	}
+	if trailing := trailingLineComment(lines[line-1]); trailing != "" {
+		if cond := parseWhenComment(trailing); cond != "" {
+			conds = append(conds, cond)
+		}
+	}
+	return strings.Join(conds, " AND ")
+}
+
+func parseWhenComment(comment string) string {
+	body := strings.TrimSpace(comment)
+	if len(body) < 5 || !strings.EqualFold(body[:5], "when:") {
+		return ""
+	}
+	return strings.TrimSpace(body[5:])
+}
+
+func trailingLineComment(line string) string {
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if quote != 0 {
+			if ch == '\\' && i+1 < len(line) {
+				i++
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"', '`':
+			quote = ch
+		case '/':
+			if i+1 < len(line) && line[i+1] == '/' {
+				return line[i+2:]
+			}
+		}
+	}
+	return ""
 }
 
 func endpointText(table string, columns []string) string {

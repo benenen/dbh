@@ -35,19 +35,21 @@ func TestERDPullAndQueries(t *testing.T) {
 	equal(t, readFile(t, filepath.Join(repo, ".dbh", "schema.dbml")), dbml)
 
 	refs := filepath.Join(repo, ".dbh", "schema.refs.dbml")
-	writeFile(t, refs, "// app/models/order.go:9\nRef: orders.product_id > products.id\n// app/models/review.go:4\nRef: reviews.order_id > orders.id\n")
+	writeFile(t, refs, "// app/models/order.go:9\n// when: orders.product_id IS NOT NULL\nRef: orders.product_id > products.id\n// app/models/review.go:4\nRef: reviews.order_id > orders.id\n")
 	equal(t, f.run("erd", "check"), "OK: 4 tables, 1 declared and 2 inferred relations\n")
 
 	full := f.run("erd", "relations", "--format", "tsv")
 	equal(t, full, f.run("er", "relations", "--format", "tsv"))
-	equal(t, full, "name\tfrom_table\tfrom_columns\trelation\tto_table\tto_columns\ton_delete\ton_update\tsource\n"+
-		"\torders\tuser_id\t>\tusers\tid\tcascade\t\tdeclared\n"+
-		"\torders\tproduct_id\t>\tproducts\tid\t\t\tinferred\n"+
-		"\treviews\torder_id\t>\torders\tid\t\t\tinferred\n")
+	equal(t, full, "name\tfrom_table\tfrom_columns\trelation\tto_table\tto_columns\tcondition\ton_delete\ton_update\tsource\n"+
+		"\torders\tuser_id\t>\tusers\tid\t\tcascade\t\tdeclared\n"+
+		"\torders\tproduct_id\t>\tproducts\tid\torders.product_id IS NOT NULL\t\t\tinferred\n"+
+		"\treviews\torder_id\t>\torders\tid\t\t\t\tinferred\n")
 	equal(t, f.run("erd", "relations", "--table", "products", "--source", "inferred", "--format", "csv"),
-		"name,from_table,from_columns,relation,to_table,to_columns,on_delete,on_update,source\n,orders,product_id,>,products,id,,,inferred\n")
+		"name,from_table,from_columns,relation,to_table,to_columns,condition,on_delete,on_update,source\n,orders,product_id,>,products,id,orders.product_id IS NOT NULL,,,inferred\n")
 	equal(t, f.run("erd", "path", "reviews", "users", "--format", "tsv"),
-		"step\tfrom_table\tfrom_columns\tto_table\tto_columns\tsource\n1\treviews\torder_id\torders\tid\tinferred\n2\torders\tuser_id\tusers\tid\tdeclared\n")
+		"step\tfrom_table\tfrom_columns\tto_table\tto_columns\tcondition\tsource\n1\treviews\torder_id\torders\tid\t\tinferred\n2\torders\tuser_id\tusers\tid\t\tdeclared\n")
+	equal(t, f.run("erd", "path", "orders", "products", "--format", "tsv"),
+		"step\tfrom_table\tfrom_columns\tto_table\tto_columns\tcondition\tsource\n1\torders\tproduct_id\tproducts\tid\torders.product_id IS NOT NULL\tinferred\n")
 	contains(t, f.fail("erd", "path", "reviews", "users", "--declared-only"), "no relation path from reviews to users")
 	equal(t, f.run("erd", "tables", "--format", "json"), `{"table":"orders","columns":3,"relations":3,"note":""}
 {"table":"products","columns":2,"relations":1,"note":""}
@@ -57,7 +59,15 @@ func TestERDPullAndQueries(t *testing.T) {
 	show := f.run("erd", "show", "reviews")
 	contains(t, show, "┄┄▶ orders.id")
 	excludes(t, show, "\nusers\n")
-	contains(t, f.run("erd", "show", "--format", "mermaid"), "orders }o..|| products")
+	contains(t, f.run("erd", "show", "orders"), "when orders.product_id IS NOT NULL, inferred")
+	contains(t, f.run("erd", "show", "--format", "mermaid"), `orders }o..|| products : "product_id (when orders.product_id IS NOT NULL)"`)
+	htmlFile := filepath.Join(repo, "erd.html")
+	equal(t, f.run("erd", "show", "--format", "html", "-o", htmlFile), "")
+	htmlContent := readFile(t, htmlFile)
+	contains(t, htmlContent, "<!DOCTYPE html>")
+	contains(t, htmlContent, `"condition":"orders.product_id IS NOT NULL"`)
+	contains(t, htmlContent, `"name":"orders"`)
+	contains(t, f.fail("erd", "show", "--format", "mermaid", "--open"), "--open is only supported with --format html")
 	contains(t, f.run("erd", "status", "--format", "tsv"), "schema\t../../.dbh/schema.dbml\t../../.dbh/schema.refs.dbml\t4\t1\t2\tok\n")
 
 	// Re-pulling keeps the refs file and reports inferred relations that became
@@ -65,6 +75,7 @@ func TestERDPullAndQueries(t *testing.T) {
 	f.sql(`DROP TABLE reviews; CREATE TABLE reviews(id INTEGER PRIMARY KEY);
 		CREATE TABLE orders2(id INTEGER PRIMARY KEY, user_id INTEGER, product_id INTEGER REFERENCES products(id));
 		INSERT INTO orders2 SELECT * FROM orders; DROP TABLE orders; ALTER TABLE orders2 RENAME TO orders;`, "--no-history")
+	writeFile(t, refs, "// app/models/order.go:9\nRef: orders.product_id > products.id\n// app/models/review.go:4\nRef: reviews.order_id > orders.id\n")
 	cmd := exec.Command(binary, "erd", "pull", "demo", "--save")
 	cmd.Env, cmd.Dir = f.environment(), f.dir
 	var stdout, stderr bytes.Buffer
@@ -124,7 +135,7 @@ func TestERDScansAllProjectDirs(t *testing.T) {
 	f.dir = filepath.Join(repo, "svc-a")
 	equal(t, f.run("erd", "check"), "OK: 2 tables, 0 declared and 1 inferred relations\n")
 	equal(t, f.run("erd", "path", "orders", "users", "--format", "tsv"),
-		"step\tfrom_table\tfrom_columns\tto_table\tto_columns\tsource\n1\torders\tuser_id\tusers\tid\tinferred\n")
+		"step\tfrom_table\tfrom_columns\tto_table\tto_columns\tcondition\tsource\n1\torders\tuser_id\tusers\tid\t\tinferred\n")
 	status := f.run("erd", "status", "--format", "tsv")
 	contains(t, status, "schema\t.dbh/schema.dbml\t.dbh/schema.refs.dbml\t1\t0\t1\tok\n")
 	contains(t, status, "users\t../svc-b/.dbh/users.dbml\t\t1\t0\t0\tok\n")

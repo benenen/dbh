@@ -1,6 +1,7 @@
 package dbh
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -29,6 +30,64 @@ func TestERDPullSQLite(t *testing.T) {
 	}
 	if !strings.Contains(dbml, `Ref: "orders"."user_id" > "users"."id"`) {
 		t.Fatalf("unexpected DBML:\n%s", dbml)
+	}
+}
+
+func TestERDShowHTMLOpen(t *testing.T) {
+	dir := t.TempDir()
+	dbhDir := filepath.Join(dir, ".dbh")
+	if err := os.MkdirAll(dbhDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dbhDir, "schema.dbml"), []byte("Table users {\n  id integer [pk]\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origOpen := openBrowser
+	t.Cleanup(func() { openBrowser = origOpen })
+
+	var opened []string
+	openBrowser = func(target string) error {
+		opened = append(opened, target)
+		return nil
+	}
+
+	runShow := func(args ...string) (string, error) {
+		cmd := NewCommand()
+		var out, errBuf bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs(append([]string{"erd", "show", "--dir", dbhDir}, args...))
+		err := cmd.Execute()
+		return out.String(), err
+	}
+
+	// --format html --open writes a temp HTML file and opens it.
+	out, err := runShow("--format", "html", "--open")
+	if err != nil {
+		t.Fatalf("show --format html --open: %v", err)
+	}
+	if len(opened) != 1 || !strings.HasSuffix(opened[0], ".html") || !strings.HasPrefix(out, "Opened ") {
+		t.Fatalf("opened=%v out=%q", opened, out)
+	}
+	t.Cleanup(func() { _ = os.Remove(opened[0]) })
+	data, err := os.ReadFile(opened[0])
+	if err != nil || !strings.Contains(string(data), "<!DOCTYPE html>") || !strings.Contains(string(data), `"name":"users"`) {
+		t.Fatalf("temp html invalid: err=%v len=%d", err, len(data))
+	}
+
+	// --open with -o saves to the specified path and opens it.
+	explicit := filepath.Join(dir, "diagram.html")
+	if _, err := runShow("--open", "-o", explicit); err != nil {
+		t.Fatalf("show --open -o: %v", err)
+	}
+	if len(opened) != 2 || opened[1] != explicit {
+		t.Fatalf("opened=%v, want %s", opened, explicit)
+	}
+
+	// --open with non-html format fails clearly.
+	if _, err := runShow("--format", "mermaid", "--open"); err == nil || !strings.Contains(err.Error(), "--open is only supported with --format html") {
+		t.Fatalf("expected error for mermaid --open, got %v", err)
 	}
 }
 
