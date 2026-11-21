@@ -48,7 +48,7 @@
 
 <!-- SKILLS:START -->
 - **dbh-cli** — Agent 直接调用 dbh CLI 查询和操作数据库，管理连接、执行 SQL、MongoDB JSON 或 Redis 命令、导出结果；使用 dbh 读写数据或查看结构时触发 （`skills/dbh-cli`）
-- **dbh-erd** — 用 dbh erd 维护查询项目 .dbh/ DBML 关系模型（支持 init 从代码和库生成关系文件、查表字段依赖与 JOIN 路径）；涉及数据库逻辑、SQL/ORM 排查或字段影响分析时触发 （`skills/dbh-erd`）
+- **dbh-erd** — 新增或修改 SQL、ORM 查询与模型、数据访问层或数据库迁移前，使用 dbh erd 查询项目 .dbh/ 中本次涉及的表、字段与关系，即使用户没提 ERD （`skills/dbh-erd`）
 <!-- SKILLS:END -->
 
 ## 模块文档索引

@@ -1,11 +1,23 @@
 ---
 name: dbh-erd
-description: 用 dbh erd 维护查询项目 .dbh/ DBML 关系模型（支持 init 从代码和库生成关系文件、查表字段依赖与 JOIN 路径）；涉及数据库逻辑、SQL/ORM 排查或字段影响分析时触发。
+description: 新增或修改 SQL、ORM 查询与模型、数据访问层或数据库迁移前，使用 dbh erd 查询项目 .dbh/ 中本次涉及的表、字段与关系，即使用户没提 ERD。也用于排查数据库关系、查找 JOIN 路径和维护 DBML 模型。
 ---
 
 # 用 dbh erd 维护关系模型
 
 `dbh erd`（简写 `er`）在项目根目录的 `.dbh/` 中维护 DBML 关系模型。Agent 通过终端直接运行本机 `dbh` 并读取实际输出。
+
+## 写数据库代码前
+
+1. 在编辑前查询本次涉及的表。从项目根执行；子项目有自己的模型时用 `--dir` 指定其 `.dbh/`。按当前需要选一条命令，涉及其他表时再补查。
+
+   - 查字段和键：`dbh erd show TABLE --depth 0`
+   - 查单表关系：`dbh erd relations --table TABLE --format tsv`
+   - 查跨表 JOIN 路径：`dbh erd path FROM TO --format tsv`
+   - 表名未知：`dbh erd tables --format tsv`
+
+2. 按查询结果定位需要阅读的代码。对照迁移、模型定义或现有 SQL 核实本次依赖的字段和约束；推断关系的 JOIN 条件以业务代码为准。
+3. 工具不可用、缺少模型或查询失败时，从迁移、模型定义或现有 SQL 获取缺失的信息，再继续写代码。此流程只查询本地文件；按用户要求另行拉取或生成模型。
 
 ## 子命令
 
