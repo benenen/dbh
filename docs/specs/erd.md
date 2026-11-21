@@ -71,7 +71,7 @@
 | `erd status [--dir PATH] [--model M] [--format F]` | 列出工程内所有 `.dbh/` 中的模型；多 `.dbh/` 时结合全局表集合校验各 `.refs.dbml` |
 | `erd tables [--dir PATH] [--model M] [--format F]` | 列出模型中的表 |
 | `erd relations [--dir PATH] [--model M] [--table T] [--source S] [--format F]` | 列出关系；`--table` 只看与该表相关的关系（两端任一匹配），`--source declared\|inferred` 只看一类 |
-| `erd show [TABLE...] [--dir PATH] [--model M] [--depth N] [--format text\|dot\|mermaid]` | 终端预览；给出 TABLE 时只显示这些表及 N 层内相邻的表（默认 1） |
+| `erd show [TABLE...] [--dir PATH] [--model M] [--depth N] [--format text\|dot\|mermaid\|html] [-o FILE] [--open]` | 终端预览或导出图表；给出 TABLE 时只显示这些表及 N 层内相邻的表（默认 1）；`--open` 配合 `html` 直接在浏览器打开 |
 | `erd path FROM TO [--dir PATH] [--model M] [--declared-only] [--format F]` | 两表之间的最短关联路径，供写 JOIN 参考 |
 
 ### `pull`
@@ -87,14 +87,14 @@
 
 - 把关系视为无向边，在表之间做 BFS，返回跳数最少的路径；跳数相同时 declared 优先，再按表名排序，保证结果稳定。
 - `--declared-only` 只走 declared 关系。
-- 每行一跳：`step`、`from_table`、`from_columns`、`to_table`、`to_columns`、`source`。找不到路径时报错，退出码非零。
+- `path` 每行一跳：`step`、`from_table`、`from_columns`、`to_table`、`to_columns`、`condition`、`source`。找不到路径时报错，退出码非零。
 
 ### 输出格式
 
 - `tables`、`relations`、`path`、`status` 支持 `--format table|csv|json|tsv`，与现有结构命令一致，默认 `table`。
 - `status` 列：`model`、`file`、`refs_file`（不存在时为空）、`tables`、`declared`、`inferred`、`state`（`ok` / `warning` / `invalid`）。
 - `tables` 列：`table`、`columns`（字段数）、`relations`（涉及的关系数）、`note`。
-- `relations` 列：`name`、`from_table`、`from_columns`、`relation`（`>`、`-`、`<>`；`<` 调换两端后按 `>` 输出）、`to_table`、`to_columns`、`on_delete`、`on_update`、`source`。多列外键的字段以 `, ` 连接。
+- `relations` 列：`name`、`from_table`、`from_columns`、`relation`（`>`、`-`、`<>`；`<` 调换两端后按 `>` 输出）、`to_table`、`to_columns`、`condition`、`on_delete`、`on_update`、`source`。多列外键的字段以 `, ` 连接。`condition` 来自紧邻 `Ref` 上方连续注释块或行尾的 `// when: <条件>` 指令。
 - `show --format text` 为终端预览，inferred 关系用虚线箭头区分：
 
   ```

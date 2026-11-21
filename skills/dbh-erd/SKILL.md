@@ -53,7 +53,7 @@ description: 用 dbh erd 维护查询项目 .dbh/ DBML 关系模型（支持 ini
    Ref: orders.product_id > products.id
    ```
 
-   `>` 左侧是持有外键的表；一对一用 `-`，多对多用 `<>`；多列写成 `orders.(a, b) > t.(a, b)`。已在 `<model>.dbml` 中声明的关系不要重复写。
+   `>` 左侧是持有外键的表；一对一用 `-`，多对多用 `<>`；多列写成 `orders.(a, b) > t.(a, b)`。条件关联或多态关联（如 `a = 1` 时 `b` 关联 `c`，`a = 2` 时 `b` 关联 `d`）拆成多条 `Ref`，在紧邻 `Ref` 上方的注释块或行尾用 `// when: <条件>` 标注（如 `// when: a = 1`）。已在 `<model>.dbml` 中声明的关系不要重复写。
 6. 第 4 类只凭命名的关系先列给用户，确认后才写入，注释标明 `naming convention`。
 7. 运行 `dbh erd check`，修正所有 error；再用 `dbh erd relations --source inferred --format tsv` 和 `dbh erd show` 核对。
 8. 向用户汇报：模型文件路径、表数、declared 与 inferred 关系数、本次新增或删除的推断关系及证据、待确认的命名推断。不修改数据库结构；`.dbh/` 文件的提交按用户授权进行。
@@ -68,7 +68,7 @@ dbh erd path reviews users --format tsv
 dbh erd show orders --depth 1
 ```
 
-- `path` 每行一跳，`from_columns`/`to_columns` 即 JOIN 条件两侧的字段；`source` 为 `inferred` 的一跳来自代码推断，数据库不保证引用完整性，使用前说明这一点。
+- `path` 每行一跳，`from_columns`/`to_columns` 即 JOIN 条件两侧的字段；`condition` 非空时在 JOIN `ON` 或 `WHERE` 中带上该条件；`source` 为 `inferred` 的一跳来自代码推断，数据库不保证引用完整性，使用前说明这一点。
 - `--declared-only` 只走数据库外键。
 - 没有 `.dbh/` 或模型时，按上一节先生成模型，或在用户同意后改用 `dbh describe` 等直接查看结构。
-- 需要图形时用 `dbh erd show --format mermaid` 或 `--format dot` 输出，交给用户渲染。
+- 需要图形时用 `dbh erd show --format html -o erd.html`（或 `--format html --open` 直接在浏览器打开）导出可离线查看的交互式 HTML ER 图，或用 `--format mermaid` / `--format dot` 输出。
