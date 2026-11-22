@@ -48,8 +48,8 @@ flowchart TD
 扫描到所有 `.dbh/` 后，按以下规则加载模型：
 
 - **模型筛选**：
-  - 未传 `--model`：调用 `erd.List(dir)` 收集每个 `.dbh/` 下所有合法的 `<name>.dbml`；
-  - 显式传 `--model M`：只在各 `.dbh/` 中查找 `<M>.dbml`。
+  - 未传 `--model`：调用 `erd.List(dir)` 与 `erd.ListRefsOnly(dir)` 收集每个 `.dbh/` 下所有合法的 `<name>.dbml` 及无主文件的独立 `<name>.refs.dbml`；
+  - 显式传 `--model M`：只在各 `.dbh/` 中查找 `<M>.dbml` 或独立的 `<M>.refs.dbml`。
 - **单模型快速路径**：仅命中 1 个模型时直接走 `erd.Load(dir, name)`，与单目录单模型行为完全一致。
 - **多模型两阶段合并**：
   1. **Phase 1（表与 `declared` 关系）**：先解析所有 `<model>.dbml`，将表合并到同一个 `Model` 中，再添加所有主文件中的 `declared` 外键关系。
@@ -65,7 +65,7 @@ flowchart TD
 |---|---|---|---|---|
 | `tables` / `relations` / `path` / `show` / `check` | 默认扫描工程内所有 `.dbh/` | 合并为单一逻辑模型查询/校验 | 限定单个 `.dbh/` | 空（加载全部模型） |
 | `status` | 默认扫描工程内所有 `.dbh/` | 按模型文件逐行展示，但使用全局合并后的表集合校验各 `.refs.dbml`（跨 `.dbh/` 引用记为 `ok`） | 限定单个 `.dbh/` | 空（列出全部模型） |
-| `pull --save` | 不做全工程扫描 | 只写入当前或向上最近的单个 `.dbh/`（无则在工程根/当前目录创建） | 指定写入目标目录（自动补 `.dbh`） | `schema` |
+| `pull --save` | 写入不扫描，校验时多 `.dbh/` 结合全局表集合 | 只写入当前或向上最近的单个 `.dbh/`（无则在工程根/当前目录创建）；保存后若未传 `--dir`，自动结合全局表集合校验当前 `.refs.dbml` | 指定写入与校验目标目录（自动补 `.dbh`） | `schema` |
 
 ## 性能参考
 
