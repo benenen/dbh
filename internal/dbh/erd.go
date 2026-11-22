@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/benenen/dbh/internal/database"
@@ -42,6 +44,38 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 	group := &cobra.Command{Use: "erd", Aliases: []string{"er"}, Short: "Query the DBML relationship models in .dbh/", Args: cobra.NoArgs}
 	group.PersistentFlags().StringVar(&model, "model", "", "Model name: .dbh/<model>.dbml and .dbh/<model>.refs.dbml (default: all models for queries, \"schema\" for pull)")
 	group.PersistentFlags().StringVar(&dirFlag, "dir", "", "Limit to one .dbh directory (default: scan every .dbh directory in the project)")
+	_ = group.RegisterFlagCompletionFunc("model", func(cmd *cobra.Command, args []string, _ string) ([]cobra.Completion, cobra.ShellCompDirective) {
+		dirs, err := erdDirs(dirFlag)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		seen := map[string]bool{}
+		var completions []cobra.Completion
+		for _, d := range dirs {
+			list, err := erd.List(d)
+			if err != nil {
+				continue
+			}
+			for _, name := range list {
+				if !seen[name] {
+					seen[name] = true
+					completions = append(completions, name)
+				}
+			}
+			refsOnly, err := erd.ListRefsOnly(d)
+			if err != nil {
+				continue
+			}
+			for _, name := range refsOnly {
+				if !seen[name] {
+					seen[name] = true
+					completions = append(completions, name)
+				}
+			}
+		}
+		sort.Strings(completions)
+		return completions, cobra.ShellCompDirectiveNoFileComp
+	})
 
 	// open loads the model for queries; invalid inferred relations are skipped
 	// with a warning.
@@ -77,6 +111,7 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 	}
 
 	group.AddCommand(erdPullCommand(store, names, &model, &dirFlag))
+	group.AddCommand(erdDiffCommand(store, names, &model, &dirFlag))
 
 	check := &cobra.Command{Use: "check", Short: "Validate the model and its inferred relations", Args: cobra.NoArgs, ValidArgsFunction: cobra.NoFileCompletions, RunE: func(cmd *cobra.Command, args []string) error {
 		m, err := loadERD(dirFlag, model)
@@ -112,7 +147,8 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 	formatFlag(status, &statusFormat)
 	group.AddCommand(status)
 
-	var tablesFormat string
+	var tablesFormat, tablesMatch string
+	var tablesIsolated, tablesWithModel bool
 	tables := &cobra.Command{Use: "tables", Short: "List the tables in the model", Args: cobra.NoArgs, ValidArgsFunction: cobra.NoFileCompletions, RunE: func(cmd *cobra.Command, args []string) error {
 		if !validFormat(tablesFormat) {
 			return fmt.Errorf("invalid output format")
@@ -121,9 +157,12 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 		if err != nil {
 			return err
 		}
-		return writeERDRows(cmd.OutOrStdout(), m.TableRows(), tablesFormat)
+		return writeERDRows(cmd.OutOrStdout(), m.TableRowsFiltered(tablesMatch, tablesIsolated, tablesWithModel), tablesFormat)
 	}}
 	formatFlag(tables, &tablesFormat)
+	tables.Flags().StringVar(&tablesMatch, "match", "", "Filter tables by substring or glob pattern on table name/note")
+	tables.Flags().BoolVar(&tablesIsolated, "isolated", false, "Only list tables with no relations")
+	tables.Flags().BoolVar(&tablesWithModel, "with-model", false, "Include source model column")
 	group.AddCommand(tables)
 
 	var relationsFormat, relationsTable, relationsSource string
@@ -153,12 +192,22 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 	_ = relations.RegisterFlagCompletionFunc("source", cobra.FixedCompletions([]string{erd.SourceDeclared, erd.SourceInferred}, cobra.ShellCompDirectiveNoFileComp))
 	group.AddCommand(relations)
 
-	var showFormat, showOutput string
-	var showOpen bool
+	var showFormat, showOutput, showSource string
+	var showOpen, showDeclaredOnly bool
 	var depth int
 	show := &cobra.Command{Use: "show [TABLE...]", Short: "Preview tables and relations as text, Graphviz dot, Mermaid or HTML", ValidArgsFunction: tableNames, RunE: func(cmd *cobra.Command, args []string) error {
 		if depth < 0 {
 			return fmt.Errorf("depth must be nonnegative")
+		}
+		if showSource != "" && showSource != erd.SourceDeclared && showSource != erd.SourceInferred {
+			return fmt.Errorf("source must be declared or inferred")
+		}
+		effectiveSource := showSource
+		if showDeclaredOnly {
+			if showSource == erd.SourceInferred {
+				return fmt.Errorf("--declared-only cannot be combined with --source inferred")
+			}
+			effectiveSource = erd.SourceDeclared
 		}
 		if showOpen && !cmd.Flags().Changed("format") {
 			showFormat = "html"
@@ -183,19 +232,20 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 		if err != nil {
 			return err
 		}
+		view := m.FilterSource(effectiveSource)
 		var include map[string]bool
 		if len(args) > 0 {
 			start := make([]string, len(args))
 			for i, arg := range args {
-				if start[i], err = m.Lookup(arg); err != nil {
+				if start[i], err = view.Lookup(arg); err != nil {
 					return err
 				}
 			}
-			include = m.Neighborhood(start, depth)
+			include = view.NeighborhoodFiltered(start, depth, effectiveSource)
 		}
 		if showOutput != "" || showOpen {
 			var buf bytes.Buffer
-			if err := render(&buf, m, include); err != nil {
+			if err := render(&buf, view, include); err != nil {
 				return err
 			}
 			target := showOutput
@@ -230,17 +280,20 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 			}
 			return nil
 		}
-		return render(cmd.OutOrStdout(), m, include)
+		return render(cmd.OutOrStdout(), view, include)
 	}}
 	show.Flags().StringVar(&showFormat, "format", "text", "text, dot, mermaid or html")
 	show.Flags().IntVar(&depth, "depth", 1, "Include tables up to this many relations away from TABLE")
 	show.Flags().StringVarP(&showOutput, "output", "o", "", "Write the rendered diagram to this file")
 	show.Flags().BoolVar(&showOpen, "open", false, "Open the rendered HTML diagram in the default browser")
+	show.Flags().BoolVar(&showDeclaredOnly, "declared-only", false, "Only show foreign keys declared in the database")
+	show.Flags().StringVar(&showSource, "source", "", "Only show declared or inferred relations")
 	_ = show.RegisterFlagCompletionFunc("format", cobra.FixedCompletions([]string{"text", "dot", "mermaid", "html"}, cobra.ShellCompDirectiveNoFileComp))
+	_ = show.RegisterFlagCompletionFunc("source", cobra.FixedCompletions([]string{erd.SourceDeclared, erd.SourceInferred}, cobra.ShellCompDirectiveNoFileComp))
 	group.AddCommand(show)
 
 	var pathFormat string
-	var declaredOnly bool
+	var declaredOnly, pathAll bool
 	path := &cobra.Command{Use: "path FROM TO", Short: "Show the shortest relation path between two tables", Args: cobra.ExactArgs(2), ValidArgsFunction: tableNames, RunE: func(cmd *cobra.Command, args []string) error {
 		if !validFormat(pathFormat) {
 			return fmt.Errorf("invalid output format")
@@ -257,6 +310,13 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 		if err != nil {
 			return err
 		}
+		if pathAll {
+			paths, err := m.AllPaths(from, to, declaredOnly, 20)
+			if err != nil {
+				return err
+			}
+			return writeERDRows(cmd.OutOrStdout(), erd.PathRowsMulti(paths), pathFormat)
+		}
 		steps, err := m.Path(from, to, declaredOnly)
 		if err != nil {
 			return err
@@ -265,6 +325,7 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 	}}
 	formatFlag(path, &pathFormat)
 	path.Flags().BoolVar(&declaredOnly, "declared-only", false, "Only follow foreign keys declared in the database")
+	path.Flags().BoolVar(&pathAll, "all", false, "Show all shortest paths (including parallel foreign keys and conditional relations)")
 	group.AddCommand(path)
 
 	root.AddCommand(group)
@@ -272,11 +333,14 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 
 func erdPullCommand(store func() (Store, error), names cobra.CompletionFunc, model, dirFlag *string) *cobra.Command {
 	var db, schema, output string
+	var include, exclude []string
 	var save bool
 	var timeout time.Duration
 	c := &cobra.Command{Use: "pull NAME", Short: "Generate DBML from the database schema", Args: cobra.ExactArgs(1), ValidArgsFunction: names}
 	c.Flags().StringVar(&db, "db", "", "Server database to read")
-	c.Flags().StringVar(&schema, "schema", "", "PostgreSQL schema to read (default public)")
+	c.Flags().StringVar(&schema, "schema", "", "PostgreSQL schema(s) to read, comma-separated (default public)")
+	c.Flags().StringSliceVar(&include, "include", nil, "Only include tables matching glob pattern (repeatable)")
+	c.Flags().StringSliceVar(&exclude, "exclude", nil, "Exclude tables matching glob pattern (repeatable)")
 	c.Flags().BoolVar(&save, "save", false, "Write .dbh/<model>.dbml instead of standard output")
 	c.Flags().StringVarP(&output, "output", "o", "", "Write the DBML to this file")
 	c.Flags().DurationVar(&timeout, "timeout", 60*time.Second, "Connection and schema read timeout")
@@ -304,7 +368,7 @@ func erdPullCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 			return fmt.Errorf("--schema is only supported for PostgreSQL")
 		}
 		stopSpinner := startSpinner(cmd.ErrOrStderr(), "Reading schema")
-		dbml, err := pullDBML(cmd.Context(), p, db, cmd.Flags().Changed("db"), schema, timeout)
+		dbml, err := pullDBMLWithOptions(cmd.Context(), p, db, cmd.Flags().Changed("db"), schema, include, exclude, timeout)
 		stopSpinner()
 		if err != nil {
 			return err
@@ -333,13 +397,35 @@ func erdPullCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 			}
 		}
 		mainFile, _ := erd.ModelFiles(dir, targetModel)
+		var prevModel *erd.Model
+		if prevBytes, err := os.ReadFile(mainFile); err == nil {
+			prevModel = erd.ParseDBML(targetModel, mainFile, string(prevBytes))
+		}
 		if err := erd.Save(mainFile, dbml); err != nil {
 			return err
 		}
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Saved %s\n", erd.DisplayPath(mainFile)); err != nil {
 			return err
 		}
-		m, err := erd.Load(dir, targetModel)
+		if prevModel != nil && len(prevModel.Errors) == 0 {
+			nextModel := erd.ParseDBML(targetModel, mainFile, dbml)
+			if len(nextModel.Errors) == 0 {
+				diff := erd.DiffModels(prevModel, nextModel)
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Changes: %s\n", diff.Summary()); err != nil {
+					return err
+				}
+			}
+		}
+		var m *erd.Model
+		if *dirFlag == "" {
+			if allDirs, scanErr := erd.FindAllDirs("."); scanErr == nil && len(allDirs) > 1 {
+				m, err = erd.ValidateModelRefs(dir, targetModel, allDirs)
+			} else {
+				m, err = erd.Load(dir, targetModel)
+			}
+		} else {
+			m, err = erd.Load(dir, targetModel)
+		}
 		if err != nil {
 			return err
 		}
@@ -348,7 +434,84 @@ func erdPullCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 	return c
 }
 
+func erdDiffCommand(store func() (Store, error), names cobra.CompletionFunc, model, dirFlag *string) *cobra.Command {
+	var db, schema, format string
+	var include, exclude []string
+	var timeout time.Duration
+	c := &cobra.Command{Use: "diff NAME", Short: "Compare the local .dbh/<model>.dbml against the live database schema", Args: cobra.ExactArgs(1), ValidArgsFunction: names}
+	c.Flags().StringVar(&db, "db", "", "Server database to read")
+	c.Flags().StringVar(&schema, "schema", "", "PostgreSQL schema(s) to read, comma-separated (default public)")
+	c.Flags().StringSliceVar(&include, "include", nil, "Only include tables matching glob pattern (repeatable)")
+	c.Flags().StringSliceVar(&exclude, "exclude", nil, "Exclude tables matching glob pattern (repeatable)")
+	c.Flags().DurationVar(&timeout, "timeout", 60*time.Second, "Connection and schema read timeout")
+	c.Flags().StringVar(&format, "format", "table", "table, csv, json or tsv")
+	_ = c.RegisterFlagCompletionFunc("format", cobra.FixedCompletions([]string{"table", "csv", "json", "tsv"}, cobra.ShellCompDirectiveNoFileComp))
+	c.RunE = func(cmd *cobra.Command, args []string) error {
+		if !validFormat(format) {
+			return fmt.Errorf("invalid output format")
+		}
+		targetModel := *model
+		if targetModel == "" {
+			targetModel = erd.DefaultModel
+		}
+		if err := erd.ValidModelName(targetModel); err != nil {
+			return err
+		}
+		if timeout <= 0 {
+			return fmt.Errorf("timeout must be positive")
+		}
+		var dir string
+		var err error
+		if *dirFlag != "" {
+			dir, err = resolveReadERDDir(*dirFlag)
+		} else {
+			dir, _, err = erd.FindDir(".")
+			if err == nil && dir == "" {
+				err = errors.New("no .dbh directory found; run dbh erd pull NAME --save")
+			}
+		}
+		if err != nil {
+			return err
+		}
+		local, err := erd.Load(dir, targetModel)
+		if err != nil {
+			return err
+		}
+		if err := local.Usable(); err != nil {
+			return err
+		}
+		st, err := store()
+		if err != nil {
+			return err
+		}
+		p, err := st.Get(args[0])
+		if err != nil {
+			return err
+		}
+		if cmd.Flags().Changed("schema") && p.Driver != "postgres" {
+			return fmt.Errorf("--schema is only supported for PostgreSQL")
+		}
+		stopSpinner := startSpinner(cmd.ErrOrStderr(), "Reading schema")
+		dbml, err := pullDBMLWithOptions(cmd.Context(), p, db, cmd.Flags().Changed("db"), schema, include, exclude, timeout)
+		stopSpinner()
+		if err != nil {
+			return err
+		}
+		remote := erd.ParseDBML(targetModel, "<remote>", dbml)
+		if len(remote.Errors) > 0 {
+			return fmt.Errorf("cannot parse pulled schema: %s", remote.Errors[0])
+		}
+		diff := erd.DiffModels(local, remote)
+		return writeERDRows(cmd.OutOrStdout(), diff.Rows(), format)
+	}
+	return c
+}
+
 func pullDBML(ctx context.Context, p Profile, db string, switchDB bool, schema string, timeout time.Duration) (string, error) {
+	return pullDBMLWithOptions(ctx, p, db, switchDB, schema, nil, nil, timeout)
+}
+
+func pullDBMLWithOptions(ctx context.Context, p Profile, db string, switchDB bool, schema string, include, exclude []string, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	s, err := openSession(ctx, p, timeout)
@@ -364,8 +527,17 @@ func pullDBML(ctx context.Context, p Profile, db string, switchDB bool, schema s
 			return "", err
 		}
 	}
+	var schemas []string
 	if p.Driver == "mysql" {
-		schema = s.CurrentDatabase
+		if s.CurrentDatabase != "" {
+			schemas = []string{s.CurrentDatabase}
+		}
+	} else {
+		for _, part := range strings.Split(schema, ",") {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				schemas = append(schemas, trimmed)
+			}
+		}
 	}
 	pooled, ok := s.Conn.(database.SQLPool)
 	if !ok {
@@ -375,7 +547,11 @@ func pullDBML(ctx context.Context, p Profile, db string, switchDB bool, schema s
 	if err != nil {
 		return "", err
 	}
-	dbml, err := erd.Pull(ctx, pool, p.Driver, schema)
+	dbml, err := erd.PullWithOptions(ctx, pool, p.Driver, erd.PullOptions{
+		Schemas: schemas,
+		Include: include,
+		Exclude: exclude,
+	})
 	if err != nil {
 		return "", fmt.Errorf("cannot read schema: %s", redact(err.Error(), p.DSN, p.Proxies))
 	}

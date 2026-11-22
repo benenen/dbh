@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -13,36 +14,277 @@ import (
 	"github.com/mevdschee/dbml-tools/introspect"
 )
 
+// PullOptions configures schema introspection for PullWithOptions.
+type PullOptions struct {
+	// Schemas lists PostgreSQL schemas to read (default: ["public"]).
+	// For MySQL, the first entry is the database name. SQLite ignores it.
+	Schemas []string
+	// Include and Exclude are glob patterns (path.Match syntax) applied to
+	// table names (or schema.table when the pattern contains a dot).
+	Include []string
+	Exclude []string
+}
+
 // Pull reads the schema through db and renders it as DBML with native types.
 // For MySQL, schema is the database; for PostgreSQL, the schema (default
-// public); SQLite ignores it.
+// public, comma-separated for multiple schemas); SQLite ignores it.
 func Pull(ctx context.Context, db *sql.DB, driver, schema string) (string, error) {
+	var schemas []string
+	for _, part := range strings.Split(schema, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			schemas = append(schemas, trimmed)
+		}
+	}
+	return PullWithOptions(ctx, db, driver, PullOptions{Schemas: schemas})
+}
+
+// PullWithOptions reads one or more schemas through db, applies optional table
+// include/exclude filters, and renders DBML safe for re-parsing.
+func PullWithOptions(ctx context.Context, db *sql.DB, driver string, opts PullOptions) (string, error) {
+	if err := validateTablePatterns(opts.Include); err != nil {
+		return "", fmt.Errorf("invalid --include pattern: %w", err)
+	}
+	if err := validateTablePatterns(opts.Exclude); err != nil {
+		return "", fmt.Errorf("invalid --exclude pattern: %w", err)
+	}
+
 	var engine introspect.Engine
 	var label string
+	schemas := opts.Schemas
 	switch driver {
 	case "sqlite":
 		engine, label = introspect.EngineSQLite, "SQLite"
+		schemas = []string{""}
 	case "postgres":
 		engine, label = introspect.EnginePostgres, "PostgreSQL"
-		if schema == "" {
-			schema = "public"
+		if len(schemas) == 0 {
+			schemas = []string{"public"}
 		}
 	case "mysql":
 		engine, label = introspect.EngineMariaDB, "MySQL"
-		if schema == "" {
+		if len(schemas) == 0 || schemas[0] == "" {
 			return "", errors.New("no database selected; use --db")
 		}
+		schemas = schemas[:1]
 		if err := checkMySQLVersion(ctx, db); err != nil {
 			return "", err
 		}
 	default:
 		return "", fmt.Errorf("erd pull is not supported for %s", driver)
 	}
-	s, err := introspect.Introspect(ctx, db, engine, schema)
-	if err != nil {
-		return "", err
+
+	merged := &introspect.DBSchema{}
+	seenTables := map[string]bool{}
+	seenEnums := map[string]bool{}
+	seenFKs := map[string]bool{}
+	for _, sch := range schemas {
+		s, err := introspect.Introspect(ctx, db, engine, sch)
+		if err != nil {
+			return "", err
+		}
+		for _, t := range s.Tables {
+			key := schemaTableKey(t.Schema, t.Name)
+			if seenTables[key] {
+				continue
+			}
+			seenTables[key] = true
+			merged.Tables = append(merged.Tables, t)
+		}
+		for _, e := range s.Enums {
+			key := schemaTableKey(e.Schema, e.Name)
+			if seenEnums[key] {
+				continue
+			}
+			seenEnums[key] = true
+			merged.Enums = append(merged.Enums, e)
+		}
+		for _, fk := range s.FKs {
+			key := fkKey(fk)
+			if seenFKs[key] {
+				continue
+			}
+			seenFKs[key] = true
+			merged.FKs = append(merged.FKs, fk)
+		}
 	}
-	return introspect.GenerateDBML(s, label, false), nil
+
+	filterDBSchema(merged, opts.Include, opts.Exclude)
+	return sanitizeDBMLNotes(introspect.GenerateDBML(merged, label, false)), nil
+}
+
+func schemaTableKey(schema, name string) string {
+	if schema == "" || schema == "public" {
+		return name
+	}
+	return schema + "." + name
+}
+
+func fkKey(fk *introspect.ForeignKey) string {
+	return schemaTableKey(fk.Schema, fk.TableName) + "(" + strings.Join(fk.Columns, ",") + ")>" +
+		schemaTableKey(fk.RefSchema, fk.RefTable) + "(" + strings.Join(fk.RefColumns, ",") + ")"
+}
+
+func validateTablePatterns(patterns []string) error {
+	for _, p := range patterns {
+		if _, err := path.Match(p, "table"); err != nil {
+			return fmt.Errorf("%q: %w", p, err)
+		}
+	}
+	return nil
+}
+
+func matchAnyTablePattern(patterns []string, schema, name string) bool {
+	display := schemaTableKey(schema, name)
+	for _, p := range patterns {
+		target := name
+		if strings.Contains(p, ".") {
+			target = display
+		}
+		if ok, _ := path.Match(p, target); ok {
+			return true
+		}
+		if ok, _ := path.Match(strings.ToLower(p), strings.ToLower(target)); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func filterDBSchema(s *introspect.DBSchema, include, exclude []string) {
+	if len(include) == 0 && len(exclude) == 0 {
+		return
+	}
+	kept := make([]*introspect.Table, 0, len(s.Tables))
+	keptSet := make(map[string]bool, len(s.Tables))
+	for _, t := range s.Tables {
+		if len(include) > 0 && !matchAnyTablePattern(include, t.Schema, t.Name) {
+			continue
+		}
+		if len(exclude) > 0 && matchAnyTablePattern(exclude, t.Schema, t.Name) {
+			continue
+		}
+		kept = append(kept, t)
+		keptSet[schemaTableKey(t.Schema, t.Name)] = true
+	}
+	s.Tables = kept
+
+	fks := make([]*introspect.ForeignKey, 0, len(s.FKs))
+	for _, fk := range s.FKs {
+		if keptSet[schemaTableKey(fk.Schema, fk.TableName)] && keptSet[schemaTableKey(fk.RefSchema, fk.RefTable)] {
+			fks = append(fks, fk)
+		}
+	}
+	s.FKs = fks
+}
+
+var dbmlSingleQuoteEscaper = strings.NewReplacer(`\`, `\\`, `'`, `\'`)
+
+// sanitizeDBMLNotes converts Go-quoted double-quoted Note/note strings that
+// contain backslash escapes (such as \" or \n from MySQL/PostgreSQL comments)
+// into DBML single-quoted or triple-single-quoted strings. The DBML lexer
+// treats double-quoted literals as unescaped identifiers, so raw \" breaks
+// parsing on subsequent erd check / load runs.
+func sanitizeDBMLNotes(src string) string {
+	lines := strings.Split(src, "\n")
+	changed := false
+	for i, line := range lines {
+		updated, ok := sanitizeDBMLNoteLine(line)
+		if ok {
+			lines[i] = updated
+			changed = true
+		}
+	}
+	if !changed {
+		return src
+	}
+	return strings.Join(lines, "\n")
+}
+
+func sanitizeDBMLNoteLine(line string) (string, bool) {
+	var b strings.Builder
+	pos := 0
+	changed := false
+	for pos < len(line) {
+		idx, prefixLen := findNoteDoubleQuote(line[pos:])
+		if idx < 0 {
+			if changed {
+				b.WriteString(line[pos:])
+			}
+			break
+		}
+		quoteStart := pos + idx + prefixLen
+		quoteEnd := scanGoDoubleQuoteEnd(line, quoteStart)
+		if quoteEnd < 0 {
+			if changed {
+				b.WriteString(line[pos:])
+			}
+			break
+		}
+		lit := line[quoteStart : quoteEnd+1]
+		if !strings.ContainsRune(lit, '\\') {
+			if changed {
+				b.WriteString(line[pos : quoteEnd+1])
+			}
+			pos = quoteEnd + 1
+			continue
+		}
+		raw, err := strconv.Unquote(lit)
+		if err != nil {
+			if changed {
+				b.WriteString(line[pos : quoteEnd+1])
+			}
+			pos = quoteEnd + 1
+			continue
+		}
+		if !changed {
+			b.WriteString(line[:quoteStart])
+			changed = true
+		} else {
+			b.WriteString(line[pos:quoteStart])
+		}
+		b.WriteString(formatDBMLNoteString(raw))
+		pos = quoteEnd + 1
+	}
+	if !changed {
+		return line, false
+	}
+	return b.String(), true
+}
+
+func findNoteDoubleQuote(s string) (idx int, prefixLen int) {
+	for i := 0; i < len(s); i++ {
+		if i+7 <= len(s) && (s[i:i+7] == `note: "` || s[i:i+7] == `Note: "`) {
+			if i == 0 || s[i-1] == ' ' || s[i-1] == '\t' || s[i-1] == '[' || s[i-1] == ',' {
+				return i, 6
+			}
+		}
+	}
+	return -1, 0
+}
+
+func scanGoDoubleQuoteEnd(s string, start int) int {
+	if start >= len(s) || s[start] != '"' {
+		return -1
+	}
+	for i := start + 1; i < len(s); i++ {
+		if s[i] == '\\' {
+			i++
+			continue
+		}
+		if s[i] == '"' {
+			return i
+		}
+	}
+	return -1
+}
+
+func formatDBMLNoteString(raw string) string {
+	if strings.ContainsAny(raw, "\n\r") {
+		escaped := strings.ReplaceAll(raw, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, `'''`, `\'\'\'`)
+		return "'''" + escaped + "'''"
+	}
+	return "'" + dbmlSingleQuoteEscaper.Replace(raw) + "'"
 }
 
 // checkMySQLVersion rejects MySQL before 8.0.16, which lacks

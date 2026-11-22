@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mevdschee/dbml-tools/introspect"
 )
 
 const mainDBML = `Table users {
@@ -558,5 +560,257 @@ func BenchmarkFindAllDirs(b *testing.B) {
 		if err != nil || len(dirs) != 5 {
 			b.Fatalf("FindAllDirs = %d, %v", len(dirs), err)
 		}
+	}
+}
+
+func TestSanitizeDBMLNotes(t *testing.T) {
+	// Simulated dbml-tools output with Go-quoted double quotes and newlines.
+	raw := "Table \"items\" {\n" +
+		"  \"id\" int [pk, note: \"primary \\\"id\\\" field\"]\n" +
+		"  \"status\" varchar(20) [not null, default: 'open', note: \"line1\\nline2 with 'quote' and \\\"dbl\\\"\"]\n" +
+		"\n  Note: \"table \\\"items\\\" comment\"\n" +
+		"}\n"
+	sanitized := sanitizeDBMLNotes(raw)
+	m := ParseDBML("schema", "schema.dbml", sanitized)
+	if len(m.Errors) != 0 {
+		t.Fatalf("sanitized DBML failed to parse: %v\n%s", m.Errors, sanitized)
+	}
+	if len(m.Tables) != 1 {
+		t.Fatalf("tables = %d", len(m.Tables))
+	}
+	tbl := m.Tables[0]
+	if tbl.Note != `table "items" comment` {
+		t.Fatalf("table note = %q", tbl.Note)
+	}
+	if tbl.Columns[0].Note == nil || tbl.Columns[0].Note.Value != `primary "id" field` {
+		t.Fatalf("col0 note = %+v", tbl.Columns[0].Note)
+	}
+	if tbl.Columns[1].Note == nil || !strings.Contains(tbl.Columns[1].Note.Value, "line1\nline2") || !strings.Contains(tbl.Columns[1].Note.Value, `"dbl"`) {
+		t.Fatalf("col1 note = %+v", tbl.Columns[1].Note)
+	}
+}
+
+func TestStandaloneRefsFileAndValidateModelRefs(t *testing.T) {
+	root := t.TempDir()
+	dirA := filepath.Join(root, "svc-a", DirName)
+	dirB := filepath.Join(root, "svc-b", DirName)
+	dirRoot := filepath.Join(root, DirName)
+	for _, d := range []string{dirA, dirB, dirRoot} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dirA, "schema.dbml"), []byte("Table orders {\n  id int [pk]\n  user_id int\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirA, "schema.refs.dbml"), []byte("Ref: orders.user_id > users.id\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirB, "users.dbml"), []byte("Table users {\n  id int [pk]\n  org_id int\n}\nTable orgs {\n  id int [pk]\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Standalone .refs.dbml without a matching .dbml file.
+	if err := os.WriteFile(filepath.Join(dirRoot, "cross.refs.dbml"), []byte("Ref: users.org_id > orgs.id\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	refsOnly, err := ListRefsOnly(dirRoot)
+	if err != nil || strings.Join(refsOnly, ",") != "cross" {
+		t.Fatalf("ListRefsOnly = %v, %v", refsOnly, err)
+	}
+	allDirs := []string{dirRoot, dirA, dirB}
+	m, err := LoadAll(allDirs, "")
+	if err != nil || len(m.Errors) != 0 {
+		t.Fatalf("LoadAll err=%v errors=%v", err, m.Errors)
+	}
+	if m.Count(SourceInferred) != 2 {
+		t.Fatalf("inferred = %d, want 2", m.Count(SourceInferred))
+	}
+
+	// ValidateModelRefs validates svc-a's cross-.dbh ref without false unknown-table errors.
+	validated, err := ValidateModelRefs(dirA, "schema", allDirs)
+	if err != nil || len(validated.Errors) != 0 {
+		t.Fatalf("ValidateModelRefs err=%v errors=%v", err, validated.Errors)
+	}
+
+	status, err := StatusRows(allDirs, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Values) != 3 {
+		t.Fatalf("status rows = %v", status.Values)
+	}
+	// Standalone cross.refs.dbml appears with empty main file, 0 tables, 1 inferred, ok.
+	if status.Values[0][0] != "cross" || status.Values[0][1] != "" || status.Values[0][5] != 1 || status.Values[0][6] != "ok" {
+		t.Fatalf("standalone status row = %v", status.Values[0])
+	}
+}
+
+func TestAllPathsAndParallelEdges(t *testing.T) {
+	schema := `Table tasks {
+  id int [pk]
+  creator_id int [ref: > users.id]
+  assignee_id int [ref: > users.id]
+}
+Table users {
+  id int [pk]
+}
+`
+	m := load(t, schema, "")
+	paths, err := m.AllPaths("tasks", "users", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("paths = %d, want 2: %+v", len(paths), paths)
+	}
+	rows := PathRowsMulti(paths)
+	if len(rows.Values) != 2 || rows.Values[0][0] != 1 || rows.Values[1][0] != 2 {
+		t.Fatalf("PathRowsMulti = %v", rows.Values)
+	}
+}
+
+func TestTableRowsFiltered(t *testing.T) {
+	schema := `Table users {
+  id int [pk]
+  Note: 'account holders'
+}
+Table orders {
+  id int [pk]
+  user_id int [ref: > users.id]
+}
+Table audit_logs {
+  id int [pk]
+  Note: 'standalone audit trail'
+}
+`
+	m := load(t, schema, "")
+	iso := m.TableRowsFiltered("", true, false)
+	if len(iso.Values) != 1 || iso.Values[0][0] != "audit_logs" {
+		t.Fatalf("isolated = %v", iso.Values)
+	}
+	matched := m.TableRowsFiltered("account", false, true)
+	if len(matched.Values) != 1 || matched.Values[0][0] != "users" || len(matched.Columns) != 5 || matched.Columns[4] != "models" {
+		t.Fatalf("matched = %v cols=%v", matched.Values, matched.Columns)
+	}
+	globbed := m.TableRowsFiltered("audit_*", false, false)
+	if len(globbed.Values) != 1 || globbed.Values[0][0] != "audit_logs" {
+		t.Fatalf("globbed = %v", globbed.Values)
+	}
+}
+
+func TestRenderTextNotesDefaultsIndexesAndFilterSource(t *testing.T) {
+	schema := `Table orders {
+  id int [pk]
+  status varchar(20) [not null, default: 'open', note: 'order lifecycle']
+  user_id int [ref: > users.id]
+  product_id int
+
+  indexes {
+    (user_id, status) [name: 'idx_user_status']
+  }
+
+  Note: 'customer orders'
+}
+Table users {
+  id int [pk]
+}
+Table products {
+  id int [pk]
+}
+`
+	m := load(t, schema, "Ref: orders.product_id > products.id\n")
+	var text strings.Builder
+	if err := RenderText(&text, m, map[string]bool{"orders": true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"orders  # customer orders",
+		"default 'open'",
+		"# order lifecycle",
+		"indexes:",
+		"(user_id, status) [idx_user_status]",
+	} {
+		if !strings.Contains(text.String(), want) {
+			t.Fatalf("RenderText missing %q:\n%s", want, text.String())
+		}
+	}
+
+	declaredView := m.FilterSource(SourceDeclared)
+	if len(declaredView.Relations) != 1 || declaredView.Relations[0].Source != SourceDeclared {
+		t.Fatalf("FilterSource(declared) = %+v", declaredView.Relations)
+	}
+	nb := m.NeighborhoodFiltered([]string{"orders"}, 1, SourceDeclared)
+	if !nb["users"] || nb["products"] {
+		t.Fatalf("NeighborhoodFiltered(declared) = %v", nb)
+	}
+
+	var htmlOut strings.Builder
+	if err := RenderHTML(&htmlOut, m, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"note":"order lifecycle"`,
+		`"default":"'open'"`,
+		`"indexes":["(user_id, status) [idx_user_status]"]`,
+		`bgRect.setAttribute('fill', 'var(--bg)')`,
+	} {
+		if !strings.Contains(htmlOut.String(), want) {
+			t.Fatalf("RenderHTML missing %q", want)
+		}
+	}
+}
+
+func TestDiffModels(t *testing.T) {
+	oldM := ParseDBML("schema", "old.dbml", `Table users {
+  id int [pk]
+  name varchar(50)
+}
+Table legacy {
+  id int [pk]
+}
+`)
+	newM := ParseDBML("schema", "new.dbml", `Table users {
+  id int [pk]
+  name varchar(100)
+  email text [not null]
+}
+Table orders {
+  id int [pk]
+  user_id int [ref: > users.id]
+}
+`)
+	diff := DiffModels(oldM, newM)
+	if !diff.HasChanges() {
+		t.Fatal("expected changes")
+	}
+	if diff.TablesAdded != 1 || diff.TablesRemoved != 1 || diff.TablesModified != 1 || diff.RelationsAdded != 1 {
+		t.Fatalf("diff counts = %+v", diff)
+	}
+	wantSummary := "+1 table, -1 table, ~1 modified, +1 declared ref"
+	if diff.Summary() != wantSummary {
+		t.Fatalf("Summary() = %q, want %q", diff.Summary(), wantSummary)
+	}
+	same := DiffModels(newM, newM)
+	if same.HasChanges() || same.Summary() != "no schema changes" {
+		t.Fatalf("same diff = %+v", same)
+	}
+}
+
+func TestFilterDBSchema(t *testing.T) {
+	s := &introspect.DBSchema{
+		Tables: []*introspect.Table{
+			{Name: "users"},
+			{Name: "orders"},
+			{Name: "orders_bak"},
+		},
+		FKs: []*introspect.ForeignKey{
+			{TableName: "orders", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}},
+			{TableName: "orders_bak", Columns: []string{"user_id"}, RefTable: "users", RefColumns: []string{"id"}},
+		},
+	}
+	filterDBSchema(s, nil, []string{"*_bak"})
+	if len(s.Tables) != 2 || len(s.FKs) != 1 {
+		t.Fatalf("filtered tables=%d fks=%d", len(s.Tables), len(s.FKs))
 	}
 }

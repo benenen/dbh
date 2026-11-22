@@ -83,11 +83,40 @@ func TestERDPullAndQueries(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("pull --save: %v\n%s", err, stderr.String())
 	}
-	equal(t, stdout.String(), "Saved ../../.dbh/schema.dbml\n")
+	equal(t, stdout.String(), "Saved ../../.dbh/schema.dbml\nChanges: ~2 modified, +1 declared ref, -1 declared ref\n")
 	equal(t, stderr.String(), "error: ../../.dbh/schema.refs.dbml:4:1: relation refers to unknown column \"reviews.order_id\"\n"+
 		"warning: ../../.dbh/schema.refs.dbml:2:1: relation orders.product_id > products.id is already declared in the database; remove it from the refs file\n")
 	contains(t, readFile(t, refs), "Ref: reviews.order_id > orders.id")
 	contains(t, f.fail("erd", "check"), `ERD model "schema" has 1 error(s)`)
+
+	// New query filters: tables --match/--isolated/--with-model, show --declared-only,
+	// path --all, pull --exclude, and diff against live DB.
+	writeFile(t, refs, "// parallel ref\n// when: orders.user_id > 0\nRef: orders.user_id > users.id\n// second condition\n// when: orders.user_id = 0\nRef: orders.user_id > users.id\n")
+	allPaths := f.run("erd", "path", "orders", "users", "--all", "--format", "tsv")
+	contains(t, allPaths, "path\tstep\tfrom_table\tfrom_columns\tto_table\tto_columns\tcondition\tsource\n")
+	contains(t, allPaths, "1\t1\torders\tuser_id\tusers\tid\torders.user_id = 0\tinferred\n")
+	contains(t, allPaths, "2\t1\torders\tuser_id\tusers\tid\torders.user_id > 0\tinferred\n")
+
+	iso := f.run("erd", "tables", "--isolated", "--format", "tsv")
+	contains(t, iso, "reviews\t1\t0\t\n")
+	excludes(t, iso, "\norders\t")
+
+	withModel := f.run("erd", "tables", "--match", "prod*", "--with-model", "--format", "tsv")
+	contains(t, withModel, "table\tcolumns\trelations\tnote\tmodels\n")
+	contains(t, withModel, "products\t2\t1\t\trepo/schema\n")
+
+	declShow := f.run("erd", "show", "orders", "--declared-only")
+	contains(t, declShow, "──▶ products.id")
+	excludes(t, declShow, "┄┄▶ users.id")
+
+	exclDBML := f.run("erd", "pull", "demo", "--exclude", "reviews")
+	excludes(t, exclDBML, `Table "reviews"`)
+	contains(t, exclDBML, `Table "orders"`)
+
+	f.sql(`CREATE TABLE audit_logs(id INTEGER PRIMARY KEY, msg TEXT);`, "--no-history")
+	diffOut := f.run("erd", "diff", "demo", "--format", "tsv")
+	contains(t, diffOut, "kind\tchange\ttarget\tdetail\n")
+	contains(t, diffOut, "table\tadded\taudit_logs\t2 columns\n")
 }
 
 func TestERDRejectsInvalidModels(t *testing.T) {

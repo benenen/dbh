@@ -302,6 +302,8 @@ type Table struct {
 	Alias   string
 	Note    string
 	Columns []interpreter.Column
+	Indexes []interpreter.Index
+	Models  []string
 }
 
 func (t Table) Display() string {
@@ -361,14 +363,43 @@ func sortedCopy(values []string) []string {
 }
 
 type Model struct {
-	Name      string
-	File      string
-	RefsFile  string // empty when the model has no refs file
-	Tables    []Table
-	Relations []Relation
-	Errors    []Issue
-	Warnings  []Issue
-	refsFiles map[string]bool
+	Name         string
+	File         string
+	RefsFile     string // empty when the model has no refs file
+	Tables       []Table
+	Relations    []Relation
+	Errors       []Issue
+	Warnings     []Issue
+	refsFiles    map[string]bool
+	tableByKey   map[string]int
+	tableByAlias map[string]int
+}
+
+// ParseDBML parses a single DBML source string in memory into a Model.
+func ParseDBML(name, file, source string) *Model {
+	m := &Model{Name: name, File: file, refsFiles: map[string]bool{}}
+	if db := m.parse(file, source, false); db != nil {
+		m.addTables(db, name)
+		m.addRelations(db.Refs, SourceDeclared, file, source)
+	}
+	return m
+}
+
+// FilterSource returns a shallow view of m containing only relations matching
+// source (declared or inferred). When source is empty, m is returned as-is.
+func (m *Model) FilterSource(source string) *Model {
+	if source == "" {
+		return m
+	}
+	filtered := make([]Relation, 0, len(m.Relations))
+	for _, r := range m.Relations {
+		if r.Source == source {
+			filtered = append(filtered, r)
+		}
+	}
+	cp := *m
+	cp.Relations = filtered
+	return &cp
 }
 
 func (m *Model) isRefsFile(file string) bool {
@@ -407,7 +438,7 @@ func Load(dir, name string) (*Model, error) {
 	m := &Model{Name: name, File: mainFile, refsFiles: map[string]bool{}}
 	mainDB := m.parse(mainFile, string(mainSource), false)
 	if mainDB != nil {
-		m.addTables(mainDB)
+		m.addTables(mainDB, modelLabel(dir, name))
 		m.addRelations(mainDB.Refs, SourceDeclared, mainFile, string(mainSource))
 	}
 	refsSource, err := os.ReadFile(refsFile)
@@ -424,16 +455,24 @@ func Load(dir, name string) (*Model, error) {
 	return m, nil
 }
 
+func modelLabel(dir, name string) string {
+	parent := filepath.Base(filepath.Dir(dir))
+	if parent == "" || parent == "." || parent == string(filepath.Separator) {
+		return name
+	}
+	return parent + "/" + name
+}
+
 type modelEntry struct {
 	dir  string
 	name string
 }
 
 // LoadAll reads and merges models from dirs. When modelFilter is empty, every
-// model in every directory is loaded; otherwise only models with that name are
-// loaded. Tables with the same display name are merged across models, and
-// inferred relations are resolved after all tables are loaded so cross-.dbh
-// relations work.
+// model (including standalone .refs.dbml files) in every directory is loaded;
+// otherwise only models with that name are loaded. Tables with the same display
+// name are merged across models, and inferred relations are resolved after all
+// tables are loaded so cross-.dbh relations work.
 func LoadAll(dirs []string, modelFilter string) (*Model, error) {
 	if modelFilter != "" {
 		if err := ValidModelName(modelFilter); err != nil {
@@ -441,11 +480,16 @@ func LoadAll(dirs []string, modelFilter string) (*Model, error) {
 		}
 	}
 	var entries []modelEntry
+	var standaloneRefs []modelEntry
 	for _, dir := range dirs {
 		if modelFilter != "" {
-			mainFile, _ := ModelFiles(dir, modelFilter)
+			mainFile, refsFile := ModelFiles(dir, modelFilter)
 			if _, err := os.Stat(mainFile); err == nil {
 				entries = append(entries, modelEntry{dir: dir, name: modelFilter})
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return nil, err
+			} else if _, err := os.Stat(refsFile); err == nil {
+				standaloneRefs = append(standaloneRefs, modelEntry{dir: dir, name: modelFilter})
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return nil, err
 			}
@@ -458,8 +502,15 @@ func LoadAll(dirs []string, modelFilter string) (*Model, error) {
 		for _, name := range names {
 			entries = append(entries, modelEntry{dir: dir, name: name})
 		}
+		refsOnly, err := ListRefsOnly(dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range refsOnly {
+			standaloneRefs = append(standaloneRefs, modelEntry{dir: dir, name: name})
+		}
 	}
-	if len(entries) == 0 {
+	if len(entries) == 0 && len(standaloneRefs) == 0 {
 		if modelFilter != "" {
 			if len(dirs) == 1 {
 				mainFile, _ := ModelFiles(dirs[0], modelFilter)
@@ -469,17 +520,35 @@ func LoadAll(dirs []string, modelFilter string) (*Model, error) {
 		}
 		return nil, errors.New("no ERD models found in .dbh directories; run dbh erd pull NAME --save")
 	}
-	if len(entries) == 1 {
+	if len(entries) == 1 && len(standaloneRefs) == 0 {
 		return Load(entries[0].dir, entries[0].name)
 	}
 
 	mergedName := modelFilter
 	if mergedName == "" {
-		mergedName = entries[0].name
-		for _, e := range entries[1:] {
-			if e.name != mergedName {
-				mergedName = "all"
-				break
+		if len(entries) > 0 {
+			mergedName = entries[0].name
+			for _, e := range entries[1:] {
+				if e.name != mergedName {
+					mergedName = "all"
+					break
+				}
+			}
+			if len(standaloneRefs) > 0 {
+				for _, e := range standaloneRefs {
+					if e.name != mergedName {
+						mergedName = "all"
+						break
+					}
+				}
+			}
+		} else {
+			mergedName = standaloneRefs[0].name
+			for _, e := range standaloneRefs[1:] {
+				if e.name != mergedName {
+					mergedName = "all"
+					break
+				}
 			}
 		}
 	}
@@ -505,7 +574,7 @@ func LoadAll(dirs []string, modelFilter string) (*Model, error) {
 			m.File = mainFile
 		}
 		if mainDB := m.parse(mainFile, string(mainSource), false); mainDB != nil {
-			m.addTables(mainDB)
+			m.addTables(mainDB, modelLabel(e.dir, e.name))
 			mains = append(mains, parsedMain{file: mainFile, source: string(mainSource), db: mainDB})
 		}
 		if _, err := os.Stat(refsFile); err == nil {
@@ -513,6 +582,10 @@ func LoadAll(dirs []string, modelFilter string) (*Model, error) {
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
+	}
+	for _, e := range standaloneRefs {
+		_, refsFile := ModelFiles(e.dir, e.name)
+		refsFiles = append(refsFiles, refsFile)
 	}
 	for _, pm := range mains {
 		m.addRelations(pm.db.Refs, SourceDeclared, pm.file, pm.source)
@@ -535,9 +608,81 @@ func LoadAll(dirs []string, modelFilter string) (*Model, error) {
 	return m, nil
 }
 
-// StatusRows returns one status row per model file across dirs. When multiple
-// .dbh directories exist, each model's .refs.dbml is validated against the
-// combined table set so cross-.dbh inferred relations are counted and marked ok.
+// ValidateModelRefs validates dir/<name>.dbml and its optional .refs.dbml using
+// the combined table set across allDirs so cross-.dbh inferred relations do not
+// produce false unknown-table errors after pull --save.
+func ValidateModelRefs(dir, name string, allDirs []string) (*Model, error) {
+	if len(allDirs) <= 1 {
+		return Load(dir, name)
+	}
+	mainFile, refsFile := ModelFiles(dir, name)
+	mainSource, err := os.ReadFile(mainFile)
+	if err != nil {
+		return nil, err
+	}
+	target := &Model{Name: name, File: mainFile, refsFiles: map[string]bool{}}
+	if mainDB := target.parse(mainFile, string(mainSource), false); mainDB != nil {
+		target.addTables(mainDB, modelLabel(dir, name))
+		target.addRelations(mainDB.Refs, SourceDeclared, mainFile, string(mainSource))
+	}
+	refsSource, err := os.ReadFile(refsFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return target, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	merged := &Model{Name: "all", refsFiles: map[string]bool{}}
+	type parsedMain struct {
+		file   string
+		source string
+		db     *interpreter.Database
+	}
+	var mains []parsedMain
+	for _, d := range allDirs {
+		names, err := List(d)
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range names {
+			mf, _ := ModelFiles(d, n)
+			src, err := os.ReadFile(mf)
+			if err != nil {
+				continue
+			}
+			if db := merged.parse(mf, string(src), false); db != nil {
+				merged.addTables(db, modelLabel(d, n))
+				mains = append(mains, parsedMain{file: mf, source: string(src), db: db})
+			}
+		}
+	}
+	for _, pm := range mains {
+		merged.addRelations(pm.db.Refs, SourceDeclared, pm.file, pm.source)
+	}
+	probe := &Model{
+		Name:      name,
+		File:      mainFile,
+		RefsFile:  refsFile,
+		Tables:    merged.Tables,
+		Relations: append([]Relation(nil), merged.Relations...),
+		refsFiles: map[string]bool{refsFile: true},
+	}
+	probe.rebuildTableIndex()
+	if refsDB := probe.parse(refsFile, string(refsSource), true); refsDB != nil {
+		probe.addRelations(refsDB.Refs, SourceInferred, refsFile, string(refsSource))
+	}
+	target.RefsFile = refsFile
+	target.refsFiles[refsFile] = true
+	target.Errors = append(target.Errors, probe.Errors...)
+	target.Warnings = append(target.Warnings, probe.Warnings...)
+	return target, nil
+}
+
+// StatusRows returns one status row per model file (including standalone
+// .refs.dbml files) across dirs. When multiple .dbh directories exist, each
+// model's .refs.dbml is validated against the combined table set so cross-.dbh
+// inferred relations are counted and marked ok.
 func StatusRows(dirs []string, modelFilter string) (Rows, error) {
 	if modelFilter != "" {
 		if err := ValidModelName(modelFilter); err != nil {
@@ -548,6 +693,7 @@ func StatusRows(dirs []string, modelFilter string) (Rows, error) {
 		name     string
 		mainFile string
 		refsFile string
+		hasMain  bool
 		hasRefs  bool
 		tables   int
 		declared int
@@ -574,7 +720,7 @@ func StatusRows(dirs []string, modelFilter string) (Rows, error) {
 				continue
 			}
 			mainFile, refsFile := ModelFiles(dir, name)
-			it := item{name: name, mainFile: mainFile, refsFile: refsFile}
+			it := item{name: name, mainFile: mainFile, refsFile: refsFile, hasMain: true}
 			if _, err := os.Stat(refsFile); err == nil {
 				it.hasRefs = true
 			}
@@ -586,9 +732,10 @@ func StatusRows(dirs []string, modelFilter string) (Rows, error) {
 			}
 			local := &Model{Name: name, File: mainFile, refsFiles: map[string]bool{}}
 			if mainDB := local.parse(mainFile, string(mainSource), false); mainDB != nil {
-				local.addTables(mainDB)
+				label := modelLabel(dir, name)
+				local.addTables(mainDB, label)
 				local.addRelations(mainDB.Refs, SourceDeclared, mainFile, string(mainSource))
-				merged.addTables(mainDB)
+				merged.addTables(mainDB, label)
 				mains = append(mains, parsedMain{file: mainFile, source: string(mainSource), db: mainDB})
 			}
 			it.tables = len(local.Tables)
@@ -596,6 +743,17 @@ func StatusRows(dirs []string, modelFilter string) (Rows, error) {
 			it.hasError = len(local.Errors) > 0
 			it.hasWarn = len(local.Warnings) > 0
 			items = append(items, it)
+		}
+		refsOnly, err := ListRefsOnly(dir)
+		if err != nil {
+			return Rows{}, err
+		}
+		for _, name := range refsOnly {
+			if modelFilter != "" && name != modelFilter {
+				continue
+			}
+			_, refsFile := ModelFiles(dir, name)
+			items = append(items, item{name: name, refsFile: refsFile, hasRefs: true})
 		}
 	}
 	for _, pm := range mains {
@@ -605,6 +763,10 @@ func StatusRows(dirs []string, modelFilter string) (Rows, error) {
 	rows := Rows{Columns: []string{"model", "file", "refs_file", "tables", "declared", "inferred", "state"}}
 	for i := range items {
 		it := &items[i]
+		mainDisplay := ""
+		if it.hasMain {
+			mainDisplay = DisplayPath(it.mainFile)
+		}
 		refsDisplay := ""
 		if it.hasRefs {
 			refsDisplay = DisplayPath(it.refsFile)
@@ -619,6 +781,7 @@ func StatusRows(dirs []string, modelFilter string) (Rows, error) {
 					Relations: append([]Relation(nil), merged.Relations...),
 					refsFiles: map[string]bool{it.refsFile: true},
 				}
+				probe.rebuildTableIndex()
 				if refsDB := probe.parse(it.refsFile, string(refsSource), true); refsDB != nil {
 					probe.addRelations(refsDB.Refs, SourceInferred, it.refsFile, string(refsSource))
 				}
@@ -639,7 +802,7 @@ func StatusRows(dirs []string, modelFilter string) (Rows, error) {
 			state = "warning"
 		}
 		rows.Values = append(rows.Values, []any{
-			it.name, DisplayPath(it.mainFile), refsDisplay,
+			it.name, mainDisplay, refsDisplay,
 			it.tables, it.declared, it.inferred, state,
 		})
 	}
@@ -692,36 +855,104 @@ func issueAt(file string, pos lexer.Position, message string) Issue {
 	return Issue{File: file, Line: pos.Line + 1, Column: pos.Column + 1, Message: message}
 }
 
-func (m *Model) addTables(db *interpreter.Database) {
-	indexByDisplay := make(map[string]int, len(m.Tables))
-	for i, existing := range m.Tables {
-		indexByDisplay[existing.Display()] = i
+func (m *Model) rebuildTableIndex() {
+	m.tableByKey = make(map[string]int, len(m.Tables))
+	m.tableByAlias = make(map[string]int, len(m.Tables))
+	for i, t := range m.Tables {
+		m.tableByKey[t.Schema+"\x00"+t.Name] = i
+		if t.Schema == "" && t.Alias != "" {
+			if _, exists := m.tableByAlias[t.Alias]; !exists {
+				m.tableByAlias[t.Alias] = i
+			}
+		}
+	}
+}
+
+func indexKey(idx interpreter.Index) string {
+	cols := make([]string, len(idx.Columns))
+	for i, c := range idx.Columns {
+		cols[i] = c.Type + ":" + c.Value
+	}
+	name := ""
+	if idx.Name != nil {
+		name = *idx.Name
+	}
+	return fmt.Sprintf("%s|%t|%t|%s", name, idx.PK, idx.Unique, strings.Join(cols, ","))
+}
+
+func appendUniqueString(list []string, val string) []string {
+	if val == "" {
+		return list
+	}
+	for _, existing := range list {
+		if existing == val {
+			return list
+		}
+	}
+	return append(list, val)
+}
+
+func (m *Model) addTables(db *interpreter.Database, sourceLabel string) {
+	if m.tableByKey == nil {
+		m.rebuildTableIndex()
 	}
 	for _, t := range db.Tables {
-		table := Table{Schema: schemaName(t.SchemaName), Name: t.Name, Columns: append([]interpreter.Column(nil), t.Fields...)}
+		table := Table{
+			Schema:  schemaName(t.SchemaName),
+			Name:    t.Name,
+			Columns: append([]interpreter.Column(nil), t.Fields...),
+			Indexes: append([]interpreter.Index(nil), t.Indexes...),
+		}
+		if sourceLabel != "" {
+			table.Models = []string{sourceLabel}
+		}
 		if t.Alias != nil {
 			table.Alias = *t.Alias
 		}
 		if t.Note != nil {
 			table.Note = t.Note.Value
 		}
-		display := table.Display()
-		if idx, ok := indexByDisplay[display]; ok {
+		key := table.Schema + "\x00" + table.Name
+		if idx, ok := m.tableByKey[key]; ok {
 			existing := &m.Tables[idx]
 			for _, col := range table.Columns {
 				if _, exists := existing.column(col.Name); !exists {
 					existing.Columns = append(existing.Columns, col)
 				}
 			}
+			if len(table.Indexes) > 0 {
+				seenIdx := make(map[string]bool, len(existing.Indexes))
+				for _, ei := range existing.Indexes {
+					seenIdx[indexKey(ei)] = true
+				}
+				for _, ni := range table.Indexes {
+					if k := indexKey(ni); !seenIdx[k] {
+						seenIdx[k] = true
+						existing.Indexes = append(existing.Indexes, ni)
+					}
+				}
+			}
 			if existing.Alias == "" && table.Alias != "" {
 				existing.Alias = table.Alias
+				if existing.Schema == "" {
+					if _, exists := m.tableByAlias[existing.Alias]; !exists {
+						m.tableByAlias[existing.Alias] = idx
+					}
+				}
 			}
 			if existing.Note == "" && table.Note != "" {
 				existing.Note = table.Note
 			}
+			existing.Models = appendUniqueString(existing.Models, sourceLabel)
 			continue
 		}
-		indexByDisplay[display] = len(m.Tables)
+		newIdx := len(m.Tables)
+		m.tableByKey[key] = newIdx
+		if table.Schema == "" && table.Alias != "" {
+			if _, exists := m.tableByAlias[table.Alias]; !exists {
+				m.tableByAlias[table.Alias] = newIdx
+			}
+		}
 		m.Tables = append(m.Tables, table)
 	}
 }
@@ -735,14 +966,16 @@ func schemaName(schema *string) string {
 
 // resolve finds the table an endpoint names, by name or alias.
 func (m *Model) resolve(schema *string, name string) (*Table, bool) {
+	if m.tableByKey == nil {
+		m.rebuildTableIndex()
+	}
 	want := schemaName(schema)
-	for i := range m.Tables {
-		t := &m.Tables[i]
-		if t.Schema != want {
-			continue
-		}
-		if t.Name == name || (schema == nil && t.Alias != "" && t.Alias == name) {
-			return t, true
+	if idx, ok := m.tableByKey[want+"\x00"+name]; ok {
+		return &m.Tables[idx], true
+	}
+	if schema == nil {
+		if idx, ok := m.tableByAlias[name]; ok {
+			return &m.Tables[idx], true
 		}
 	}
 	return nil, false
@@ -940,10 +1173,18 @@ type edge struct {
 // adjacency treats relations as undirected; declared edges sort first, then
 // by the other table, so traversal order is stable.
 func (m *Model) adjacency(declaredOnly bool) map[string][]edge {
+	source := ""
+	if declaredOnly {
+		source = SourceDeclared
+	}
+	return m.adjacencyBySource(source)
+}
+
+func (m *Model) adjacencyBySource(source string) map[string][]edge {
 	graph := map[string][]edge{}
 	for i := range m.Relations {
 		r := &m.Relations[i]
-		if declaredOnly && r.Source != SourceDeclared {
+		if source != "" && r.Source != source {
 			continue
 		}
 		graph[r.From] = append(graph[r.From], edge{Other: r.To, Relation: r})
@@ -956,15 +1197,24 @@ func (m *Model) adjacency(declaredOnly bool) map[string][]edge {
 			if a, b := edges[i].Relation.Source == SourceDeclared, edges[j].Relation.Source == SourceDeclared; a != b {
 				return a
 			}
-			return edges[i].Other < edges[j].Other
+			if edges[i].Other != edges[j].Other {
+				return edges[i].Other < edges[j].Other
+			}
+			return edges[i].Relation.key() < edges[j].Relation.key()
 		})
 	}
 	return graph
 }
 
-// neighborhood returns the tables within depth hops of the given ones.
+// Neighborhood returns the tables within depth hops of the given ones.
 func (m *Model) Neighborhood(tables []string, depth int) map[string]bool {
-	graph := m.adjacency(false)
+	return m.NeighborhoodFiltered(tables, depth, "")
+}
+
+// NeighborhoodFiltered returns the tables within depth hops of the given ones,
+// optionally restricting traversal to relations of the given source.
+func (m *Model) NeighborhoodFiltered(tables []string, depth int, source string) map[string]bool {
+	graph := m.adjacencyBySource(source)
 	seen := map[string]bool{}
 	frontier := tables
 	for _, t := range tables {
@@ -991,7 +1241,17 @@ type Step struct {
 	Relation               *Relation
 }
 
-// path finds a shortest join path with breadth-first search.
+func makeStep(from, to string, r *Relation) Step {
+	step := Step{From: from, To: to, Relation: r}
+	if r.From == from && r.To == to {
+		step.FromColumns, step.ToColumns = r.FromColumns, r.ToColumns
+	} else {
+		step.FromColumns, step.ToColumns = r.ToColumns, r.FromColumns
+	}
+	return step
+}
+
+// Path finds a shortest join path with breadth-first search.
 func (m *Model) Path(from, to string, declaredOnly bool) ([]Step, error) {
 	if from == to {
 		return nil, fmt.Errorf("FROM and TO are the same table")
@@ -1018,19 +1278,79 @@ func (m *Model) Path(from, to string, declaredOnly bool) ([]Step, error) {
 	var steps []Step
 	for t := to; t != from; {
 		e := previous[t]
-		step := Step{From: e.Other, To: t, Relation: e.Relation}
-		if e.Relation.From == e.Other && (e.Relation.To == t) {
-			step.FromColumns, step.ToColumns = e.Relation.FromColumns, e.Relation.ToColumns
-		} else {
-			step.FromColumns, step.ToColumns = e.Relation.ToColumns, e.Relation.FromColumns
-		}
-		steps = append([]Step{step}, steps...)
+		steps = append([]Step{makeStep(e.Other, t, e.Relation)}, steps...)
 		t = e.Other
 	}
 	return steps, nil
 }
 
-// List returns the model names in dir, sorted.
+// AllPaths finds up to limit shortest join paths (including parallel foreign
+// keys and conditional relations between the same pair of tables). When limit
+// is <= 0, a default cap of 20 paths is used.
+func (m *Model) AllPaths(from, to string, declaredOnly bool, limit int) ([][]Step, error) {
+	if from == to {
+		return nil, fmt.Errorf("FROM and TO are the same table")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	graph := m.adjacency(declaredOnly)
+	dist := map[string]int{from: 0}
+	parents := map[string][]edge{}
+	queue := []string{from}
+	targetDist := -1
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		d := dist[current]
+		if targetDist >= 0 && d >= targetDist {
+			continue
+		}
+		for _, e := range graph[current] {
+			nextDist, seen := dist[e.Other]
+			if !seen {
+				dist[e.Other] = d + 1
+				parents[e.Other] = append(parents[e.Other], edge{Other: current, Relation: e.Relation})
+				if e.Other == to {
+					targetDist = d + 1
+				} else {
+					queue = append(queue, e.Other)
+				}
+			} else if nextDist == d+1 {
+				parents[e.Other] = append(parents[e.Other], edge{Other: current, Relation: e.Relation})
+			}
+		}
+	}
+	if targetDist < 0 {
+		return nil, fmt.Errorf("no relation path from %s to %s", from, to)
+	}
+
+	var results [][]Step
+	var backtrack func(node string, rev []Step)
+	backtrack = func(node string, rev []Step) {
+		if len(results) >= limit {
+			return
+		}
+		if node == from {
+			path := make([]Step, len(rev))
+			for i := range rev {
+				path[i] = rev[len(rev)-1-i]
+			}
+			results = append(results, path)
+			return
+		}
+		for _, p := range parents[node] {
+			backtrack(p.Other, append(rev, makeStep(p.Other, node, p.Relation)))
+			if len(results) >= limit {
+				return
+			}
+		}
+	}
+	backtrack(to, nil)
+	return results, nil
+}
+
+// List returns the model names in dir (those with a <name>.dbml file), sorted.
 func List(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1043,6 +1363,39 @@ func List(dir string) ([]string, error) {
 			continue
 		}
 		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// ListRefsOnly returns model names in dir that have a <name>.refs.dbml file
+// without a matching <name>.dbml file (e.g. cross-service reference files).
+func ListRefsOnly(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	hasMain := map[string]bool{}
+	var candidates []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if name, ok := strings.CutSuffix(e.Name(), ".refs.dbml"); ok {
+			if ValidModelName(name) == nil {
+				candidates = append(candidates, name)
+			}
+			continue
+		}
+		if name, ok := strings.CutSuffix(e.Name(), ".dbml"); ok {
+			hasMain[name] = true
+		}
+	}
+	var names []string
+	for _, name := range candidates {
+		if !hasMain[name] {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
 	return names, nil

@@ -39,6 +39,36 @@ func columnType(c interpreter.Column) string {
 	return text
 }
 
+func columnDefault(c interpreter.Column) string {
+	if c.DBDefault == nil || c.DBDefault.Value == nil {
+		return ""
+	}
+	val := fmt.Sprint(c.DBDefault.Value)
+	switch c.DBDefault.Type {
+	case "string":
+		return "'" + val + "'"
+	case "expression":
+		return "`" + val + "`"
+	default:
+		return val
+	}
+}
+
+func columnNote(c interpreter.Column) string {
+	if c.Note == nil {
+		return ""
+	}
+	return singleLine(c.Note.Value)
+}
+
+func singleLine(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(s), " ")
+}
+
 func columnFlags(c interpreter.Column) string {
 	var flags []string
 	if c.PK {
@@ -53,7 +83,39 @@ func columnFlags(c interpreter.Column) string {
 	if c.NotNull != nil && *c.NotNull && !c.PK {
 		flags = append(flags, "not null")
 	}
+	if def := columnDefault(c); def != "" {
+		flags = append(flags, "default "+def)
+	}
 	return strings.Join(flags, ", ")
+}
+
+func formatIndexLine(idx interpreter.Index) string {
+	cols := make([]string, len(idx.Columns))
+	for i, c := range idx.Columns {
+		if c.Type == "expression" {
+			cols[i] = "`" + c.Value + "`"
+		} else {
+			cols[i] = c.Value
+		}
+	}
+	label := "(" + strings.Join(cols, ", ") + ")"
+	var attrs []string
+	if idx.PK {
+		attrs = append(attrs, "pk")
+	}
+	if idx.Unique && !idx.PK {
+		attrs = append(attrs, "unique")
+	}
+	if idx.Type != nil && *idx.Type != "" {
+		attrs = append(attrs, *idx.Type)
+	}
+	if idx.Name != nil && *idx.Name != "" {
+		attrs = append(attrs, *idx.Name)
+	}
+	if len(attrs) > 0 {
+		return label + " [" + strings.Join(attrs, ", ") + "]"
+	}
+	return label
 }
 
 func arrow(r *Relation, incoming bool) string {
@@ -95,8 +157,8 @@ func relationNotes(r *Relation) string {
 	return strings.Join(notes, ", ")
 }
 
-// RenderText prints each table with its columns, the relations it holds and
-// the relations that point at it.
+// RenderText prints each table with its columns, notes, indexes, the relations
+// it holds and the relations that point at it.
 func RenderText(out io.Writer, m *Model, include map[string]bool) error {
 	var buf strings.Builder
 	if err := renderText(&buf, m, include); err != nil {
@@ -127,7 +189,11 @@ func renderText(out io.Writer, m *Model, include map[string]bool) error {
 			}
 		}
 		first = false
-		if _, err := fmt.Fprintln(w, name); err != nil {
+		header := name
+		if note := singleLine(t.Note); note != "" {
+			header += "  # " + note
+		}
+		if _, err := fmt.Fprintln(w, header); err != nil {
 			return err
 		}
 		outgoing := map[string][]*Relation{}
@@ -147,18 +213,31 @@ func renderText(out io.Writer, m *Model, include map[string]bool) error {
 		}
 		for _, c := range t.Columns {
 			refs := outgoing[c.Name]
+			note := columnNote(c)
 			if len(refs) == 0 {
-				if _, err := fmt.Fprintf(w, "  %s\t%s\t%s\t\t\n", c.Name, columnType(c), columnFlags(c)); err != nil {
+				noteCol := ""
+				if note != "" {
+					noteCol = "# " + note
+				}
+				if _, err := fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t\n", c.Name, columnType(c), columnFlags(c), noteCol); err != nil {
 					return err
 				}
 				continue
 			}
 			for i, r := range refs {
 				label, kind, flags := c.Name, columnType(c), columnFlags(c)
+				extra := relationNotes(r)
+				if i == 0 && note != "" {
+					if extra != "" {
+						extra += "  # " + note
+					} else {
+						extra = "# " + note
+					}
+				}
 				if i > 0 {
 					label, kind, flags = "", "", ""
 				}
-				if _, err := fmt.Fprintf(w, "  %s\t%s\t%s\t%s %s\t%s\n", label, kind, flags, arrow(r, false), endpointText(r.To, r.ToColumns), relationNotes(r)); err != nil {
+				if _, err := fmt.Fprintf(w, "  %s\t%s\t%s\t%s %s\t%s\n", label, kind, flags, arrow(r, false), endpointText(r.To, r.ToColumns), extra); err != nil {
 					return err
 				}
 			}
@@ -171,6 +250,16 @@ func renderText(out io.Writer, m *Model, include map[string]bool) error {
 		for _, r := range incoming {
 			if _, err := fmt.Fprintf(w, "  \t\t\t%s %s\t%s\n", arrow(r, true), endpointText(r.From, r.FromColumns), relationNotes(r)); err != nil {
 				return err
+			}
+		}
+		if len(t.Indexes) > 0 {
+			if _, err := fmt.Fprintln(w, "  indexes:"); err != nil {
+				return err
+			}
+			for _, idx := range t.Indexes {
+				if _, err := fmt.Fprintf(w, "    %s\n", formatIndexLine(idx)); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -189,29 +278,31 @@ func htmlEscape(s string) string {
 func RenderDot(out io.Writer, m *Model, include map[string]bool) error {
 	var b strings.Builder
 	b.WriteString("digraph erd {\n  rankdir=LR;\n  node [shape=plaintext, fontname=\"Helvetica\"];\n  edge [fontname=\"Helvetica\", fontsize=10];\n")
+	portMap := make(map[string]map[string]string, len(m.Tables))
 	for _, t := range m.Tables {
 		name := t.Display()
 		if include != nil && !include[name] {
 			continue
 		}
-		fmt.Fprintf(&b, "  %s [label=<<table border=\"0\" cellborder=\"1\" cellspacing=\"0\">\n    <tr><td bgcolor=\"lightgrey\"><b>%s</b></td></tr>\n", dotQuote(name), htmlEscape(name))
+		quoted := dotQuote(name)
+		cols := make(map[string]string, len(t.Columns))
+		fmt.Fprintf(&b, "  %s [label=<<table border=\"0\" cellborder=\"1\" cellspacing=\"0\">\n    <tr><td bgcolor=\"lightgrey\"><b>%s</b></td></tr>\n", quoted, htmlEscape(name))
 		for i, c := range t.Columns {
+			cols[c.Name] = fmt.Sprintf("%s:c%d", quoted, i)
 			text := c.Name + " " + columnType(c)
 			if flags := columnFlags(c); flags != "" {
 				text += " [" + flags + "]"
 			}
 			fmt.Fprintf(&b, "    <tr><td port=\"c%d\" align=\"left\">%s</td></tr>\n", i, htmlEscape(text))
 		}
+		portMap[name] = cols
 		b.WriteString("  </table>>];\n")
 	}
 	port := func(table string, columns []string) string {
-		for _, t := range m.Tables {
-			if t.Display() != table {
-				continue
-			}
-			for i, c := range t.Columns {
-				if len(columns) > 0 && c.Name == columns[0] {
-					return fmt.Sprintf("%s:c%d", dotQuote(table), i)
+		if len(columns) > 0 {
+			if cols, ok := portMap[table]; ok {
+				if p, ok := cols[columns[0]]; ok {
+					return p
 				}
 			}
 		}
