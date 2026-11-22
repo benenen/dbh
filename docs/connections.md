@@ -19,13 +19,15 @@ dbh new cache --driver redis --prompt-dsn
 # 输入：redis://user:password@localhost:6379/0（TLS 使用 rediss://）
 
 dbh ls
+dbh ls --driver postgres --format tsv
 dbh edit local --dsn ./another.db
 dbh remove local
+dbh remove local --keep-history
 ```
 
-`new` 保存配置，不要求数据库在线。`edit` 仅更新传入的字段。`remove` 只删除连接配置，不删除数据库。连接名允许字母、数字、点、下划线、连字符，以字母或数字开头。`ls` 不显示 DSN。
+`new` 保存配置，不要求数据库在线。`edit` 仅更新传入的字段。`remove` 删除连接配置以及对应的 SQL 历史文件（加 `--keep-history` 可保留历史），不删除数据库。连接名允许字母、数字、点、下划线、连字符，以字母或数字开头。`ls` 不显示 DSN，支持 `--driver` 按驱动过滤和 `--format table|csv|json|tsv`。
 
-命令简写：`list → ls`、`new → n`、`remove → rm / r`、`edit → e`、`connect → c`。简写与完整命令的参数及行为相同。
+命令简写：`list → ls`、`new → n`、`remove → rm / r`、`edit → e`、`connect → c`、`exec → x`。简写与完整命令的参数及行为相同。
 
 自动化可用 `--dsn-env ENV_NAME` 从环境变量读取 DSN。`--dsn`、`--dsn-env`、`--prompt-dsn` 三选一。密码建议通过隐藏输入或环境变量传入，避免出现在 shell 历史或进程参数中。
 

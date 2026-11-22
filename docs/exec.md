@@ -23,7 +23,7 @@ dbh exec local 'SELECT * FROM users' --format tsv   # 紧凑格式，适合 AI a
 
 ## exec 命令
 
-`exec NAME [QUERY]` 支持位置参数语句、`--sql/-e`、`--file/-f` 或标准输入，执行完退出；支持 `--format`、`--timeout`、`--no-history`、`--param`、`--stats`、`--max-rows` 和 `--table-batch-size`。`--db` 可省略，默认使用连接 DSN 中的数据库；指定时先切换服务器数据库，不修改已保存配置。MySQL、PostgreSQL、MongoDB、ClickHouse 和 Redis（数据库编号）支持切换，SQLite 不支持 `--db`。MongoDB 的 QUERY 使用原生 JSON 命令。
+`exec NAME [QUERY]`（简写 `x`）支持位置参数语句、`--sql/-e`、`--file/-f` 或标准输入，执行完退出；支持 `--format`、`-o/--output`（全部语句成功后原子写入文件）、`--timeout`、`--no-history`、`--param`、`--stats`、`--max-rows` 和 `--table-batch-size`。`--db` 可省略（`connect` 同样支持 `--db`），默认使用连接 DSN 中的数据库；指定时先切换服务器数据库，不修改已保存配置。MySQL、PostgreSQL、MongoDB、ClickHouse 和 Redis（数据库编号）支持切换，SQLite 不支持 `--db`。MongoDB 的 QUERY 使用原生 JSON 命令。
 
 ## 参数绑定
 
