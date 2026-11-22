@@ -2,15 +2,18 @@ package dbh
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/benenen/dbh/internal/database/proxy"
+	"github.com/benenen/dbh/internal/database/registry"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -60,7 +63,16 @@ func NewCommand() *cobra.Command {
 	fixed := func(values ...string) cobra.CompletionFunc {
 		return cobra.FixedCompletions(values, cobra.ShellCompDirectiveNoFileComp)
 	}
+	var listFormat, listDriver string
 	ls := &cobra.Command{Use: "list", Aliases: []string{"ls"}, Short: "List saved connections (credentials are hidden)", Args: cobra.NoArgs, ValidArgsFunction: cobra.NoFileCompletions, RunE: func(cmd *cobra.Command, args []string) error {
+		if listFormat != "" && !validFormat(listFormat) {
+			return fmt.Errorf("format must be table, csv, json or tsv")
+		}
+		if listDriver != "" {
+			if _, err := registry.Lookup(listDriver); err != nil {
+				return err
+			}
+		}
 		s, err := store()
 		if err != nil {
 			return err
@@ -69,11 +81,33 @@ func NewCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
+		var filtered []Profile
+		for _, p := range profiles {
+			if listDriver != "" && !strings.EqualFold(p.Driver, listDriver) {
+				continue
+			}
+			filtered = append(filtered, p)
+		}
+		if listFormat != "" {
+			values := make([][]any, 0, len(filtered))
+			for _, p := range filtered {
+				hops := make([]string, len(p.Proxies))
+				for i, hop := range p.Proxies {
+					hops[i] = proxy.Display(hop)
+				}
+				proxyCol := "-"
+				if len(hops) > 0 {
+					proxyCol = strings.Join(hops, " -> ")
+				}
+				values = append(values, []any{p.Name, p.Driver, proxyCol})
+			}
+			return writeRows(cmd.OutOrStdout(), []string{"name", "driver", "proxies"}, values, listFormat)
+		}
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 		if _, err := fmt.Fprintln(w, "NAME\tDRIVER\tPROXIES"); err != nil {
 			return err
 		}
-		for _, p := range profiles {
+		for _, p := range filtered {
 			hops := make([]string, len(p.Proxies))
 			for i, hop := range p.Proxies {
 				hops[i] = proxy.Display(hop)
@@ -87,6 +121,10 @@ func NewCommand() *cobra.Command {
 		}
 		return w.Flush()
 	}}
+	ls.Flags().StringVar(&listFormat, "format", "", "Structured output: table, csv, json or tsv")
+	ls.Flags().StringVar(&listDriver, "driver", "", "Filter connections by driver")
+	_ = ls.RegisterFlagCompletionFunc("format", fixed("table", "csv", "json", "tsv"))
+	_ = ls.RegisterFlagCompletionFunc("driver", fixed("sqlite", "postgres", "mysql", "mongo", "clickhouse", "redis"))
 	root.AddCommand(ls)
 	for _, create := range []bool{true, false} {
 		var driver, dsn, dsnEnv string
@@ -179,19 +217,22 @@ func NewCommand() *cobra.Command {
 		}
 		root.AddCommand(c)
 	}
-	root.AddCommand(&cobra.Command{Use: "remove NAME", Aliases: []string{"rm", "r"}, Short: "Remove a saved connection (keeps the database)", Args: cobra.ExactArgs(1), ValidArgsFunction: names, RunE: func(cmd *cobra.Command, args []string) error {
+	var keepHistory bool
+	rmCmd := &cobra.Command{Use: "remove NAME", Aliases: []string{"rm", "r"}, Short: "Remove a saved connection (and its history unless --keep-history)", Args: cobra.ExactArgs(1), ValidArgsFunction: names, RunE: func(cmd *cobra.Command, args []string) error {
 		s, err := store()
 		if err != nil {
 			return err
 		}
-		if err = s.Remove(args[0]); err != nil {
+		if err = s.RemoveWithOptions(args[0], keepHistory); err != nil {
 			return err
 		}
 		_, err = fmt.Fprintln(cmd.OutOrStdout(), "Removed", args[0])
 		return err
-	}})
+	}}
+	rmCmd.Flags().BoolVar(&keepHistory, "keep-history", false, "Keep saved SQL history file for this connection")
+	root.AddCommand(rmCmd)
 	for _, executeOnly := range []bool{false, true} {
-		var query, file, format, databaseName string
+		var query, file, format, databaseName, outputPath string
 		var timeout time.Duration
 		var noHistory, stats bool
 		var maxRows, batchSize int
@@ -312,6 +353,11 @@ func NewCommand() *cobra.Command {
 					}
 					bound[i] = v
 				}
+				outWriter := cmd.OutOrStdout()
+				var outBuf bytes.Buffer
+				if outputPath != "" {
+					outWriter = &outBuf
+				}
 				for _, q := range statements {
 					if !noHistory {
 						if err := saveHistory(s, p.Name, terminate(q, p.Driver)); err != nil {
@@ -320,9 +366,9 @@ func NewCommand() *cobra.Command {
 					}
 					stopSpinner := startSpinner(cmd.ErrOrStderr(), "Running query")
 					session.BeforeOutput = stopSpinner
-					execute := func() error { return session.Execute(cmd.Context(), q, format, cmd.OutOrStdout()) }
+					execute := func() error { return session.Execute(cmd.Context(), q, format, outWriter) }
 					if len(bound) > 0 {
-						execute = func() error { return session.executeArgs(cmd.Context(), q, format, cmd.OutOrStdout(), bound...) }
+						execute = func() error { return session.executeArgs(cmd.Context(), q, format, outWriter, bound...) }
 					}
 					execErr := execute()
 					stopSpinner()
@@ -331,17 +377,22 @@ func NewCommand() *cobra.Command {
 						return execErr
 					}
 				}
+				if outputPath != "" {
+					return writeAtomicFile(outputPath, outBuf.Bytes())
+				}
 				return nil
 			}
 			return shell(cmd.Context(), session, p, s, format, noHistory, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		}}
+		connect.Flags().StringVar(&databaseName, "db", "", "Server database to use (defaults to the saved connection database)")
 		if executeOnly {
 			connect.Flags().StringArrayVar(&params, "param", nil, "Bind a JSON scalar to a native SQL placeholder; repeat in order")
+			connect.Flags().StringVarP(&outputPath, "output", "o", "", "Write query output atomically to this file")
+			_ = connect.RegisterFlagCompletionFunc("output", files)
 			connect.Use = "exec NAME [QUERY]"
-			connect.Aliases = nil
+			connect.Aliases = []string{"x"}
 			connect.Short = "Execute queries using a saved connection and optional database"
 			connect.Args = cobra.RangeArgs(1, 2)
-			connect.Flags().StringVar(&databaseName, "db", "", "Server database to use (defaults to the saved connection database)")
 		}
 		connect.Flags().StringVarP(&query, "sql", "e", "", "Execute SQL, a MongoDB JSON command or Redis commands and exit")
 		connect.Flags().StringVarP(&file, "file", "f", "", "Execute a query file (- for stdin)")
@@ -361,9 +412,16 @@ func NewCommand() *cobra.Command {
 		}
 		root.AddCommand(connect)
 	}
-	var historySearch string
+	var historySearch, historyFormat string
+	var historyLimitInput int
 	var clearHistory bool
 	historyCommand := &cobra.Command{Use: "history NAME", Short: "Show SQL history for a connection", Args: cobra.ExactArgs(1), ValidArgsFunction: names, RunE: func(cmd *cobra.Command, args []string) error {
+		if historyLimitInput < 0 {
+			return fmt.Errorf("limit must be nonnegative")
+		}
+		if historyFormat != "" && !validFormat(historyFormat) {
+			return fmt.Errorf("format must be table, csv, json or tsv")
+		}
 		s, err := store()
 		if err != nil {
 			return err
@@ -378,19 +436,42 @@ func NewCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
+		type matchedEntry struct {
+			index int
+			query string
+		}
+		var matched []matchedEntry
 		for i, q := range entries {
 			if historySearch != "" && !strings.Contains(strings.ToLower(q), strings.ToLower(historySearch)) {
 				continue
 			}
-			if _, err = fmt.Fprintf(cmd.OutOrStdout(), "%d  %s\n", i+1, q); err != nil {
+			matched = append(matched, matchedEntry{index: i + 1, query: q})
+		}
+		if historyLimitInput > 0 && len(matched) > historyLimitInput {
+			matched = matched[len(matched)-historyLimitInput:]
+		}
+		if historyFormat != "" {
+			values := make([][]any, len(matched))
+			for i, item := range matched {
+				values[i] = []any{item.index, item.query}
+			}
+			return writeRows(cmd.OutOrStdout(), []string{"index", "query"}, values, historyFormat)
+		}
+		for _, item := range matched {
+			if _, err = fmt.Fprintf(cmd.OutOrStdout(), "%d  %s\n", item.index, item.query); err != nil {
 				return err
 			}
 		}
 		return nil
 	}}
 	historyCommand.Flags().StringVar(&historySearch, "search", "", "Filter history by case-insensitive text")
+	historyCommand.Flags().IntVar(&historyLimitInput, "limit", 0, "Show only the most recent N matching entries (0 for all)")
+	historyCommand.Flags().StringVar(&historyFormat, "format", "", "Structured output: table, csv, json or tsv")
 	historyCommand.Flags().BoolVar(&clearHistory, "clear", false, "Clear saved history")
 	historyCommand.MarkFlagsMutuallyExclusive("search", "clear")
+	historyCommand.MarkFlagsMutuallyExclusive("limit", "clear")
+	historyCommand.MarkFlagsMutuallyExclusive("format", "clear")
+	_ = historyCommand.RegisterFlagCompletionFunc("format", fixed("table", "csv", "json", "tsv"))
 	root.AddCommand(historyCommand)
 	addMetadataCommands(root, store, names)
 	addCheckCommand(root, store, names)
@@ -429,3 +510,27 @@ func readHistory(s Store, name string) ([]string, error) {
 }
 
 func cleanInput(s string) string { return strings.TrimSpace(s) }
+
+func writeAtomicFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".dbh-out-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(f.Name()) }()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Chmod(0o644); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
+}

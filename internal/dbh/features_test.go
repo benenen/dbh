@@ -212,7 +212,7 @@ func TestConnectionDiagnosticsDoNotExposeSecrets(t *testing.T) {
 		c.SetContext(context.Background())
 		var out bytes.Buffer
 		c.SetOut(&out)
-		err := checkConnection(c, p, time.Second)
+		err := checkConnection(c, p, "", time.Second)
 		text := out.String()
 		if err != nil {
 			text += err.Error()
@@ -400,5 +400,153 @@ func TestHistoryReadsOnlyTheRetainedTail(t *testing.T) {
 				t.Fatal("unlimited read skipped the old record")
 			}
 		})
+	}
+}
+
+type failingSwitchDriver struct {
+	database.Driver
+	switchErr error
+}
+
+func (d failingSwitchDriver) SwitchDatabase(context.Context, database.Connection, string, string, database.Dial) (database.Connection, error) {
+	return nil, d.switchErr
+}
+
+func TestUseDatabaseRedactsProxies(t *testing.T) {
+	s := &Session{
+		Driver:  "sqlite",
+		Timeout: time.Second,
+		dsn:     "secret-dsn",
+		proxies: []string{"socks5://alice:supersecret@proxy.local:1080"},
+		backend: failingSwitchDriver{switchErr: fmt.Errorf("dial socks5://alice:supersecret@proxy.local:1080 via secret-dsn failed")},
+	}
+	err := s.UseDatabase(context.Background(), "other")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "supersecret") || strings.Contains(err.Error(), "secret-dsn") {
+		t.Fatalf("error leaked credentials: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[redacted DSN]") {
+		t.Fatalf("expected redacted DSN marker: %v", err)
+	}
+}
+
+func TestSubcommandEnhancements(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "app.db")
+	run := func(args ...string) (string, error) {
+		cmd := NewCommand()
+		var out, errBuf bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs(append([]string{"--config-dir", dir}, args...))
+		err := cmd.Execute()
+		return out.String(), err
+	}
+
+	if _, err := run("new", "demo", "--driver", "sqlite", "--dsn", dbPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run("new", "alt", "--driver", "sqlite", "--dsn", filepath.Join(dir, "alt.db")); err != nil {
+		t.Fatal(err)
+	}
+
+	// list --format json / tsv and --driver filter.
+	listed, err := run("list", "--driver", "sqlite", "--format", "tsv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(listed, "name\tdriver\tproxies\n") || !strings.Contains(listed, "demo\tsqlite\t-\n") {
+		t.Fatalf("unexpected list tsv:\n%s", listed)
+	}
+	if _, err := run("list", "--driver", "unknown"); err == nil {
+		t.Fatal("expected unknown driver error")
+	}
+
+	// exec alias x and -o atomic file export (no file created on SQL error).
+	outFile := filepath.Join(dir, "sub", "users.tsv")
+	if _, err := run("x", "demo", "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT); INSERT INTO users VALUES (1, 'Alice');"); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := run("x", "demo", "SELECT id, name FROM users;", "--format", "tsv", "-o", outFile); err != nil || out != "" {
+		t.Fatalf("exec -o out=%q err=%v", out, err)
+	}
+	if data, err := os.ReadFile(outFile); err != nil || string(data) != "id\tname\n1\tAlice\n" {
+		t.Fatalf("outFile=%q err=%v", string(data), err)
+	}
+	errFile := filepath.Join(dir, "should_not_exist.tsv")
+	if _, err := run("exec", "demo", "SELECT * FROM missing_table;", "-o", errFile); err == nil {
+		t.Fatal("expected SQL error")
+	}
+	if _, err := os.Stat(errFile); !os.IsNotExist(err) {
+		t.Fatalf("failed exec must not create %s", errFile)
+	}
+
+	// connect --db rejects empty database name.
+	if _, err := run("connect", "demo", "--db", "   ", "--sql", "SELECT 1;"); err == nil || !strings.Contains(err.Error(), "database name must not be empty") {
+		t.Fatalf("connect --db empty err = %v", err)
+	}
+
+	// history --limit and --format json.
+	histOut, err := run("history", "demo", "--limit", "1", "--format", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(histOut, `"index":4`) || !strings.Contains(histOut, `SELECT * FROM missing_table;`) || strings.Contains(histOut, `CREATE TABLE`) {
+		t.Fatalf("unexpected history json:\n%s", histOut)
+	}
+
+	// Metadata aliases and distinct descriptions; databases rejects --db.
+	tblOut, err := run("tbl", "demo", "--format", "tsv")
+	if err != nil || !strings.Contains(tblOut, "name\nusers\n") {
+		t.Fatalf("tbl out=%q err=%v", tblOut, err)
+	}
+	if _, err := run("dbs", "demo", "--db", "main"); err == nil {
+		t.Fatal("databases must not accept --db")
+	}
+	cmd := NewCommand()
+	shorts := map[string]string{}
+	for _, sub := range cmd.Commands() {
+		shorts[sub.Name()] = sub.Short
+	}
+	if shorts["tables"] == shorts["describe"] || shorts["describe"] == shorts["indexes"] || shorts["indexes"] == shorts["databases"] {
+		t.Fatalf("metadata commands must have distinct Short descriptions: %+v", shorts)
+	}
+
+	// check --format tsv, check --all, and check --db validation.
+	chkOut, err := run("check", "demo", "--format", "tsv")
+	if err != nil || !strings.Contains(chkOut, "name\tstage\tstatus\tdetail\telapsed\n") || !strings.Contains(chkOut, "demo\tConfiguration\tOK\t") {
+		t.Fatalf("check --format tsv out=%q err=%v", chkOut, err)
+	}
+	allOut, err := run("check", "--all", "--format", "json")
+	if err != nil || !strings.Contains(allOut, `"name":"demo"`) || !strings.Contains(allOut, `"name":"alt"`) {
+		t.Fatalf("check --all out=%q err=%v", allOut, err)
+	}
+	if _, err := run("check", "demo", "--db", "  "); err == nil {
+		t.Fatal("check --db empty must fail")
+	}
+	if _, err := run("check"); err == nil || !strings.Contains(err.Error(), "provide a connection NAME or --all") {
+		t.Fatalf("check without args err = %v", err)
+	}
+
+	// remove deletes history by default; --keep-history preserves it.
+	if _, err := run("exec", "alt", "SELECT 1;"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "history", "alt.jsonl")); err != nil {
+		t.Fatalf("expected alt history: %v", err)
+	}
+	if _, err := run("remove", "alt", "--keep-history"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "history", "alt.jsonl")); err != nil {
+		t.Fatalf("--keep-history should preserve alt history: %v", err)
+	}
+	if _, err := run("remove", "demo"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "history", "demo.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("remove should delete demo history, stat err=%v", err)
 	}
 }

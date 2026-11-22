@@ -32,7 +32,10 @@ func defaultDir() (string, error) {
 		return dir, nil
 	}
 	dir, err := os.UserConfigDir()
-	return filepath.Join(dir, "dbh"), err
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "dbh"), nil
 }
 
 func (s Store) prepare() error {
@@ -165,11 +168,26 @@ func (s Store) Put(p Profile, create bool) error {
 }
 
 func (s Store) Remove(name string) error {
-	return s.update(func(m map[string]Profile) error {
+	return s.RemoveWithOptions(name, false)
+}
+
+func (s Store) RemoveWithOptions(name string, keepHistory bool) error {
+	err := s.update(func(m map[string]Profile) error {
 		if _, ok := m[name]; !ok {
 			return fmt.Errorf("connection %q does not exist", name)
 		}
 		delete(m, name)
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if !keepHistory && validName.MatchString(name) {
+		hist := historyPath(s, name)
+		if rmErr := os.Remove(hist); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			return rmErr
+		}
+		_ = os.Remove(filepath.Join(filepath.Dir(hist), "."+name+".lock"))
+	}
+	return nil
 }

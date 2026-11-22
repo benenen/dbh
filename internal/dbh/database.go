@@ -27,6 +27,7 @@ type Session struct {
 	Pager           func(columns []string, rows [][]string) (bool, error)
 	backend         database.Driver
 	dsn             string
+	proxies         []string
 	proxy           *proxy.Chain
 }
 
@@ -37,7 +38,7 @@ func openSession(ctx context.Context, p Profile, timeout time.Duration) (*Sessio
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	s := &Session{Driver: p.Driver, Timeout: timeout, backend: backend, dsn: p.DSN}
+	s := &Session{Driver: p.Driver, Timeout: timeout, backend: backend, dsn: p.DSN, proxies: append([]string(nil), p.Proxies...)}
 	if len(p.Proxies) > 0 {
 		if s.proxy, err = proxy.Open(pingCtx, p.Proxies); err != nil {
 			return nil, fmt.Errorf("cannot connect to %q: %s", p.Name, redact(err.Error(), "", p.Proxies))
@@ -128,7 +129,7 @@ func (s *Session) UseDatabase(ctx context.Context, name string) error {
 	}
 
 	if err != nil {
-		return fmt.Errorf("cannot switch database to %q: %s", name, redact(err.Error(), s.dsn, nil))
+		return fmt.Errorf("cannot switch database to %q: %s", name, redact(err.Error(), s.dsn, s.proxies))
 	}
 	s.CurrentDatabase = name
 	return nil

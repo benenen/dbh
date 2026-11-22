@@ -132,7 +132,7 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 	var statusFormat string
 	status := &cobra.Command{Use: "status", Short: "List the models in .dbh/", Args: cobra.NoArgs, ValidArgsFunction: cobra.NoFileCompletions, RunE: func(cmd *cobra.Command, args []string) error {
 		if !validFormat(statusFormat) {
-			return fmt.Errorf("invalid output format")
+			return fmt.Errorf("format must be table, csv, json or tsv")
 		}
 		dirs, err := erdDirs(dirFlag)
 		if err != nil {
@@ -151,7 +151,7 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 	var tablesIsolated, tablesWithModel bool
 	tables := &cobra.Command{Use: "tables", Short: "List the tables in the model", Args: cobra.NoArgs, ValidArgsFunction: cobra.NoFileCompletions, RunE: func(cmd *cobra.Command, args []string) error {
 		if !validFormat(tablesFormat) {
-			return fmt.Errorf("invalid output format")
+			return fmt.Errorf("format must be table, csv, json or tsv")
 		}
 		m, err := open(cmd)
 		if err != nil {
@@ -168,7 +168,7 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 	var relationsFormat, relationsTable, relationsSource string
 	relations := &cobra.Command{Use: "relations", Short: "List relations, optionally for one table or source", Args: cobra.NoArgs, ValidArgsFunction: cobra.NoFileCompletions, RunE: func(cmd *cobra.Command, args []string) error {
 		if !validFormat(relationsFormat) {
-			return fmt.Errorf("invalid output format")
+			return fmt.Errorf("format must be table, csv, json or tsv")
 		}
 		if relationsSource != "" && relationsSource != erd.SourceDeclared && relationsSource != erd.SourceInferred {
 			return fmt.Errorf("source must be declared or inferred")
@@ -296,7 +296,7 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 	var declaredOnly, pathAll bool
 	path := &cobra.Command{Use: "path FROM TO", Short: "Show the shortest relation path between two tables", Args: cobra.ExactArgs(2), ValidArgsFunction: tableNames, RunE: func(cmd *cobra.Command, args []string) error {
 		if !validFormat(pathFormat) {
-			return fmt.Errorf("invalid output format")
+			return fmt.Errorf("format must be table, csv, json or tsv")
 		}
 		m, err := open(cmd)
 		if err != nil {
@@ -448,7 +448,7 @@ func erdDiffCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 	_ = c.RegisterFlagCompletionFunc("format", cobra.FixedCompletions([]string{"table", "csv", "json", "tsv"}, cobra.ShellCompDirectiveNoFileComp))
 	c.RunE = func(cmd *cobra.Command, args []string) error {
 		if !validFormat(format) {
-			return fmt.Errorf("invalid output format")
+			return fmt.Errorf("format must be table, csv, json or tsv")
 		}
 		targetModel := *model
 		if targetModel == "" {
