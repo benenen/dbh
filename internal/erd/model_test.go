@@ -393,6 +393,18 @@ Table accounts {
 	if _, ok := m.TableConflict("orders"); ok {
 		t.Fatal("orders is defined once and must not conflict")
 	}
+	// accounts exists only in svc-b, so it is foreign when svc-a is local.
+	if msg, ok := m.ForeignTable("accounts", dirA); !ok || !strings.Contains(msg, "only in another project's models svc-b/billing") {
+		t.Fatalf("accounts foreign = %q, %v", msg, ok)
+	}
+	for _, name := range []string{"orders", "users"} {
+		if msg, ok := m.ForeignTable(name, dirA); ok {
+			t.Fatalf("%s is defined in svc-a but reported foreign: %q", name, msg)
+		}
+	}
+	if _, ok := m.ForeignTable("accounts", ""); ok {
+		t.Fatal("no local .dbh must disable the foreign check")
+	}
 	if m.Count(SourceDeclared) != 2 || m.Count(SourceInferred) != 1 {
 		t.Fatalf("declared=%d inferred=%d", m.Count(SourceDeclared), m.Count(SourceInferred))
 	}
@@ -938,5 +950,64 @@ func TestProjectRootIgnoresStrayGitDir(t *testing.T) {
 	}
 	if root, err := ProjectRoot(worktree); err != nil || root != worktree {
 		t.Fatalf("ProjectRoot(worktree) = %q, %v; want %q", root, err, worktree)
+	}
+}
+
+func TestRefEvidenceDirective(t *testing.T) {
+	schema := `Table t {
+  id integer [pk]
+  kind integer
+  ref_id integer
+}
+Table a {
+  id integer [pk]
+}
+`
+	refs := `// t.ref_id points to a different table per kind
+// Evidence: app/A.java:10 (provider)
+// evidence: app/T.xml:5 (SQL JOIN)
+// when: t.kind = 1
+Ref: t.ref_id > a.id
+`
+	m := load(t, schema, refs)
+	if len(m.Relations) != 1 {
+		t.Fatalf("relations = %+v", m.Relations)
+	}
+	if r := m.Relations[0]; r.Condition != "t.kind = 1" || r.Evidence != "app/A.java:10 (provider); app/T.xml:5 (SQL JOIN)" {
+		t.Fatalf("relation = %+v", r)
+	}
+}
+
+func TestColumnRows(t *testing.T) {
+	m := ParseDBML("app", "app.dbml", `Table users {
+  id integer [pk]
+  email varchar(255) [not null, unique, note: 'login email']
+  status int [default: 1]
+}
+Table orders {
+  id integer [pk]
+  user_id integer [note: 'buyer']
+}
+`)
+	if len(m.Errors) != 0 {
+		t.Fatal(m.Errors)
+	}
+	all := m.ColumnRows(nil, "", false)
+	if len(all.Values) != 5 || all.Columns[len(all.Columns)-1] != "note" {
+		t.Fatalf("all columns = %v %v", all.Columns, all.Values)
+	}
+	email := m.ColumnRows([]string{"users"}, "EMAIL", true)
+	want := []any{"users", "email", "varchar(255)", false, true, true, "", "login email", "app"}
+	if len(email.Values) != 1 || fmt.Sprint(email.Values[0]) != fmt.Sprint(want) {
+		t.Fatalf("email = %v", email.Values)
+	}
+	if got := m.ColumnRows(nil, "*_id", false); len(got.Values) != 1 || got.Values[0][1] != "user_id" {
+		t.Fatalf("glob = %v", got.Values)
+	}
+	if got := m.ColumnRows(nil, "buyer", false); len(got.Values) != 1 || got.Values[0][0] != "orders" {
+		t.Fatalf("note match = %v", got.Values)
+	}
+	if got := m.ColumnRows([]string{"users"}, "status", false); got.Values[0][6] != "1" || got.Values[0][4] != false {
+		t.Fatalf("default = %v", got.Values)
 	}
 }

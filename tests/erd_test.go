@@ -165,8 +165,19 @@ func TestERDScansAllProjectDirs(t *testing.T) {
 	// Run from svc-a; queries still scan every .dbh under the repo root.
 	f.dir = filepath.Join(repo, "svc-a")
 	equal(t, f.run("erd", "check"), "OK: 2 tables, 0 declared and 1 inferred relations\n")
-	equal(t, f.run("erd", "path", "orders", "users", "--format", "tsv"),
+	// users lives only in svc-b, so the query from svc-a warns on stderr.
+	cmd := exec.Command(binary, "erd", "path", "orders", "users", "--format", "tsv")
+	cmd.Env, cmd.Dir = f.environment(), f.dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("path across projects: %v\n%s", err, stderr.String())
+	}
+	equal(t, stdout.String(),
 		"step\tfrom_table\tfrom_columns\tto_table\tto_columns\tcondition\tsource\tevidence\n1\torders\tuser_id\tusers\tid\t\tinferred\tcross-service ref\n")
+	equal(t, stderr.String(), "warning: table users is only in another project's models svc-b/users, not in .dbh\n")
+	// --dir names the project explicitly, so no locality warning is printed.
+	contains(t, f.run("erd", "--dir", "../svc-b", "show", "users", "--depth", "0"), "users")
 	status := f.run("erd", "status", "--format", "tsv")
 	contains(t, status, "schema\t.dbh/schema.dbml\t.dbh/schema.refs.dbml\t1\t0\t1\tok\n")
 	contains(t, status, "users\t../svc-b/.dbh/users.dbml\t\t1\t0\t0\tok\n")

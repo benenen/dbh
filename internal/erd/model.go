@@ -331,6 +331,7 @@ type Table struct {
 	Columns []interpreter.Column
 	Indexes []interpreter.Index
 	Models  []string
+	Dirs    []string // .dbh directories that define the table
 	// Conflict is set when models define this table with different columns,
 	// so the merged columns may not match any single database.
 	Conflict bool
@@ -410,7 +411,7 @@ type Model struct {
 func ParseDBML(name, file, source string) *Model {
 	m := &Model{Name: name, File: file, refsFiles: map[string]bool{}}
 	if db := m.parse(file, source, false); db != nil {
-		m.addTables(db, name)
+		m.addTables(db, name, "")
 		m.addRelations(db.Refs, SourceDeclared, file, source)
 	}
 	return m
@@ -469,7 +470,7 @@ func Load(dir, name string) (*Model, error) {
 	m := &Model{Name: name, File: mainFile, refsFiles: map[string]bool{}}
 	mainDB := m.parse(mainFile, string(mainSource), false)
 	if mainDB != nil {
-		m.addTables(mainDB, modelLabel(dir, name))
+		m.addTables(mainDB, modelLabel(dir, name), dir)
 		m.addRelations(mainDB.Refs, SourceDeclared, mainFile, string(mainSource))
 	}
 	refsSource, err := os.ReadFile(refsFile)
@@ -605,7 +606,7 @@ func LoadAll(dirs []string, modelFilter string) (*Model, error) {
 			m.File = mainFile
 		}
 		if mainDB := m.parse(mainFile, string(mainSource), false); mainDB != nil {
-			m.addTables(mainDB, modelLabel(e.dir, e.name))
+			m.addTables(mainDB, modelLabel(e.dir, e.name), e.dir)
 			mains = append(mains, parsedMain{file: mainFile, source: string(mainSource), db: mainDB})
 		}
 		if _, err := os.Stat(refsFile); err == nil {
@@ -659,7 +660,7 @@ func ValidateModelRefs(dir, name string, allDirs []string) (*Model, error) {
 	}
 	target := &Model{Name: name, File: mainFile, refsFiles: map[string]bool{}}
 	if mainDB := target.parse(mainFile, string(mainSource), false); mainDB != nil {
-		target.addTables(mainDB, modelLabel(dir, name))
+		target.addTables(mainDB, modelLabel(dir, name), dir)
 		target.addRelations(mainDB.Refs, SourceDeclared, mainFile, string(mainSource))
 	}
 	refsSource, err := os.ReadFile(refsFile)
@@ -689,7 +690,7 @@ func ValidateModelRefs(dir, name string, allDirs []string) (*Model, error) {
 				continue
 			}
 			if db := merged.parse(mf, string(src), false); db != nil {
-				merged.addTables(db, modelLabel(d, n))
+				merged.addTables(db, modelLabel(d, n), d)
 				mains = append(mains, parsedMain{file: mf, source: string(src), db: db})
 			}
 		}
@@ -770,9 +771,9 @@ func StatusRows(dirs []string, modelFilter string) (Rows, error) {
 			local := &Model{Name: name, File: mainFile, refsFiles: map[string]bool{}}
 			if mainDB := local.parse(mainFile, string(mainSource), false); mainDB != nil {
 				label := modelLabel(dir, name)
-				local.addTables(mainDB, label)
+				local.addTables(mainDB, label, dir)
 				local.addRelations(mainDB.Refs, SourceDeclared, mainFile, string(mainSource))
-				merged.addTables(mainDB, label)
+				merged.addTables(mainDB, label, dir)
 				mains = append(mains, parsedMain{file: mainFile, source: string(mainSource), db: mainDB})
 			}
 			it.tables = len(local.Tables)
@@ -929,7 +930,7 @@ func appendUniqueString(list []string, val string) []string {
 	return append(list, val)
 }
 
-func (m *Model) addTables(db *interpreter.Database, sourceLabel string) {
+func (m *Model) addTables(db *interpreter.Database, sourceLabel, dir string) {
 	if m.tableByKey == nil {
 		m.rebuildTableIndex()
 	}
@@ -942,6 +943,9 @@ func (m *Model) addTables(db *interpreter.Database, sourceLabel string) {
 		}
 		if sourceLabel != "" {
 			table.Models = []string{sourceLabel}
+		}
+		if dir != "" {
+			table.Dirs = []string{dir}
 		}
 		if t.Alias != nil {
 			table.Alias = *t.Alias
@@ -984,6 +988,7 @@ func (m *Model) addTables(db *interpreter.Database, sourceLabel string) {
 				existing.Note = table.Note
 			}
 			existing.Models = appendUniqueString(existing.Models, sourceLabel)
+			existing.Dirs = appendUniqueString(existing.Dirs, dir)
 			continue
 		}
 		newIdx := len(m.Tables)
@@ -1023,6 +1028,24 @@ func (m *Model) TableConflict(name string) (string, bool) {
 	}
 	t := m.Tables[idx]
 	return fmt.Sprintf("table %s has different columns in models %s; columns are merged, use --model to read one", t.Display(), strings.Join(t.Models, ", ")), true
+}
+
+// ForeignTable returns a warning when the named table is not defined in
+// localDir, the .dbh directory of the current project, but only in other
+// projects' .dbh directories merged into m. It is silent when localDir is
+// empty or the table has no recorded directory.
+func (m *Model) ForeignTable(name, localDir string) (string, bool) {
+	idx, ok := m.tableIndex(name)
+	if localDir == "" || !ok || len(m.Tables[idx].Dirs) == 0 {
+		return "", false
+	}
+	t := m.Tables[idx]
+	for _, d := range t.Dirs {
+		if d == localDir {
+			return "", false
+		}
+	}
+	return fmt.Sprintf("table %s is only in another project's models %s, not in %s", t.Display(), strings.Join(t.Models, ", "), DisplayPath(localDir)), true
 }
 
 func (m *Model) tableIndex(name string) (int, bool) {
@@ -1152,7 +1175,8 @@ func (r Relation) describe() string {
 
 // extractRefComments reads the contiguous comment block immediately above a
 // Ref line and its trailing comment. `// when: <expr>` directives form the
-// condition; the other comments form the evidence.
+// condition. `// evidence: <text>` directives form the evidence; without any
+// such directive, the other comments are the evidence.
 func extractRefComments(lines []string, line int) (condition, evidence string) {
 	if line < 1 || line > len(lines) {
 		return "", ""
@@ -1171,15 +1195,32 @@ func extractRefComments(lines []string, line int) (condition, evidence string) {
 	if trailing := trailingLineComment(lines[line-1]); trailing != "" {
 		comments = append(comments, trailing)
 	}
-	var conds, notes []string
+	var conds, tagged, notes []string
 	for _, c := range comments {
 		if cond := parseWhenComment(c); cond != "" {
 			conds = append(conds, cond)
+		} else if ev, ok := parseCommentDirective(c, "evidence:"); ok {
+			if ev != "" {
+				tagged = append(tagged, ev)
+			}
 		} else if note := strings.TrimSpace(c); note != "" {
 			notes = append(notes, note)
 		}
 	}
+	if len(tagged) > 0 {
+		notes = tagged
+	}
 	return strings.Join(conds, " AND "), strings.Join(notes, "; ")
+}
+
+// parseCommentDirective reports whether comment starts with prefix (case
+// insensitive) and returns the trimmed rest.
+func parseCommentDirective(comment, prefix string) (string, bool) {
+	body := strings.TrimSpace(comment)
+	if len(body) < len(prefix) || !strings.EqualFold(body[:len(prefix)], prefix) {
+		return "", false
+	}
+	return strings.TrimSpace(body[len(prefix):]), true
 }
 
 func parseWhenComment(comment string) string {

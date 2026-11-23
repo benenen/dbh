@@ -67,6 +67,43 @@ func tableMatches(display, name, note, lowerPattern string, isGlob bool) bool {
 	return strings.Contains(ld, lowerPattern) || strings.Contains(strings.ToLower(note), lowerPattern)
 }
 
+// ColumnRows lists one row per column of tables (all tables when empty),
+// optionally filtered by a substring/glob match on the column name or a
+// substring match on its note, with an optional source models column.
+func (m *Model) ColumnRows(tables []string, match string, withModel bool) Rows {
+	cols := []string{"table", "column", "type", "pk", "not_null", "unique", "default", "note"}
+	if withModel {
+		cols = append(cols, "models")
+	}
+	rows := Rows{Columns: cols}
+	include := map[string]bool{}
+	for _, t := range tables {
+		include[t] = true
+	}
+	pattern := strings.TrimSpace(match)
+	lowerPattern := strings.ToLower(pattern)
+	isGlob := strings.ContainsAny(pattern, "*?[")
+	for _, t := range m.Tables {
+		display := t.Display()
+		if len(include) > 0 && !include[display] {
+			continue
+		}
+		for _, c := range t.Columns {
+			note := columnNote(c)
+			if pattern != "" && !tableMatches(c.Name, c.Name, note, lowerPattern, isGlob) {
+				continue
+			}
+			notNull := c.PK || (c.NotNull != nil && *c.NotNull)
+			vals := []any{display, c.Name, columnType(c), c.PK, notNull, c.Unique, columnDefault(c), note}
+			if withModel {
+				vals = append(vals, strings.Join(t.Models, ", "))
+			}
+			rows.Values = append(rows.Values, vals)
+		}
+	}
+	return rows
+}
+
 // RelationRows lists relations touching table (any when empty) from source
 // (any when empty).
 func (m *Model) RelationRows(table, source string) Rows {

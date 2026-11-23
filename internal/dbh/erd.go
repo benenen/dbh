@@ -94,13 +94,27 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 		}
 		return m, nil
 	}
-	// lookup resolves a table name and warns when models disagree on its columns.
+	// lookup resolves a table name and warns when models disagree on its
+	// columns or when only another project's .dbh defines it.
 	lookup := func(cmd *cobra.Command, m *erd.Model, name string) (string, error) {
 		table, err := m.Lookup(name)
 		if err != nil {
 			return "", err
 		}
+		var warnings []string
 		if msg, ok := m.TableConflict(table); ok {
+			warnings = append(warnings, msg)
+		}
+		if dirFlag == "" {
+			local, _, err := erd.FindDir(".")
+			if err != nil {
+				return "", err
+			}
+			if msg, ok := m.ForeignTable(table, local); ok {
+				warnings = append(warnings, msg)
+			}
+		}
+		for _, msg := range warnings {
 			if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", msg); err != nil {
 				return "", err
 			}
@@ -177,6 +191,29 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 	tables.Flags().BoolVar(&tablesIsolated, "isolated", false, "Only list tables with no relations")
 	tables.Flags().BoolVar(&tablesWithModel, "with-model", false, "Include source model column")
 	group.AddCommand(tables)
+
+	var columnsFormat, columnsMatch string
+	var columnsWithModel bool
+	columns := &cobra.Command{Use: "columns [TABLE...]", Aliases: []string{"cols"}, Short: "List columns, optionally for some tables or matching a name or note", ValidArgsFunction: tableNames, RunE: func(cmd *cobra.Command, args []string) error {
+		if !validFormat(columnsFormat) {
+			return fmt.Errorf("format must be table, csv, json or tsv")
+		}
+		m, err := open(cmd)
+		if err != nil {
+			return err
+		}
+		tables := make([]string, len(args))
+		for i, arg := range args {
+			if tables[i], err = lookup(cmd, m, arg); err != nil {
+				return err
+			}
+		}
+		return writeERDRows(cmd.OutOrStdout(), m.ColumnRows(tables, columnsMatch, columnsWithModel), columnsFormat)
+	}}
+	formatFlag(columns, &columnsFormat)
+	columns.Flags().StringVar(&columnsMatch, "match", "", "Filter columns by substring or glob pattern on column name, or substring on note")
+	columns.Flags().BoolVar(&columnsWithModel, "with-model", false, "Include source model column")
+	group.AddCommand(columns)
 
 	var relationsFormat, relationsTable, relationsSource string
 	relations := &cobra.Command{Use: "relations", Short: "List relations, optionally for one table or source", Args: cobra.NoArgs, ValidArgsFunction: cobra.NoFileCompletions, RunE: func(cmd *cobra.Command, args []string) error {

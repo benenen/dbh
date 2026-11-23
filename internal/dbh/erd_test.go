@@ -134,6 +134,14 @@ func TestERDWarnsOnConflictingTable(t *testing.T) {
 	if _, stderr, err := run("show", "users", "--depth", "0"); err != nil || stderr != "" {
 		t.Fatalf("users must not warn: err=%v stderr=%q", err, stderr)
 	}
+	// columns resolves tables through the same lookup, so it warns too.
+	if _, stderr, err := run("cols", "notice", "--format", "tsv"); err != nil || !strings.Contains(stderr, warning) {
+		t.Fatalf("cols notice: err=%v stderr=%q", err, stderr)
+	}
+	out, _, err = run("columns", "notice", "--model", "resource", "--format", "tsv")
+	if err != nil || out != "table\tcolumn\ttype\tpk\tnot_null\tunique\tdefault\tnote\nnotice\tid\tbigint\ttrue\ttrue\tfalse\t\t\nnotice\ttitle\tvarchar(50)\tfalse\tfalse\tfalse\t\t\n" {
+		t.Fatalf("columns --model resource: err=%v out=%q", err, out)
+	}
 }
 
 // Opt-in: reads foreign keys from the databases supplied by the developer.
