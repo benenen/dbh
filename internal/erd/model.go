@@ -343,6 +343,7 @@ type Relation struct {
 	To          string
 	ToColumns   []string
 	Condition   string
+	Evidence    string // non-directive comments next to the Ref, such as source locations
 	OnDelete    string
 	OnUpdate    string
 	Source      string
@@ -1045,11 +1046,11 @@ func (m *Model) addRelations(refs []interpreter.Ref, source, file, rawSource str
 		}
 		left, right := ref.Endpoints[0], ref.Endpoints[1]
 		line := left.Token.Start.Line // TokenPos lines are 1-based
-		condition := extractRefCondition(lines, line)
-		if condition == "" && ref.Token.Start.Line > 0 && ref.Token.Start.Line != line {
-			condition = extractRefCondition(lines, ref.Token.Start.Line)
+		condition, evidence := extractRefComments(lines, line)
+		if condition == "" && evidence == "" && ref.Token.Start.Line > 0 && ref.Token.Start.Line != line {
+			condition, evidence = extractRefComments(lines, ref.Token.Start.Line)
 		}
-		rel := Relation{Source: source, File: file, Line: line, Condition: condition}
+		rel := Relation{Source: source, File: file, Line: line, Condition: condition, Evidence: evidence}
 		if ref.Name != nil {
 			rel.Name = *ref.Name
 		}
@@ -1125,31 +1126,36 @@ func (r Relation) describe() string {
 	return base
 }
 
-// extractRefCondition reads `// when: <expr>` directives from the contiguous
-// comment block immediately above a Ref line or from its trailing comment.
-func extractRefCondition(lines []string, line int) string {
+// extractRefComments reads the contiguous comment block immediately above a
+// Ref line and its trailing comment. `// when: <expr>` directives form the
+// condition; the other comments form the evidence.
+func extractRefComments(lines []string, line int) (condition, evidence string) {
 	if line < 1 || line > len(lines) {
-		return ""
+		return "", ""
 	}
-	var conds []string
+	var comments []string
 	for idx := line - 2; idx >= 0; idx-- {
 		trimmed := strings.TrimSpace(lines[idx])
 		if !strings.HasPrefix(trimmed, "//") {
 			break
 		}
-		if cond := parseWhenComment(trimmed[2:]); cond != "" {
-			conds = append(conds, cond)
-		}
+		comments = append(comments, trimmed[2:])
 	}
-	for i, j := 0, len(conds)-1; i < j; i, j = i+1, j-1 {
-		conds[i], conds[j] = conds[j], conds[i]
+	for i, j := 0, len(comments)-1; i < j; i, j = i+1, j-1 {
+		comments[i], comments[j] = comments[j], comments[i]
 	}
 	if trailing := trailingLineComment(lines[line-1]); trailing != "" {
-		if cond := parseWhenComment(trailing); cond != "" {
+		comments = append(comments, trailing)
+	}
+	var conds, notes []string
+	for _, c := range comments {
+		if cond := parseWhenComment(c); cond != "" {
 			conds = append(conds, cond)
+		} else if note := strings.TrimSpace(c); note != "" {
+			notes = append(notes, note)
 		}
 	}
-	return strings.Join(conds, " AND ")
+	return strings.Join(conds, " AND "), strings.Join(notes, "; ")
 }
 
 func parseWhenComment(comment string) string {

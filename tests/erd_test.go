@@ -40,16 +40,16 @@ func TestERDPullAndQueries(t *testing.T) {
 
 	full := f.run("erd", "relations", "--format", "tsv")
 	equal(t, full, f.run("er", "relations", "--format", "tsv"))
-	equal(t, full, "name\tfrom_table\tfrom_columns\trelation\tto_table\tto_columns\tcondition\ton_delete\ton_update\tsource\n"+
-		"\torders\tuser_id\t>\tusers\tid\t\tcascade\t\tdeclared\n"+
-		"\torders\tproduct_id\t>\tproducts\tid\torders.product_id IS NOT NULL\t\t\tinferred\n"+
-		"\treviews\torder_id\t>\torders\tid\t\t\t\tinferred\n")
+	equal(t, full, "name\tfrom_table\tfrom_columns\trelation\tto_table\tto_columns\tcondition\ton_delete\ton_update\tsource\tevidence\n"+
+		"\torders\tuser_id\t>\tusers\tid\t\tcascade\t\tdeclared\t\n"+
+		"\torders\tproduct_id\t>\tproducts\tid\torders.product_id IS NOT NULL\t\t\tinferred\tapp/models/order.go:9\n"+
+		"\treviews\torder_id\t>\torders\tid\t\t\t\tinferred\tapp/models/review.go:4\n")
 	equal(t, f.run("erd", "relations", "--table", "products", "--source", "inferred", "--format", "csv"),
-		"name,from_table,from_columns,relation,to_table,to_columns,condition,on_delete,on_update,source\n,orders,product_id,>,products,id,orders.product_id IS NOT NULL,,,inferred\n")
+		"name,from_table,from_columns,relation,to_table,to_columns,condition,on_delete,on_update,source,evidence\n,orders,product_id,>,products,id,orders.product_id IS NOT NULL,,,inferred,app/models/order.go:9\n")
 	equal(t, f.run("erd", "path", "reviews", "users", "--format", "tsv"),
-		"step\tfrom_table\tfrom_columns\tto_table\tto_columns\tcondition\tsource\n1\treviews\torder_id\torders\tid\t\tinferred\n2\torders\tuser_id\tusers\tid\t\tdeclared\n")
+		"step\tfrom_table\tfrom_columns\tto_table\tto_columns\tcondition\tsource\tevidence\n1\treviews\torder_id\torders\tid\t\tinferred\tapp/models/review.go:4\n2\torders\tuser_id\tusers\tid\t\tdeclared\t\n")
 	equal(t, f.run("erd", "path", "orders", "products", "--format", "tsv"),
-		"step\tfrom_table\tfrom_columns\tto_table\tto_columns\tcondition\tsource\n1\torders\tproduct_id\tproducts\tid\torders.product_id IS NOT NULL\tinferred\n")
+		"step\tfrom_table\tfrom_columns\tto_table\tto_columns\tcondition\tsource\tevidence\n1\torders\tproduct_id\tproducts\tid\torders.product_id IS NOT NULL\tinferred\tapp/models/order.go:9\n")
 	contains(t, f.fail("erd", "path", "reviews", "users", "--declared-only"), "no relation path from reviews to users")
 	equal(t, f.run("erd", "tables", "--format", "json"), `{"table":"orders","columns":3,"relations":3,"note":""}
 {"table":"products","columns":2,"relations":1,"note":""}
@@ -93,9 +93,9 @@ func TestERDPullAndQueries(t *testing.T) {
 	// path --all, pull --exclude, and diff against live DB.
 	writeFile(t, refs, "// parallel ref\n// when: orders.user_id > 0\nRef: orders.user_id > users.id\n// second condition\n// when: orders.user_id = 0\nRef: orders.user_id > users.id\n")
 	allPaths := f.run("erd", "path", "orders", "users", "--all", "--format", "tsv")
-	contains(t, allPaths, "path\tstep\tfrom_table\tfrom_columns\tto_table\tto_columns\tcondition\tsource\n")
-	contains(t, allPaths, "1\t1\torders\tuser_id\tusers\tid\torders.user_id = 0\tinferred\n")
-	contains(t, allPaths, "2\t1\torders\tuser_id\tusers\tid\torders.user_id > 0\tinferred\n")
+	contains(t, allPaths, "path\tstep\tfrom_table\tfrom_columns\tto_table\tto_columns\tcondition\tsource\tevidence\n")
+	contains(t, allPaths, "1\t1\torders\tuser_id\tusers\tid\torders.user_id = 0\tinferred\tsecond condition\n")
+	contains(t, allPaths, "2\t1\torders\tuser_id\tusers\tid\torders.user_id > 0\tinferred\tparallel ref\n")
 
 	iso := f.run("erd", "tables", "--isolated", "--format", "tsv")
 	contains(t, iso, "reviews\t1\t0\t\n")
@@ -164,7 +164,7 @@ func TestERDScansAllProjectDirs(t *testing.T) {
 	f.dir = filepath.Join(repo, "svc-a")
 	equal(t, f.run("erd", "check"), "OK: 2 tables, 0 declared and 1 inferred relations\n")
 	equal(t, f.run("erd", "path", "orders", "users", "--format", "tsv"),
-		"step\tfrom_table\tfrom_columns\tto_table\tto_columns\tcondition\tsource\n1\torders\tuser_id\tusers\tid\t\tinferred\n")
+		"step\tfrom_table\tfrom_columns\tto_table\tto_columns\tcondition\tsource\tevidence\n1\torders\tuser_id\tusers\tid\t\tinferred\tcross-service ref\n")
 	status := f.run("erd", "status", "--format", "tsv")
 	contains(t, status, "schema\t.dbh/schema.dbml\t.dbh/schema.refs.dbml\t1\t0\t1\tok\n")
 	contains(t, status, "users\t../svc-b/.dbh/users.dbml\t\t1\t0\t0\tok\n")

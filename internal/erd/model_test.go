@@ -860,3 +860,43 @@ func TestSameColumnsComparesTypes(t *testing.T) {
 		t.Fatal("identical columns compared different")
 	}
 }
+
+func TestRefEvidenceComments(t *testing.T) {
+	schema := `Table t {
+  id integer [pk]
+  a integer
+  b integer
+}
+Table c {
+  id integer [pk]
+}
+`
+	refs := `// header comment
+
+// app/mapper/T.xml:12 (SQL JOIN)
+// when: a = 1
+Ref: t.b > c.id
+Ref: t.a > c.id // app/models/t.go:8 (GORM foreignKey)
+`
+	m := load(t, schema, refs)
+	if len(m.Relations) != 2 {
+		t.Fatalf("relations = %+v", m.Relations)
+	}
+	if r := m.Relations[0]; r.Condition != "a = 1" || r.Evidence != "app/mapper/T.xml:12 (SQL JOIN)" {
+		t.Fatalf("first relation = %+v", r)
+	}
+	if r := m.Relations[1]; r.Condition != "" || r.Evidence != "app/models/t.go:8 (GORM foreignKey)" {
+		t.Fatalf("second relation = %+v", r)
+	}
+	rows := m.RelationRows("c", SourceInferred)
+	if last := len(rows.Columns) - 1; rows.Columns[last] != "evidence" || rows.Values[0][last] != "app/mapper/T.xml:12 (SQL JOIN)" {
+		t.Fatalf("relation rows = %v %v", rows.Columns, rows.Values)
+	}
+	steps, err := m.Path("t", "c", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path := PathRows(steps); path.Columns[len(path.Columns)-1] != "evidence" || path.Values[0][len(path.Columns)-1] == "" {
+		t.Fatalf("path rows = %v %v", path.Columns, path.Values)
+	}
+}

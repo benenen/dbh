@@ -70,7 +70,7 @@ func tableMatches(display, name, note, lowerPattern string, isGlob bool) bool {
 // RelationRows lists relations touching table (any when empty) from source
 // (any when empty).
 func (m *Model) RelationRows(table, source string) Rows {
-	rows := Rows{Columns: []string{"name", "from_table", "from_columns", "relation", "to_table", "to_columns", "condition", "on_delete", "on_update", "source"}}
+	rows := Rows{Columns: []string{"name", "from_table", "from_columns", "relation", "to_table", "to_columns", "condition", "on_delete", "on_update", "source", "evidence"}}
 	for _, r := range m.Relations {
 		if table != "" && r.From != table && r.To != table {
 			continue
@@ -79,27 +79,27 @@ func (m *Model) RelationRows(table, source string) Rows {
 			continue
 		}
 		rows.Values = append(rows.Values, []any{r.Name, r.From, strings.Join(r.FromColumns, ", "), r.Op,
-			r.To, strings.Join(r.ToColumns, ", "), r.Condition, r.OnDelete, r.OnUpdate, r.Source})
+			r.To, strings.Join(r.ToColumns, ", "), r.Condition, r.OnDelete, r.OnUpdate, r.Source, r.Evidence})
 	}
 	return rows
 }
 
 func PathRows(steps []Step) Rows {
-	rows := Rows{Columns: []string{"step", "from_table", "from_columns", "to_table", "to_columns", "condition", "source"}}
+	rows := Rows{Columns: []string{"step", "from_table", "from_columns", "to_table", "to_columns", "condition", "source", "evidence"}}
 	for i, s := range steps {
 		rows.Values = append(rows.Values, []any{i + 1, s.From, strings.Join(s.FromColumns, ", "), s.To,
-			strings.Join(s.ToColumns, ", "), s.Relation.Condition, s.Relation.Source})
+			strings.Join(s.ToColumns, ", "), s.Relation.Condition, s.Relation.Source, s.Relation.Evidence})
 	}
 	return rows
 }
 
 // PathRowsMulti formats multiple candidate shortest paths with a 1-based path index.
 func PathRowsMulti(paths [][]Step) Rows {
-	rows := Rows{Columns: []string{"path", "step", "from_table", "from_columns", "to_table", "to_columns", "condition", "source"}}
+	rows := Rows{Columns: []string{"path", "step", "from_table", "from_columns", "to_table", "to_columns", "condition", "source", "evidence"}}
 	for pi, steps := range paths {
 		for si, s := range steps {
 			rows.Values = append(rows.Values, []any{pi + 1, si + 1, s.From, strings.Join(s.FromColumns, ", "), s.To,
-				strings.Join(s.ToColumns, ", "), s.Relation.Condition, s.Relation.Source})
+				strings.Join(s.ToColumns, ", "), s.Relation.Condition, s.Relation.Source, s.Relation.Evidence})
 		}
 	}
 	return rows
