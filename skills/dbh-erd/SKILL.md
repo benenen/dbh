@@ -79,10 +79,11 @@ description: 新增或修改 SQL、ORM 查询与模型、数据访问层或数�
 ```bash
 dbh erd relations --table orders --format tsv
 dbh erd path reviews users --format tsv
-dbh erd show orders --depth 1
+dbh erd show orders --depth 0
 ```
 
-- `path` 每行一跳，`from_columns`/`to_columns` 即 JOIN 条件两侧的字段；`condition` 非空时在 JOIN `ON` 或 `WHERE` 中带上该条件；`source` 为 `inferred` 的一跳来自代码推断，数据库不保证引用完整性，使用前说明这一点。
+- 查字段用 `show TABLE --depth 0`，查关系用 `relations --table`。只在需要看相邻表的字段时用 `--depth 1`：关联多的中心表一次可输出几十 KB；不带表名的 `show` 输出整个模型，只配合 `-o` 导出文件。
+- `path` 每行一跳，`from_columns`/`to_columns` 即 JOIN 条件两侧的字段；`condition` 非空时在 JOIN `ON` 或 `WHERE` 中带上该条件；`source` 为 `inferred` 的一跳来自代码推断，数据库不保证引用完整性，使用前说明这一点；`evidence` 列给出推断依据的源码位置，需要核实 JOIN 条件时直接打开该位置。
 - `--declared-only` 只走数据库外键。
 - 没有 `.dbh/` 或模型时，按上一节先生成模型，或在用户同意后改用 `dbh describe` 等直接查看结构。
 - 需要图形时用 `dbh erd show --format html -o erd.html`（或 `--format html --open` 直接在浏览器打开）导出可离线查看的交互式 HTML ER 图，或用 `--format mermaid` / `--format dot` 输出。
