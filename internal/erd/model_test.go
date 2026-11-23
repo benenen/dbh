@@ -384,6 +384,16 @@ Table accounts {
 	if len(users.Columns) != 3 || users.Note != "billing user view" {
 		t.Fatalf("merged users = %+v", users)
 	}
+	// users differs between the models, so the merge must be flagged.
+	if msg, ok := m.TableConflict("users"); !ok || !strings.Contains(msg, "svc-a/schema, svc-b/billing") {
+		t.Fatalf("users conflict = %q, %v", msg, ok)
+	}
+	if len(m.Warnings) != 1 || !strings.Contains(m.Warnings[0].String(), "table users has different columns") {
+		t.Fatalf("warnings = %v", m.Warnings)
+	}
+	if _, ok := m.TableConflict("orders"); ok {
+		t.Fatal("orders is defined once and must not conflict")
+	}
 	if m.Count(SourceDeclared) != 2 || m.Count(SourceInferred) != 1 {
 		t.Fatalf("declared=%d inferred=%d", m.Count(SourceDeclared), m.Count(SourceInferred))
 	}
@@ -812,5 +822,41 @@ func TestFilterDBSchema(t *testing.T) {
 	filterDBSchema(s, nil, []string{"*_bak"})
 	if len(s.Tables) != 2 || len(s.FKs) != 1 {
 		t.Fatalf("filtered tables=%d fks=%d", len(s.Tables), len(s.FKs))
+	}
+}
+
+func TestLoadAllIdenticalTablesDoNotConflict(t *testing.T) {
+	root := t.TempDir()
+	schema := []byte("Table users {\n  id integer [pk]\n  email text\n}\n")
+	var dirs []string
+	for _, svc := range []string{"svc-a", "svc-b"} {
+		dir := filepath.Join(root, svc, DirName)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "schema.dbml"), schema, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dirs = append(dirs, dir)
+	}
+	m, err := LoadAll(dirs, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.TableConflict("users"); ok || len(m.Warnings) != 0 {
+		t.Fatalf("identical copies flagged: warnings = %v", m.Warnings)
+	}
+}
+
+func TestSameColumnsComparesTypes(t *testing.T) {
+	m := ParseDBML("a", "a.dbml", "Table t {\n  id integer\n}\nTable u {\n  id bigint\n}\n")
+	if len(m.Errors) != 0 {
+		t.Fatal(m.Errors)
+	}
+	if sameColumns(m.Tables[0].Columns, m.Tables[1].Columns) {
+		t.Fatal("integer and bigint columns compared equal")
+	}
+	if !sameColumns(m.Tables[0].Columns, m.Tables[0].Columns) {
+		t.Fatal("identical columns compared different")
 	}
 }

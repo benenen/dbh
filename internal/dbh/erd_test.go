@@ -91,6 +91,51 @@ func TestERDShowHTMLOpen(t *testing.T) {
 	}
 }
 
+func TestERDWarnsOnConflictingTable(t *testing.T) {
+	dbhDir := filepath.Join(t.TempDir(), ".dbh")
+	if err := os.MkdirAll(dbhDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	models := map[string]string{
+		"resource.dbml": "Table notice {\n  id bigint [pk]\n  title varchar(50)\n}\nTable users {\n  id bigint [pk]\n  notice_id bigint [ref: > notice.id]\n}\n",
+		"portal.dbml":   "Table notice {\n  id bigint [pk]\n  notice_title varchar(50)\n}\n",
+	}
+	for name, src := range models {
+		if err := os.WriteFile(filepath.Join(dbhDir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(args ...string) (string, string, error) {
+		cmd := NewCommand()
+		var out, errBuf bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs(append([]string{"erd", "--dir", dbhDir}, args...))
+		err := cmd.Execute()
+		return out.String(), errBuf.String(), err
+	}
+	label := filepath.Base(filepath.Dir(dbhDir))
+	warning := fmt.Sprintf("warning: table notice has different columns in models %s/portal, %s/resource; columns are merged, use --model to read one", label, label)
+	for _, args := range [][]string{
+		{"show", "notice", "--depth", "0"},
+		{"relations", "--table", "notice"},
+		{"path", "users", "notice"},
+		{"check"},
+	} {
+		_, stderr, err := run(args...)
+		if err != nil || !strings.Contains(stderr, warning) {
+			t.Fatalf("%v: err=%v stderr=%q", args, err, stderr)
+		}
+	}
+	out, stderr, err := run("show", "notice", "--depth", "0", "--model", "portal")
+	if err != nil || stderr != "" || strings.Contains(out, " title") {
+		t.Fatalf("--model portal: err=%v stderr=%q out=%q", err, stderr, out)
+	}
+	if _, stderr, err := run("show", "users", "--depth", "0"); err != nil || stderr != "" {
+		t.Fatalf("users must not warn: err=%v stderr=%q", err, stderr)
+	}
+}
+
 // Opt-in: reads foreign keys from the databases supplied by the developer.
 func TestExternalERDPull(t *testing.T) {
 	for driver, env := range map[string]string{"postgres": "DBH_TEST_POSTGRES_DSN", "mysql": "DBH_TEST_MYSQL_DSN"} {

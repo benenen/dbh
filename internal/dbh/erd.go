@@ -94,6 +94,19 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 		}
 		return m, nil
 	}
+	// lookup resolves a table name and warns when models disagree on its columns.
+	lookup := func(cmd *cobra.Command, m *erd.Model, name string) (string, error) {
+		table, err := m.Lookup(name)
+		if err != nil {
+			return "", err
+		}
+		if msg, ok := m.TableConflict(table); ok {
+			if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", msg); err != nil {
+				return "", err
+			}
+		}
+		return table, nil
+	}
 	tableNames := func(cmd *cobra.Command, args []string, _ string) ([]cobra.Completion, cobra.ShellCompDirective) {
 		m, err := loadERD(dirFlag, model)
 		if err != nil {
@@ -179,7 +192,7 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 		}
 		table := ""
 		if relationsTable != "" {
-			if table, err = m.Lookup(relationsTable); err != nil {
+			if table, err = lookup(cmd, m, relationsTable); err != nil {
 				return err
 			}
 		}
@@ -237,7 +250,7 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 		if len(args) > 0 {
 			start := make([]string, len(args))
 			for i, arg := range args {
-				if start[i], err = view.Lookup(arg); err != nil {
+				if start[i], err = lookup(cmd, view, arg); err != nil {
 					return err
 				}
 			}
@@ -302,11 +315,11 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 		if err != nil {
 			return err
 		}
-		from, err := m.Lookup(args[0])
+		from, err := lookup(cmd, m, args[0])
 		if err != nil {
 			return err
 		}
-		to, err := m.Lookup(args[1])
+		to, err := lookup(cmd, m, args[1])
 		if err != nil {
 			return err
 		}

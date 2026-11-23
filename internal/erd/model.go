@@ -280,6 +280,9 @@ type Issue struct {
 }
 
 func (i Issue) String() string {
+	if i.File == "" {
+		return i.Message
+	}
 	if i.Line == 0 {
 		return fmt.Sprintf("%s: %s", DisplayPath(i.File), i.Message)
 	}
@@ -304,6 +307,9 @@ type Table struct {
 	Columns []interpreter.Column
 	Indexes []interpreter.Index
 	Models  []string
+	// Conflict is set when models define this table with different columns,
+	// so the merged columns may not match any single database.
+	Conflict bool
 }
 
 func (t Table) Display() string {
@@ -586,6 +592,12 @@ func LoadAll(dirs []string, modelFilter string) (*Model, error) {
 	for _, e := range standaloneRefs {
 		_, refsFile := ModelFiles(e.dir, e.name)
 		refsFiles = append(refsFiles, refsFile)
+	}
+	for _, t := range m.Tables {
+		if t.Conflict {
+			msg, _ := m.TableConflict(t.Display())
+			m.Warnings = append(m.Warnings, Issue{Message: msg})
+		}
 	}
 	for _, pm := range mains {
 		m.addRelations(pm.db.Refs, SourceDeclared, pm.file, pm.source)
@@ -915,6 +927,9 @@ func (m *Model) addTables(db *interpreter.Database, sourceLabel string) {
 		key := table.Schema + "\x00" + table.Name
 		if idx, ok := m.tableByKey[key]; ok {
 			existing := &m.Tables[idx]
+			if !existing.Conflict && !sameColumns(existing.Columns, table.Columns) {
+				existing.Conflict = true
+			}
 			for _, col := range table.Columns {
 				if _, exists := existing.column(col.Name); !exists {
 					existing.Columns = append(existing.Columns, col)
@@ -955,6 +970,43 @@ func (m *Model) addTables(db *interpreter.Database, sourceLabel string) {
 		}
 		m.Tables = append(m.Tables, table)
 	}
+}
+
+// sameColumns reports whether a and b have the same column names and types.
+func sameColumns(a, b []interpreter.Column) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	types := make(map[string]string, len(a))
+	for _, c := range a {
+		types[c.Name] = columnType(c)
+	}
+	for _, c := range b {
+		if t, ok := types[c.Name]; !ok || t != columnType(c) {
+			return false
+		}
+	}
+	return true
+}
+
+// TableConflict returns a warning when the named table was merged from models
+// that define it with different columns.
+func (m *Model) TableConflict(name string) (string, bool) {
+	idx, ok := m.tableIndex(name)
+	if !ok || !m.Tables[idx].Conflict {
+		return "", false
+	}
+	t := m.Tables[idx]
+	return fmt.Sprintf("table %s has different columns in models %s; columns are merged, use --model to read one", t.Display(), strings.Join(t.Models, ", ")), true
+}
+
+func (m *Model) tableIndex(name string) (int, bool) {
+	for i, t := range m.Tables {
+		if t.Display() == name {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func schemaName(schema *string) string {
