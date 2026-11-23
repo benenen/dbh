@@ -211,9 +211,7 @@ func TestFindDir(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
 	nested := filepath.Join(repo, "a", "b")
-	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initGitDir(t, repo)
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -302,6 +300,7 @@ func TestFindAllDirs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	initGitDir(t, repo)
 	// .gitignore prunes data/ and honors !keep/, but never hides .dbh itself.
 	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".dbh/\ndata/\nkeep/\n!keep/\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -543,6 +542,9 @@ Ref: t.b > c.id
 func BenchmarkFindAllDirs(b *testing.B) {
 	repo := filepath.Join(b.TempDir(), "monorepo")
 	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		b.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
 		b.Fatal(err)
 	}
 	// Simulate a large monorepo: 50 services x 20 subdirs = 1,000+ directories, plus ignored trees.
@@ -898,5 +900,43 @@ Ref: t.a > c.id // app/models/t.go:8 (GORM foreignKey)
 	}
 	if path := PathRows(steps); path.Columns[len(path.Columns)-1] != "evidence" || path.Values[0][len(path.Columns)-1] == "" {
 		t.Fatalf("path rows = %v %v", path.Columns, path.Values)
+	}
+}
+
+// initGitDir marks dir as a Git work tree root with a minimal .git/HEAD.
+func initGitDir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProjectRootIgnoresStrayGitDir(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	initGitDir(t, repo)
+	// A .git directory without HEAD (for example only .git/info/exclude) is not a repository.
+	svc := filepath.Join(repo, "svc")
+	if err := os.MkdirAll(filepath.Join(svc, ".git", "info"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if root, err := ProjectRoot(svc); err != nil || root != repo {
+		t.Fatalf("ProjectRoot(stray) = %q, %v; want %q", root, err, repo)
+	}
+	if _, create, err := FindDir(svc); err != nil || create != filepath.Join(repo, DirName) {
+		t.Fatalf("FindDir(stray) create = %q, %v", create, err)
+	}
+	// A .git file (worktree or submodule pointer) marks a repository root.
+	worktree := filepath.Join(repo, "wt")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: /elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if root, err := ProjectRoot(worktree); err != nil || root != worktree {
+		t.Fatalf("ProjectRoot(worktree) = %q, %v; want %q", root, err, worktree)
 	}
 }

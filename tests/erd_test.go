@@ -18,6 +18,7 @@ func TestERDPullAndQueries(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	writeFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n")
 	if err := os.MkdirAll(f.dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +143,7 @@ func TestERDScansAllProjectDirs(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	writeFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n")
 	if err := os.MkdirAll(filepath.Join(repo, "svc-a", ".dbh"), 0o755); err != nil {
 		t.Fatal(err)
 	}

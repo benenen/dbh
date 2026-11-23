@@ -47,7 +47,9 @@ func FindDir(start string) (dir string, create string, err error) {
 		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return "", "", err
 		}
-		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+		if root, err := isGitRoot(d); err != nil {
+			return "", "", err
+		} else if root {
 			return "", candidate, nil
 		}
 		parent := filepath.Dir(d)
@@ -154,10 +156,10 @@ func ProjectRoot(start string) (string, error) {
 		return "", err
 	}
 	for d := start; ; {
-		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
-			return d, nil
-		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		if root, err := isGitRoot(d); err != nil {
 			return "", err
+		} else if root {
+			return d, nil
 		}
 		parent := filepath.Dir(d)
 		if parent == d {
@@ -165,6 +167,28 @@ func ProjectRoot(start string) (string, error) {
 		}
 		d = parent
 	}
+}
+
+// isGitRoot reports whether dir is a Git work tree root: .git is a file (a
+// worktree or submodule gitdir pointer) or a directory with HEAD. A stray .git
+// directory without HEAD, which Git itself ignores, does not count.
+func isGitRoot(dir string) (bool, error) {
+	info, err := os.Stat(filepath.Join(dir, ".git"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.IsDir() {
+		return true, nil
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git", "HEAD")); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	return false, nil
 }
 
 // FindAllDirs scans the project root (the Git repository root when available,
