@@ -127,7 +127,7 @@ dbh databases docker-pgsql --format tsv
 
 这些命令共用 `--db`、`--timeout`、`--format`。带空格的表名保留 SQL 标识符引号，外层 shell 引号用于将整个名称传为一个参数。
 
-查表之间的关系或 JOIN 路径时，项目中有 `.dbh/` 则先用 `dbh erd relations --table T --format tsv`、`dbh erd path FROM TO --format tsv`；生成和维护关系模型见 [dbh-erd 技能](../dbh-erd/SKILL.md)。
+查表之间的关系或 JOIN 路径时，项目中有 `.dbh/` 则先用 `dbh erd relations --table T --format tsv`、`dbh erd path FROM TO --format tsv`，查字段用 `dbh erd columns T --format tsv`；生成和维护关系模型见 [dbh-erd 技能](../dbh-erd/SKILL.md)。
 
 ## 交互式结构查看
 

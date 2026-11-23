@@ -15,8 +15,12 @@ description: 新增或修改 SQL、ORM 查询与模型、数据访问层或数�
    - 查单表关系：`dbh erd relations --table TABLE --format tsv`
    - 查跨表 JOIN 路径：`dbh erd path FROM TO --format tsv`（存在多条平行/条件关系时加 `--all`）
    - 表名未知：`dbh erd tables --match KEYWORD --format tsv`（全量可省略 `--match`；多模型排查来源加 `--with-model`）
+   - 按字段名或字段注释找表、需要逐字段比对（如与建表 SQL、文档核对）：`dbh erd columns [TABLE...] --match KEYWORD --format tsv`，每行一个字段，含类型、`pk`、`not_null`、`unique`、默认值和注释
+
+   查询都走 `dbh erd`，不要用 `rg`、`sed` 或脚本直接读 `.dbml`：命令输出合并后的模型、`evidence` 列和上述 warning，直接读文件会漏掉这些信息。
 
    - stderr 出现 `warning: table T has different columns in models A, B` 时，输出是多个库的字段合并，按本次代码连接的库加 `--model` 重新查询。
+   - stderr 出现 `warning: table T is only in another project's models ...` 时，该表来自同仓库其他服务的模型，可能不在本项目连接的库中；在本项目代码或配置中确认确实访问该库后再使用。
 
 2. 按查询结果定位需要阅读的代码。对照迁移、模型定义或现有 SQL 核实本次依赖的字段和约束；推断关系的 JOIN 条件以业务代码为准。
 3. 工具不可用、缺少模型或查询失败时，从迁移、模型定义或现有 SQL 获取缺失的信息，再继续写代码。此流程只查询本地文件；按用户要求另行拉取或生成模型。
@@ -45,7 +49,7 @@ description: 新增或修改 SQL、ORM 查询与模型、数据访问层或数�
 ## 模型约定
 
 - `.dbh/<model>.dbml`：数据库实际结构，由 `dbh erd pull NAME --save` 生成，可随时覆盖。不手工编辑支持 `pull` 的驱动的这个文件。
-- `.dbh/<model>.refs.dbml`：从代码推断、数据库中没有外键约束的关系。只写 `Ref` 和注释，每条关系上方注释写明证据位置。`pull` 不会改动它。
+- `.dbh/<model>.refs.dbml`：从代码推断、数据库中没有外键约束的关系。只写 `Ref` 和注释，每条关系上方用 `// evidence: <源码位置>` 注释写明证据。`pull` 不会改动它。
 - 默认模型名 `schema`；一个项目对应多个库时，每个库用 `--model` 取一个稳定的名字，所有命令带同样的 `--model`。
 
 ## 生成或更新模型
@@ -63,12 +67,14 @@ description: 新增或修改 SQL、ORM 查询与模型、数据访问层或数�
 5. 把第 1–3 类证据确认的关系追加到 `.refs.dbml`：
 
    ```dbml
-   // app/models/order.go:42 (GORM foreignKey)
+   // evidence: app/models/order.go:42 (GORM foreignKey)
    Ref: orders.product_id > products.id
    ```
 
+   每条证据单独一行 `// evidence: <文件:行号> (<证据类型>)`，同一关系可写多行；其他说明性注释不加前缀，不会进入 `evidence` 列。
+
    `>` 左侧是持有外键的表；一对一用 `-`，多对多用 `<>`；多列写成 `orders.(a, b) > t.(a, b)`。条件关联或多态关联（如 `a = 1` 时 `b` 关联 `c`，`a = 2` 时 `b` 关联 `d`）拆成多条 `Ref`，在紧邻 `Ref` 上方的注释块或行尾用 `// when: <条件>` 标注（如 `// when: a = 1`）。已在 `<model>.dbml` 中声明的关系不要重复写。
-6. 第 4 类只凭命名的关系先列给用户，确认后才写入，注释标明 `naming convention`。
+6. 第 4 类只凭命名的关系先列给用户，确认后才写入，注释写成 `// evidence: naming convention`。
 7. 运行 `dbh erd check`，修正所有 error；再用 `dbh erd relations --source inferred --format tsv` 和 `dbh erd show` 核对。
 8. 向用户汇报：模型文件路径、表数、declared 与 inferred 关系数、本次新增或删除的推断关系及证据、待确认的命名推断。不修改数据库结构；`.dbh/` 文件的提交按用户授权进行。
 
@@ -80,6 +86,7 @@ description: 新增或修改 SQL、ORM 查询与模型、数据访问层或数�
 dbh erd relations --table orders --format tsv
 dbh erd path reviews users --format tsv
 dbh erd show orders --depth 0
+dbh erd columns orders --format tsv
 ```
 
 - 查字段用 `show TABLE --depth 0`，查关系用 `relations --table`。只在需要看相邻表的字段时用 `--depth 1`：关联多的中心表一次可输出几十 KB；不带表名的 `show` 输出整个模型，只配合 `-o` 导出文件。

@@ -11,21 +11,24 @@
 | `.dbh/schema.dbml` | 数据库实际结构：表、字段、索引、枚举和数据库中的外键 | `dbh erd pull NAME --save` 生成，可随时覆盖 |
 | `.dbh/schema.refs.dbml` | 从代码推断、数据库中没有约束的关系 | 手工或 agent 维护，`pull` 不会改动 |
 
-`<model>.dbml` 中的关系是 **declared**，`.refs.dbml` 中的关系是 **inferred**。`.refs.dbml` 只能写 `Ref` 和注释，证据写在注释里：
+`<model>.dbml` 中的关系是 **declared**，`.refs.dbml` 中的关系是 **inferred**。`.refs.dbml` 只能写 `Ref` 和注释，证据用 `// evidence: <源码位置>` 写在紧邻 `Ref` 上方的注释块里：
 
 ```dbml
-// app/models/order.go:42 (GORM foreignKey)
+// evidence: app/models/order.go:42 (GORM foreignKey)
 Ref: orders.product_id > products.id
 ```
+
+`relations` 和 `path` 的 `evidence` 列取自这些 `evidence:` 注释，多条以 `; ` 连接；同一注释块里的其他注释只作说明。注释块中没有 `evidence:` 时，除 `// when:` 外的注释都作为证据，兼容旧写法。
 
 条件关联或多态关联（例如 `a = 1` 时 `b` 关联表 `c`，`a = 2` 时 `b` 关联表 `d`）拆成多条 `Ref`，并用 `// when: <条件>` 注释（紧邻 `Ref` 上方连续注释块内，或 `Ref` 行尾）标注条件，保持与标准 DBML 和 dbdiagram.io 兼容：
 
 ```dbml
-// app/models/event.go:12
+// events.b points to a different table per a
+// evidence: app/models/event.go:12
 // when: a = 1
 Ref: events.b > c.id
 
-// app/models/event.go:15
+// evidence: app/models/event.go:15
 Ref: events.b > d.id // when: a = 2
 ```
 
@@ -60,6 +63,8 @@ dbh erd status
 dbh erd tables --format tsv
 dbh erd tables --match 'order*' --with-model --format tsv
 dbh erd tables --isolated --format tsv
+dbh erd columns orders users --format tsv
+dbh erd columns --match '*_id' --with-model --format tsv
 dbh erd relations --table orders --source inferred --format tsv
 dbh erd path reviews users
 dbh erd path orders users --all --format tsv
@@ -74,13 +79,16 @@ dbh erd show --format html --open
 - `check` 校验两个文件，错误和警告以 `文件:行:列: 信息` 输出到 stderr；有错误时退出码非零。
 - `status` 列出 `.dbh/` 中的模型（含无主文件的独立 `.refs.dbml`）及表数、关系数和状态（`ok`、`warning`、`invalid`）。
 - `tables` 列出表、字段数、涉及的关系数和表注释；支持 `--match`（按表名/注释子串或 glob 过滤）、`--isolated`（仅无关系的孤立表）和 `--with-model`（输出所属模型列）。
-- `relations` 列出关系：`name`、`from_table`、`from_columns`、`relation`、`to_table`、`to_columns`、`condition`、`on_delete`、`on_update`、`source`、`evidence`。`evidence` 是 `Ref` 上方紧邻注释块和行尾注释中除 `// when:` 外的内容（多条以 `; ` 连接），通常为源码位置。`relation` 为 `>`（多对一）、`-`（一对一）或 `<>`（多对多）；DBML 中写成 `<` 的关系会调换两端，统一显示为 `>`，`from_table` 是持有外键的一侧。多列关系的字段以 `, ` 连接。`--table` 只看两端任一为该表的关系，`--source declared|inferred` 只看一类。
+- `columns [TABLE...]`（简写 `cols`）每行列出一个字段：`table`、`column`、`type`、`pk`、`not_null`、`unique`、`default`、`note`；不给表名时列出全部表的字段。`--match` 按字段名子串或 glob、字段注释子串过滤，`--with-model` 追加所属模型列。适合按字段名找表，或用 TSV/JSON 与建表 SQL、文档逐字段比对。
+- `relations` 列出关系：`name`、`from_table`、`from_columns`、`relation`、`to_table`、`to_columns`、`condition`、`on_delete`、`on_update`、`source`、`evidence`。`evidence` 取自 `Ref` 上方紧邻注释块和行尾注释中的 `// evidence:`（没有时取除 `// when:` 外的注释），多条以 `; ` 连接。`relation` 为 `>`（多对一）、`-`（一对一）或 `<>`（多对多）；DBML 中写成 `<` 的关系会调换两端，统一显示为 `>`，`from_table` 是持有外键的一侧。多列关系的字段以 `, ` 连接。`--table` 只看两端任一为该表的关系，`--source declared|inferred` 只看一类。
 - `path FROM TO` 输出两表之间跳数最少的关联路径，每行一跳（含 `condition` 与 `evidence`），可直接用于拼写 JOIN。跳数相同时优先走 declared 关系；`--declared-only` 只走数据库外键；`--all` 列出全部最短路径（含平行外键与不同条件关系）；找不到路径时退出码非零。
 - `show [TABLE...]` 预览或导出表、字段和关系，支持 `-o FILE` 写入文件、`--declared-only` / `--source declared|inferred` 过滤关系。给出表名时只显示这些表及 `--depth` 层（默认 1）内相邻的表。`--format text`（默认）在终端显示字段、默认值、注释、表级索引和关系，`──▶` 为 declared、`┄┄▶` 为 inferred、`◀──` 为指向本表的关系；`--format dot` 输出 Graphviz，`--format mermaid` 输出 Mermaid `erDiagram`，inferred 关系均为虚线；`--format html` 导出完全离线自包含的交互式 HTML ER 图（支持自动分层布局、拖拽表卡片、缩放平移、按表/字段/注释搜索、按 declared/inferred 过滤、列注释与索引悬停提示、条件与复合关系标签展示、浅/深色切换以及带主题底色的 SVG 导出），加 `--open` 可直接用默认浏览器打开（未指定 `-o` 时自动写入临时 `.html` 文件）。
 
-`tables`、`relations`、`path`、`status`、`diff` 支持 `--format table|csv|json|tsv`。表名可写 `schema.table`，也可只写表名；只写表名且多个 schema 中都有时报错并列出候选。
+`tables`、`columns`、`relations`、`path`、`status`、`diff` 支持 `--format table|csv|json|tsv`。表名可写 `schema.table`，也可只写表名；只写表名且多个 schema 中都有时报错并列出候选。
 
-多个模型定义了同名表但字段名或类型不一致时，查询结果是合并后的字段，不一定对应任何一个数据库：`check` 会列出这些表，`show TABLE`、`relations --table`、`path` 命中这类表时在 stderr 输出 `warning: table T has different columns in models ...`，此时加 `--model` 只读其中一个模型。结构完全相同的同名表照常合并，不报警告。
+多个模型定义了同名表但字段名或类型不一致时，查询结果是合并后的字段，不一定对应任何一个数据库：`check` 会列出这些表，`show TABLE`、`columns TABLE`、`relations --table`、`path` 命中这类表时在 stderr 输出 `warning: table T has different columns in models ...`，此时加 `--model` 只读其中一个模型。结构完全相同的同名表照常合并，不报警告。
+
+未传 `--dir` 时，从当前目录向上最近的 `.dbh/` 视为本项目；`show TABLE`、`columns TABLE`、`relations --table`、`path` 命中只在其他项目 `.dbh/` 中定义的表时，在 stderr 输出 `warning: table T is only in another project's models ..., not in <本项目 .dbh>`，提示该表可能不在本项目连接的库中。向上找不到 `.dbh/`（例如在仓库根目录执行）时不做这项检查。
 
 查询时如果 `.refs.dbml` 中有引用不存在的表或字段的关系，会在 stderr 警告并跳过这些关系，其余结果照常输出；`<model>.dbml` 或 `.refs.dbml` 有语法错误时查询直接失败。
 
