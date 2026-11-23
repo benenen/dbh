@@ -16,6 +16,8 @@ description: 新增或修改 SQL、ORM 查询与模型、数据访问层或数�
    - 查跨表 JOIN 路径：`dbh erd path FROM TO --format tsv`（存在多条平行/条件关系时加 `--all`）
    - 表名未知：`dbh erd tables --match KEYWORD --format tsv`（全量可省略 `--match`；多模型排查来源加 `--with-model`）
 
+   - stderr 出现 `warning: table T has different columns in models A, B` 时，输出是多个库的字段合并，按本次代码连接的库加 `--model` 重新查询。
+
 2. 按查询结果定位需要阅读的代码。对照迁移、模型定义或现有 SQL 核实本次依赖的字段和约束；推断关系的 JOIN 条件以业务代码为准。
 3. 工具不可用、缺少模型或查询失败时，从迁移、模型定义或现有 SQL 获取缺失的信息，再继续写代码。此流程只查询本地文件；按用户要求另行拉取或生成模型。
 

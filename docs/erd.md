@@ -80,6 +80,8 @@ dbh erd show --format html --open
 
 `tables`、`relations`、`path`、`status`、`diff` 支持 `--format table|csv|json|tsv`。表名可写 `schema.table`，也可只写表名；只写表名且多个 schema 中都有时报错并列出候选。
 
+多个模型定义了同名表但字段名或类型不一致时，查询结果是合并后的字段，不一定对应任何一个数据库：`check` 会列出这些表，`show TABLE`、`relations --table`、`path` 命中这类表时在 stderr 输出 `warning: table T has different columns in models ...`，此时加 `--model` 只读其中一个模型。结构完全相同的同名表照常合并，不报警告。
+
 查询时如果 `.refs.dbml` 中有引用不存在的表或字段的关系，会在 stderr 警告并跳过这些关系，其余结果照常输出；`<model>.dbml` 或 `.refs.dbml` 有语法错误时查询直接失败。
 
 ## 已知限制

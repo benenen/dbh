@@ -53,7 +53,7 @@ flowchart TD
 - **单模型快速路径**：仅命中 1 个模型时直接走 `erd.Load(dir, name)`，与单目录单模型行为完全一致。
 - **多模型两阶段合并**：
   1. **Phase 1（表与 `declared` 关系）**：先解析所有 `<model>.dbml`，将表合并到同一个 `Model` 中，再添加所有主文件中的 `declared` 外键关系。
-     - **同名表合并**：若多个 `.dbh/` 定义了相同展示名（`table` 或 `schema.table`）的表，按列名去重追加缺失字段，并在原表为空时补充 `Alias` 与 `Note`。
+     - **同名表合并**：若多个 `.dbh/` 定义了相同展示名（`table` 或 `schema.table`）的表，按列名去重追加缺失字段，并在原表为空时补充 `Alias` 与 `Note`。字段名集合或同名字段类型不一致时把该表标记为冲突（`Table.Conflict`），在 `Model.Warnings` 记录 `has different columns in models ...`；`check` 输出这条警告，`show`/`relations --table`/`path` 解析到该表时也在 stderr 提示用 `--model`。
   2. **Phase 2（`inferred` 关系）**：等全部表加载完成后，再解析所有 `<model>.refs.dbml`。因此，某服务 `.refs.dbml` 中指向另一服务 `.dbh/` 内表的跨目录关联同样能正确解析，并参与 `relations`、`show` 与 `path` 寻路。
   3. **去重与校验**：
      - 关系以标准化端点与字段集合去重；若某条 `inferred` 关系已在任一 `.dbh/` 的主文件中声明为 `declared`，则发出 `already declared` 警告并保留 `declared`。
