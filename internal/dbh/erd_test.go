@@ -178,3 +178,42 @@ func TestExternalERDPull(t *testing.T) {
 		})
 	}
 }
+
+func TestJSONOutputKeepsHTMLCharacters(t *testing.T) {
+	ctx := context.Background()
+	p := Profile{Name: "test", Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "json.db")}
+	s, err := openSession(ctx, p, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var out bytes.Buffer
+	if err := s.Run(ctx, "SELECT '<b>&</b>' AS html", "json", &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out.String()) != `{"html":"<b>&</b>"}` {
+		t.Fatalf("json = %q", out.String())
+	}
+
+	dbhDir := filepath.Join(t.TempDir(), ".dbh")
+	if err := os.MkdirAll(dbhDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dbhDir, "schema.dbml"), []byte("Table users {\n  id integer [pk]\n}\nTable orders {\n  id integer [pk]\n  user_id integer\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dbhDir, "schema.refs.dbml"), []byte("// app/orders.go:7 (GORM foreignKey)\nRef: orders.user_id > users.id\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := NewCommand()
+	out.Reset()
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"erd", "--dir", dbhDir, "relations", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"relation":">"`) || !strings.Contains(out.String(), `"evidence":"app/orders.go:7 (GORM foreignKey)"`) {
+		t.Fatalf("relations json = %q", out.String())
+	}
+}

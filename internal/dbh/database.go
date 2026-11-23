@@ -218,6 +218,7 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 		case "json":
 			beforeOutput()
 			jsonOut = json.NewEncoder(out)
+			jsonOut.SetEscapeHTML(false)
 		case "tsv":
 			beforeOutput()
 			if len(cols) > 0 {

@@ -75,11 +75,11 @@ func (o object) MarshalJSON() ([]byte, error) {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		k, err := json.Marshal(key)
+		k, err := marshalJSON(key)
 		if err != nil {
 			return nil, err
 		}
-		v, err := json.Marshal(o.values[i])
+		v, err := marshalJSON(o.values[i])
 		if err != nil {
 			return nil, err
 		}
@@ -89,6 +89,18 @@ func (o object) MarshalJSON() ([]byte, error) {
 	}
 	b.WriteByte('}')
 	return b.Bytes(), nil
+}
+
+// marshalJSON is json.Marshal without HTML escaping, so <, > and & in data
+// stay readable.
+func marshalJSON(v any) ([]byte, error) {
+	var b bytes.Buffer
+	encoder := json.NewEncoder(&b)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
 }
 
 type sqlConnection struct {

@@ -128,6 +128,7 @@ func writeRows(out io.Writer, columns []string, values [][]any, format string) e
 		return renderTable(out, columns, text, tableWidth(out))
 	case "json":
 		encoder := json.NewEncoder(out)
+		encoder.SetEscapeHTML(false)
 		for _, row := range values {
 			if err := encoder.Encode(database.NewRow(columns, row).Object); err != nil {
 				return err
