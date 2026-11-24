@@ -27,8 +27,9 @@ dbh exec pg --db app 'SELECT * FROM users WHERE id = $1' --param 42 --format tsv
 dbh tables pg
 dbh check pg
 
-# 生成关系模型到 .dbh/，查询表关系
-dbh erd pull pg --save
+# 生成/更新关系模型到 .dbh/，查询表关系
+dbh erd init pg
+dbh erd resync pg
 dbh erd path orders users
 
 # 进入交互终端

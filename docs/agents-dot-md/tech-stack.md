@@ -12,7 +12,7 @@ readline 暂通过 `go.mod` 的 `replace` 使用 fork `github.com/BenLocal/readl
 ## 验证命令
 
 ```bash
-gofmt -w main.go internal/dbh
+gofmt -w main.go internal tests
 go test ./...
 go vet ./...
 go build -o bin/dbh .
