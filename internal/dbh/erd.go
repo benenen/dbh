@@ -444,8 +444,8 @@ func pullSchemaForCommand(cmd *cobra.Command, store func() (Store, error), name,
 	if err != nil {
 		return "", err
 	}
-	if cmd.Flags().Changed("schema") && p.Driver != "postgres" {
-		return "", fmt.Errorf("--schema is only supported for PostgreSQL")
+	if cmd.Flags().Changed("schema") && !supportsSchemaFlag(p.Driver) {
+		return "", fmt.Errorf("--schema is not supported for %s", p.Driver)
 	}
 	stopSpinner := startSpinner(cmd.ErrOrStderr(), "Reading schema")
 	dbml, err := pullDBMLWithOptions(cmd.Context(), p, db, cmd.Flags().Changed("db"), schema, include, exclude, timeout)
@@ -651,8 +651,8 @@ func erdDiffCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 		if err != nil {
 			return err
 		}
-		if cmd.Flags().Changed("schema") && p.Driver != "postgres" {
-			return fmt.Errorf("--schema is only supported for PostgreSQL")
+		if cmd.Flags().Changed("schema") && !supportsSchemaFlag(p.Driver) {
+			return fmt.Errorf("--schema is not supported for %s", p.Driver)
 		}
 		stopSpinner := startSpinner(cmd.ErrOrStderr(), "Reading schema")
 		dbml, err := pullDBMLWithOptions(cmd.Context(), p, db, cmd.Flags().Changed("db"), schema, include, exclude, timeout)
@@ -668,6 +668,15 @@ func erdDiffCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 		return writeERDRows(cmd.OutOrStdout(), diff.Rows(), format)
 	}
 	return c
+}
+
+func supportsSchemaFlag(driver string) bool {
+	switch driver {
+	case "postgres", "mssql", "oracle", "dm", "trino":
+		return true
+	default:
+		return false
+	}
 }
 
 func pullDBML(ctx context.Context, p Profile, db string, switchDB bool, schema string, timeout time.Duration) (string, error) {

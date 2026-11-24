@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mevdschee/dbml-tools/interpreter"
+	"github.com/benenen/dbh/internal/dbml"
 )
 
 // DiffEntry describes one schema difference between two models.
@@ -186,9 +186,9 @@ func declaredRelationMap(m *Model) map[string]Relation {
 	return out
 }
 
-func diffColumns(table string, oldCols, newCols []interpreter.Column) []DiffEntry {
-	oldMap := make(map[string]interpreter.Column, len(oldCols))
-	newMap := make(map[string]interpreter.Column, len(newCols))
+func diffColumns(table string, oldCols, newCols []dbml.Column) []DiffEntry {
+	oldMap := make(map[string]dbml.Column, len(oldCols))
+	newMap := make(map[string]dbml.Column, len(newCols))
 	var names []string
 	seen := map[string]bool{}
 	for _, c := range oldCols {
@@ -239,7 +239,7 @@ func diffColumns(table string, oldCols, newCols []interpreter.Column) []DiffEntr
 	return entries
 }
 
-func columnSignature(c interpreter.Column) string {
+func columnSignature(c dbml.Column) string {
 	sig := columnType(c)
 	if flags := columnFlags(c); flags != "" {
 		sig += " [" + flags + "]"

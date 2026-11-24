@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mevdschee/dbml-tools/introspect"
+	"github.com/benenen/dbh/internal/dbml/introspect"
 )
 
 // PullOptions configures schema introspection for PullWithOptions.
@@ -68,6 +68,26 @@ func PullWithOptions(ctx context.Context, db *sql.DB, driver string, opts PullOp
 		schemas = schemas[:1]
 		if err := checkMySQLVersion(ctx, db); err != nil {
 			return "", err
+		}
+	case "mssql":
+		engine, label = introspect.EngineMSSQL, "SQL Server"
+		if len(schemas) == 0 {
+			schemas = []string{""}
+		}
+	case "oracle":
+		engine, label = introspect.EngineOracle, "Oracle"
+		if len(schemas) == 0 {
+			schemas = []string{""}
+		}
+	case "dm":
+		engine, label = introspect.EngineDM, "Dameng"
+		if len(schemas) == 0 {
+			schemas = []string{""}
+		}
+	case "trino":
+		engine, label = introspect.EngineTrino, "Trino"
+		if len(schemas) == 0 {
+			schemas = []string{""}
 		}
 	default:
 		return "", fmt.Errorf("erd pull is not supported for %s", driver)

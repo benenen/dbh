@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mevdschee/dbml-tools/introspect"
+	"github.com/benenen/dbh/internal/dbml/introspect"
 )
 
 const mainDBML = `Table users {

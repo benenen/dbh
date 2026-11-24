@@ -131,7 +131,7 @@ func TestERDRejectsInvalidModels(t *testing.T) {
 	stderr := f.fail("erd", "tables")
 	contains(t, stderr, ".dbh/schema.refs.dbml:1:1: only Ref declarations are allowed in a refs file")
 	contains(t, f.fail("erd", "tables", "--model", "../x"), `invalid model name "../x"`)
-	contains(t, f.fail("erd", "pull", "demo", "--schema", "main"), "--schema is only supported for PostgreSQL")
+	contains(t, f.fail("erd", "pull", "demo", "--schema", "main"), "--schema is not supported for sqlite")
 	if strings.Contains(readFile(t, filepath.Join(f.root, ".dbh", "schema.dbml")), "extra") {
 		t.Fatal("model changed")
 	}

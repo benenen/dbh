@@ -12,9 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mevdschee/dbml-tools/interpreter"
-	"github.com/mevdschee/dbml-tools/lexer"
-	"github.com/mevdschee/dbml-tools/parser"
+	"github.com/benenen/dbh/internal/dbml"
 )
 
 const (
@@ -328,8 +326,8 @@ type Table struct {
 	Name    string
 	Alias   string
 	Note    string
-	Columns []interpreter.Column
-	Indexes []interpreter.Index
+	Columns []dbml.Column
+	Indexes []dbml.Index
 	Models  []string
 	Dirs    []string // .dbh directories that define the table
 	// Conflict is set when models define this table with different columns,
@@ -589,7 +587,7 @@ func LoadAll(dirs []string, modelFilter string) (*Model, error) {
 	type parsedMain struct {
 		file   string
 		source string
-		db     *interpreter.Database
+		db     *dbml.Database
 	}
 	var mains []parsedMain
 	var refsFiles []string
@@ -675,7 +673,7 @@ func ValidateModelRefs(dir, name string, allDirs []string) (*Model, error) {
 	type parsedMain struct {
 		file   string
 		source string
-		db     *interpreter.Database
+		db     *dbml.Database
 	}
 	var mains []parsedMain
 	for _, d := range allDirs {
@@ -744,7 +742,7 @@ func StatusRows(dirs []string, modelFilter string) (Rows, error) {
 	type parsedMain struct {
 		file   string
 		source string
-		db     *interpreter.Database
+		db     *dbml.Database
 	}
 	var mains []parsedMain
 
@@ -858,29 +856,10 @@ func (m *Model) Usable() error {
 	return nil
 }
 
-func (m *Model) parse(file, source string, refsOnly bool) *interpreter.Database {
+func (m *Model) parse(file, source string, refsOnly bool) *dbml.Database {
 	before := len(m.Errors)
-	l := lexer.New(source)
-	tokens := l.Lex()
-	for _, e := range l.Errors {
-		m.Errors = append(m.Errors, issueAt(file, e.Position, e.Message))
-	}
-	p := parser.New(tokens, source)
-	prog := p.Parse()
-	for _, e := range p.Errors {
-		m.Errors = append(m.Errors, issueAt(file, e.Position, e.Message))
-	}
-	if refsOnly {
-		for _, node := range prog.Body {
-			decl, ok := node.(*parser.ElementDeclNode)
-			if !ok || decl.Type.Value != "Ref" {
-				m.Errors = append(m.Errors, issueAt(file, node.FirstToken().StartPos, "only Ref declarations are allowed in a refs file"))
-			}
-		}
-	}
-	interp := interpreter.New()
-	db := interp.Interpret(prog)
-	for _, e := range interp.Errors {
+	db, errs := dbml.Parse(source, dbml.ParseOptions{RefsOnly: refsOnly})
+	for _, e := range errs {
 		m.Errors = append(m.Errors, issueAt(file, e.Position, e.Message))
 	}
 	if len(m.Errors) > before {
@@ -889,8 +868,8 @@ func (m *Model) parse(file, source string, refsOnly bool) *interpreter.Database 
 	return db
 }
 
-func issueAt(file string, pos lexer.Position, message string) Issue {
-	return Issue{File: file, Line: pos.Line + 1, Column: pos.Column + 1, Message: message}
+func issueAt(file string, pos dbml.Position, message string) Issue {
+	return Issue{File: file, Line: pos.Line, Column: pos.Column, Message: message}
 }
 
 func (m *Model) rebuildTableIndex() {
@@ -906,7 +885,7 @@ func (m *Model) rebuildTableIndex() {
 	}
 }
 
-func indexKey(idx interpreter.Index) string {
+func indexKey(idx dbml.Index) string {
 	cols := make([]string, len(idx.Columns))
 	for i, c := range idx.Columns {
 		cols[i] = c.Type + ":" + c.Value
@@ -930,7 +909,7 @@ func appendUniqueString(list []string, val string) []string {
 	return append(list, val)
 }
 
-func (m *Model) addTables(db *interpreter.Database, sourceLabel, dir string) {
+func (m *Model) addTables(db *dbml.Database, sourceLabel, dir string) {
 	if m.tableByKey == nil {
 		m.rebuildTableIndex()
 	}
@@ -938,8 +917,8 @@ func (m *Model) addTables(db *interpreter.Database, sourceLabel, dir string) {
 		table := Table{
 			Schema:  schemaName(t.SchemaName),
 			Name:    t.Name,
-			Columns: append([]interpreter.Column(nil), t.Fields...),
-			Indexes: append([]interpreter.Index(nil), t.Indexes...),
+			Columns: append([]dbml.Column(nil), t.Fields...),
+			Indexes: append([]dbml.Index(nil), t.Indexes...),
 		}
 		if sourceLabel != "" {
 			table.Models = []string{sourceLabel}
@@ -1003,7 +982,7 @@ func (m *Model) addTables(db *interpreter.Database, sourceLabel, dir string) {
 }
 
 // sameColumns reports whether a and b have the same column names and types.
-func sameColumns(a, b []interpreter.Column) bool {
+func sameColumns(a, b []dbml.Column) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -1081,7 +1060,7 @@ func (m *Model) resolve(schema *string, name string) (*Table, bool) {
 	return nil, false
 }
 
-func (m *Model) addRelations(refs []interpreter.Ref, source, file, rawSource string) {
+func (m *Model) addRelations(refs []dbml.Ref, source, file, rawSource string) {
 	lines := strings.Split(rawSource, "\n")
 	seen := map[string]string{}
 	for _, r := range m.Relations {
@@ -1092,10 +1071,10 @@ func (m *Model) addRelations(refs []interpreter.Ref, source, file, rawSource str
 			continue
 		}
 		left, right := ref.Endpoints[0], ref.Endpoints[1]
-		line := left.Token.Start.Line // TokenPos lines are 1-based
+		line := left.Line // 1-based line
 		condition, evidence := extractRefComments(lines, line)
-		if condition == "" && evidence == "" && ref.Token.Start.Line > 0 && ref.Token.Start.Line != line {
-			condition, evidence = extractRefComments(lines, ref.Token.Start.Line)
+		if condition == "" && evidence == "" && ref.Line > 0 && ref.Line != line {
+			condition, evidence = extractRefComments(lines, ref.Line)
 		}
 		rel := Relation{Source: source, File: file, Line: line, Condition: condition, Evidence: evidence}
 		if ref.Name != nil {
@@ -1145,7 +1124,7 @@ func (m *Model) addRelations(refs []interpreter.Ref, source, file, rawSource str
 	}
 }
 
-func (m *Model) endpoint(ep interpreter.RefEndpoint) (*Table, []string, string) {
+func (m *Model) endpoint(ep dbml.RefEndpoint) (*Table, []string, string) {
 	table, ok := m.resolve(ep.SchemaName, ep.TableName)
 	if !ok {
 		name := ep.TableName

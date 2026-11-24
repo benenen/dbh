@@ -7,31 +7,16 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/mevdschee/dbml-tools/interpreter"
+	"github.com/benenen/dbh/internal/dbml"
 )
 
-func columnType(c interpreter.Column) string {
+func columnType(c dbml.Column) string {
 	text := c.Type.TypeName
 	if c.Type.SchemaName != nil {
 		text = *c.Type.SchemaName + "." + text
 	}
-	switch args := c.Type.Args.(type) {
-	case string:
-		if args != "" {
-			text += "(" + args + ")"
-		}
-	case []string:
-		if len(args) > 0 {
-			text += "(" + strings.Join(args, ",") + ")"
-		}
-	case []interface{}:
-		parts := make([]string, len(args))
-		for i, a := range args {
-			parts[i] = fmt.Sprint(a)
-		}
-		if len(parts) > 0 {
-			text += "(" + strings.Join(parts, ",") + ")"
-		}
+	if c.Type.Args != "" {
+		text += "(" + c.Type.Args + ")"
 	}
 	if c.Type.Suffix != "" {
 		text += " " + c.Type.Suffix
@@ -39,7 +24,7 @@ func columnType(c interpreter.Column) string {
 	return text
 }
 
-func columnDefault(c interpreter.Column) string {
+func columnDefault(c dbml.Column) string {
 	if c.DBDefault == nil || c.DBDefault.Value == nil {
 		return ""
 	}
@@ -54,7 +39,7 @@ func columnDefault(c interpreter.Column) string {
 	}
 }
 
-func columnNote(c interpreter.Column) string {
+func columnNote(c dbml.Column) string {
 	if c.Note == nil {
 		return ""
 	}
@@ -69,7 +54,7 @@ func singleLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-func columnFlags(c interpreter.Column) string {
+func columnFlags(c dbml.Column) string {
 	var flags []string
 	if c.PK {
 		flags = append(flags, "pk")
@@ -89,7 +74,7 @@ func columnFlags(c interpreter.Column) string {
 	return strings.Join(flags, ", ")
 }
 
-func formatIndexLine(idx interpreter.Index) string {
+func formatIndexLine(idx dbml.Index) string {
 	cols := make([]string, len(idx.Columns))
 	for i, c := range idx.Columns {
 		if c.Type == "expression" {
