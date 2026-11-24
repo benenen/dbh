@@ -33,3 +33,23 @@ Redis 交互输入按 Enter 执行当前行，引号未闭合时继续换行。`
 ## ClickHouse
 
 ClickHouse 使用官方 Go 驱动，支持原生 TCP（`clickhouse://`）和 HTTP/HTTPS DSN（HTTPS 需加 `?secure=true`）。`dbh exec ch --db app 'SELECT * FROM users;'` 可指定数据库。切库重新连接，原会话设置和临时表不保留，失败时保留当前连接。`\describe` 显示列类型、默认表达式、主键/排序键标记和注释；`\indexes` 显示主键表达式与数据跳过索引（ClickHouse 主键不是唯一约束）。ClickHouse 不支持这里用于关系型数据库的通用事务流程。
+
+## SQL Server（`mssql`）
+
+SQL Server 使用纯 Go 驱动 `go-mssqldb`，支持 `[schema].[table]` 方括号标识符与 `--proxy` 代理链。`\use` 与 `USE` 在当前会话内切换数据库；`\describe` 显示列类型、可空性、默认值与主键序号，`\indexes` 显示索引类型、唯一性与列清单。
+
+## Oracle（`oracle`）
+
+Oracle 使用纯 Go 驱动 `go-ora/v2`，无需 Instant Client / CGO，支持 `--proxy` 代理链。`\database` 列出 `ALL_USERS`；`\use` 在当前会话执行 `ALTER SESSION SET CURRENT_SCHEMA` 切换 Schema；`\tables`、`\describe` 与 `\indexes` 读取当前 Schema 下的表/视图、列注释与索引。
+
+## Trino / Presto（`trino`）
+
+Trino 使用官方 `trino-go-client`，支持 `http://`、`https://` 与 `trino://` DSN 及 `--proxy` 代理链。`\use` 支持 `schema` 或 `catalog.schema`（重新连接）；`\describe` 执行 `DESCRIBE` 查看列信息；Trino 无索引概念，`\indexes` 提示不支持。
+
+## 达梦（`dm`）
+
+达梦使用纯 Go 驱动 `gitee.com/chunanyong/dm`（DSN 形如 `dm://SYSDBA:password@localhost:5236`），暂不支持 `--proxy` 代理链。`\database` 列出 Schema，`\use` 在当前会话执行 `SET SCHEMA` 切换 Schema；`\tables`、`\describe` 与 `\indexes` 读取当前 Schema 下的表/视图、列注释与索引。
+
+## Elasticsearch（`elasticsearch`）
+
+Elasticsearch 使用 HTTP REST + JSON 命令（`GET|POST|PUT|DELETE|HEAD|PATCH <path> [JSON body]`），支持 Basic Auth、`?api_key=...`、`?insecure=true` 与 `--proxy` 代理链。相对路径会自动拼接当前默认索引（可用 `--db` 或 `\use INDEX` 切换）。`\tables` / `\database` 列出索引，`\describe INDEX` 展开 `_mapping` 字段与类型；搜索响应（`hits.hits`）和 `_sql` 响应可直接以表格/CSV/JSON/TSV 输出。

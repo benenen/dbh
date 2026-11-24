@@ -49,7 +49,7 @@ dbh erd diff pg                           # 对比本地模型与线上数据库
 ```
 
 - `init NAME` 用于首次生成 `.dbh/<model>.dbml`（模型已存在时报错并提示改用 `resync`）；`resync NAME` 用于刷新已有的 `.dbh/<model>.dbml`（模型不存在时报错并提示先用 `init`），覆盖时会打印一行 `Changes: ...` 变更摘要。`pull NAME` 保留用于输出到 stdout、`-o FILE` 或无条件 `--save`。
-- 支持 SQLite、PostgreSQL 和 MySQL（8.0.16 及以上，或 MariaDB 10.2.1 及以上）。MongoDB、Redis、ClickHouse 不能 `init`/`resync`/`pull`，可手工整理模型后查询。
+- 支持 SQLite、PostgreSQL、MySQL（8.0.16 及以上，或 MariaDB 10.2.1 及以上）、SQL Server（`mssql`）、Oracle（`oracle`）、达梦（`dm`）和 Trino（`trino`，仅表与列）。MongoDB、Redis、ClickHouse、Elasticsearch 不能 `init`/`resync`/`pull`，可手工整理模型后查询。
 - 读取范围：MySQL 读当前数据库（`--db` 切换）；PostgreSQL 读 `--schema`（默认 `public`，支持逗号分隔多 schema 如 `--schema public,billing`）；SQLite 读 `main`。`--include` / `--exclude` 可按 glob 模式筛选表（可重复传入），被排除表关联的外键也会同步过滤。
 - `--save` 覆盖 `.dbh/<model>.dbml`；还没有 `.dbh/` 时在 Git 仓库根目录创建，不在仓库内则在当前目录创建。`-o FILE` 写入指定文件，与 `--save` 互斥。覆盖已有模型文件时会打印一行 `Changes: ...` 变更摘要。
 - `--save` 后会检查 `.refs.dbml`（多 `.dbh/` 工程自动结合全局表集合校验，避免跨目录推断误报）：已成为数据库外键的推断关系给出 warning，引用不存在的表或字段的推断关系给出 error，均输出到 stderr，不影响退出码。

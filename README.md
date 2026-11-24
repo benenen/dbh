@@ -1,6 +1,6 @@
 # dbh
 
-用 Go 编写的数据库 CLI，支持 SQLite、PostgreSQL、MySQL、MongoDB、ClickHouse 和 Redis。管理命名连接，执行 SQL、MongoDB 原生 JSON 命令或 redis-cli 风格的 Redis 命令，或进入支持实时补全与查询历史的交互终端。
+用 Go 编写的数据库 CLI，支持 SQLite、PostgreSQL、MySQL、SQL Server、Oracle、Trino/Presto、达梦（DM）、MongoDB、ClickHouse、Redis 和 Elasticsearch。管理命名连接，执行 SQL、MongoDB 原生 JSON 命令、Elasticsearch HTTP REST 命令或 redis-cli 风格的 Redis 命令，或进入支持实时补全与查询历史的交互终端。
 
 ## 安装
 
@@ -53,6 +53,6 @@ dbh connect local
 
 ## Agent 技能
 
-仓库提供 [dbh-cli](skills/dbh-cli/SKILL.md) 技能，指导 agent 选择连接、执行查询、导出结果和查看数据库结构，覆盖六种驱动。使用时让 agent 读取该技能，例如“使用 dbh-cli 查询连接 docker-pgsql 的 dbh_test 数据库”。
+仓库提供 [dbh-cli](skills/dbh-cli/SKILL.md) 技能，指导 agent 选择连接、执行查询、导出结果和查看数据库结构，覆盖所有驱动。使用时让 agent 读取该技能，例如“使用 dbh-cli 查询连接 docker-pgsql 的 dbh_test 数据库”。
 
 [dbh-erd](skills/dbh-erd/SKILL.md) 技能指导 agent 用 `dbh erd` 从数据库拉取结构、从项目代码补充数据库未声明的关系，并查询表关系，例如“使用 dbh-erd 为这个项目生成关系模型”。

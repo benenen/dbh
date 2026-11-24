@@ -5,7 +5,7 @@ description: Agent 直接调用 dbh CLI 查询和操作数据库，管理连接�
 
 # 使用 dbh CLI
 
-Agent 通过终端工具直接运行本机 `dbh`，完成用户要求的数据库查询和操作，并读取实际结果；仅在用户要求示例或说明时只提供命令。支持 `sqlite`、`postgres`、`mysql`、`mongo`、`clickhouse` 和 `redis` 六种驱动。
+Agent 通过终端工具直接运行本机 `dbh`，完成用户要求的数据库查询和操作，并读取实际结果；仅在用户要求示例或说明时只提供命令。支持 `sqlite`、`postgres`、`mysql`、`mssql`、`oracle`、`trino`、`dm`、`mongo`、`clickhouse`、`redis` 和 `elasticsearch` 十一种驱动。
 
 ## 选择连接与数据库
 
@@ -91,6 +91,11 @@ dbh exec docker-mongo --db dbh_test --sql '{"find":"agent_demo","filter":{"_id":
 | `mongo` | `mongodb://USER:PASSWORD@HOST:27017/DB?authSource=admin` | 原生 JSON；切库复用客户端，新库在写入后出现 |
 | `clickhouse` | `clickhouse://USER:PASSWORD@HOST:9000/DB` | SQL；切库重新连接；也支持 HTTP/HTTPS DSN，HTTPS 加 `?secure=true` |
 | `redis` | `redis://USER:PASSWORD@HOST:6379/0`，TLS 用 `rediss://` | redis-cli 风格命令，一行一条；`--db` 取数字，切库重新连接 |
+| `mssql` | `sqlserver://USER:PASSWORD@HOST:1433?database=DB` | SQL（方括号标识符）；切库保留当前会话 |
+| `oracle` | `oracle://USER:PASSWORD@HOST:1521/SERVICE` | SQL；切库切换当前 Schema，保留会话 |
+| `trino` | `http://USER@HOST:8080?catalog=C&schema=S` | SQL；`--db` 可传 `schema` 或 `catalog.schema`，切库重连 |
+| `dm` | `dm://USER:PASSWORD@HOST:5236` | SQL；切库切换当前 Schema，不支持代理 |
+| `elasticsearch` | `http://USER:PASSWORD@HOST:9200/INDEX`（支持 `?api_key=...&insecure=true`） | HTTP REST + JSON（`GET /_cat/indices`、`POST _search {...}`）；切库切换默认索引 |
 
 PostgreSQL/ClickHouse 切库成功后原会话设置、临时表和未提交事务不保留；失败时保留当前连接。切库不修改保存的 DSN。
 

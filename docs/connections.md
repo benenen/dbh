@@ -18,6 +18,21 @@ dbh new ch --driver clickhouse --prompt-dsn
 dbh new cache --driver redis --prompt-dsn
 # 输入：redis://user:password@localhost:6379/0（TLS 使用 rediss://）
 
+dbh new mssql --driver mssql --prompt-dsn
+# 输入：sqlserver://user:password@localhost:1433?database=app
+
+dbh new ora --driver oracle --prompt-dsn
+# 输入：oracle://user:password@localhost:1521/ORCLPDB1
+
+dbh new trino --driver trino --prompt-dsn
+# 输入：http://user@localhost:8080?catalog=memory&schema=default
+
+dbh new dm --driver dm --prompt-dsn
+# 输入：dm://SYSDBA:password@localhost:5236
+
+dbh new es --driver elasticsearch --prompt-dsn
+# 输入：http://user:password@localhost:9200（可选 ?api_key=...&insecure=true）
+
 dbh ls
 dbh ls --driver postgres --format tsv
 dbh edit local --dsn ./another.db
@@ -47,5 +62,5 @@ dbh edit pg --no-proxy                              # 改为直连
 
 - `socks5://[user:pass@]host:port`：主机名交给代理解析（等同 `socks5h`）。
 - `ssh://[user[:pass]@]host[:port]`：端口默认 22，用户默认当前用户。认证依次尝试 URL 中的密码、`identity=FILE`（可重复）、`SSH_AUTH_SOCK` 代理和 `~/.ssh/id_ed25519|id_ecdsa|id_rsa`（有口令的密钥请放进 ssh-agent）。主机密钥按 `~/.ssh/known_hosts` 严格校验，可用 `known_hosts=FILE` 指定，未知主机会拒绝连接。
-- 使用代理时，DSN 中的主机名由最后一跳解析，可直接写内网主机名。PostgreSQL、MySQL、ClickHouse（TCP 与 HTTP）、MongoDB 和 Redis（含 `rediss://`）支持代理，SQLite 和 Redis Unix socket 不支持；MySQL 需使用 `tcp(...)` 地址，PostgreSQL 不支持 Unix socket。`mongodb+srv://` 的 SRV 记录仍在本机解析。ClickHouse HTTP 使用代理列表时不再读取 `HTTP_PROXY` 环境变量。
+- 使用代理时，DSN 中的主机名由最后一跳解析，可直接写内网主机名。PostgreSQL、MySQL、SQL Server、Oracle、Trino、ClickHouse（TCP 与 HTTP）、MongoDB、Redis（含 `rediss://`）和 Elasticsearch 支持代理，SQLite、达梦（`dm`）和 Redis Unix socket 不支持；MySQL 需使用 `tcp(...)` 地址，PostgreSQL 不支持 Unix socket。`mongodb+srv://` 的 SRV 记录仍在本机解析。ClickHouse HTTP、Trino 和 Elasticsearch 使用代理列表时不再读取 `HTTP_PROXY` 环境变量。
 - 代理 URL 中的密码与 DSN 一样明文保存在配置文件；`ls` 的 `PROXIES` 列隐藏密码和参数。
