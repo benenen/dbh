@@ -225,3 +225,95 @@ func TestJSONOutputKeepsHTMLCharacters(t *testing.T) {
 		t.Fatalf("relations json = %q", out.String())
 	}
 }
+
+func TestERDInitAndResyncSQLite(t *testing.T) {
+	ctx := context.Background()
+	cfgDir := t.TempDir()
+	projDir := t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "app.db")
+
+	p := Profile{Name: "demo", Driver: "sqlite", DSN: dbPath}
+	s, err := openSession(ctx, p, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Run(ctx, "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT);", "json", io.Discard); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	s.Close()
+
+	st := Store{Dir: cfgDir}
+	if err := st.Put(p, true); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(args ...string) (string, string, error) {
+		cmd := NewCommand()
+		var out, errBuf bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs(append([]string{"--config-dir", cfgDir, "erd", "--dir", projDir}, args...))
+		err := cmd.Execute()
+		return out.String(), errBuf.String(), err
+	}
+
+	// resync fails before init.
+	if _, _, err := run("resync", "demo"); err == nil || !strings.Contains(err.Error(), "dbh erd init") {
+		t.Fatalf("expected resync before init to fail with init hint, got %v", err)
+	}
+
+	// init creates .dbh/schema.dbml.
+	out, stderr, err := run("init", "demo")
+	if err != nil || !strings.Contains(out, "Saved ") || stderr != "" {
+		t.Fatalf("init failed: err=%v out=%q stderr=%q", err, out, stderr)
+	}
+	schemaPath := filepath.Join(projDir, ".dbh", "schema.dbml")
+	data, err := os.ReadFile(schemaPath)
+	if err != nil || !strings.Contains(string(data), `Table "users"`) {
+		t.Fatalf("schema.dbml = %q, err=%v", string(data), err)
+	}
+
+	// init again on existing model fails and points to resync.
+	if _, _, err := run("init", "demo"); err == nil || !strings.Contains(err.Error(), "already exists") || !strings.Contains(err.Error(), "dbh erd resync") {
+		t.Fatalf("expected second init to fail with resync hint, got %v", err)
+	}
+
+	// init with --model extra succeeds independently.
+	if out, _, err := run("init", "demo", "--model", "extra"); err != nil || !strings.Contains(out, "Saved ") {
+		t.Fatalf("init --model extra failed: err=%v out=%q", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(projDir, ".dbh", "extra.dbml")); err != nil {
+		t.Fatalf("extra.dbml missing: %v", err)
+	}
+
+	// Modify DB and add a refs file; resync updates schema.dbml, prints Changes:, and preserves refs.
+	s, err = openSession(ctx, p, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Run(ctx, "CREATE TABLE items(id INTEGER PRIMARY KEY, user_id INTEGER);", "json", io.Discard); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	s.Close()
+
+	refsPath := filepath.Join(projDir, ".dbh", "schema.refs.dbml")
+	refsContent := "// app/items.go:3\nRef: items.user_id > users.id\n"
+	if err := os.WriteFile(refsPath, []byte(refsContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, stderr, err = run("resync", "demo")
+	if err != nil || !strings.Contains(out, "Saved ") || !strings.Contains(out, "Changes: +1 table") || stderr != "" {
+		t.Fatalf("resync failed: err=%v out=%q stderr=%q", err, out, stderr)
+	}
+	updated, err := os.ReadFile(schemaPath)
+	if err != nil || !strings.Contains(string(updated), `Table "items"`) {
+		t.Fatalf("updated schema.dbml = %q, err=%v", string(updated), err)
+	}
+	keptRefs, err := os.ReadFile(refsPath)
+	if err != nil || string(keptRefs) != refsContent {
+		t.Fatalf("refs changed: %q, err=%v", string(keptRefs), err)
+	}
+}

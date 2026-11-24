@@ -42,7 +42,7 @@ func defaultOpenBrowser(target string) error {
 func addERDCommands(root *cobra.Command, store func() (Store, error), names cobra.CompletionFunc) {
 	var model, dirFlag string
 	group := &cobra.Command{Use: "erd", Aliases: []string{"er"}, Short: "Query the DBML relationship models in .dbh/", Args: cobra.NoArgs}
-	group.PersistentFlags().StringVar(&model, "model", "", "Model name: .dbh/<model>.dbml and .dbh/<model>.refs.dbml (default: all models for queries, \"schema\" for pull)")
+	group.PersistentFlags().StringVar(&model, "model", "", "Model name: .dbh/<model>.dbml and .dbh/<model>.refs.dbml (default: all models for queries, \"schema\" for init/resync/pull)")
 	group.PersistentFlags().StringVar(&dirFlag, "dir", "", "Limit to one .dbh directory (default: scan every .dbh directory in the project)")
 	_ = group.RegisterFlagCompletionFunc("model", func(cmd *cobra.Command, args []string, _ string) ([]cobra.Completion, cobra.ShellCompDirective) {
 		dirs, err := erdDirs(dirFlag)
@@ -137,6 +137,8 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 		_ = c.RegisterFlagCompletionFunc("format", cobra.FixedCompletions([]string{"table", "csv", "json", "tsv"}, cobra.ShellCompDirectiveNoFileComp))
 	}
 
+	group.AddCommand(erdInitCommand(store, names, &model, &dirFlag))
+	group.AddCommand(erdResyncCommand(store, names, &model, &dirFlag))
 	group.AddCommand(erdPullCommand(store, names, &model, &dirFlag))
 	group.AddCommand(erdDiffCommand(store, names, &model, &dirFlag))
 
@@ -381,45 +383,184 @@ func addERDCommands(root *cobra.Command, store func() (Store, error), names cobr
 	root.AddCommand(group)
 }
 
+func addERDPullFlags(c *cobra.Command, db, schema *string, include, exclude *[]string, timeout *time.Duration) {
+	c.Flags().StringVar(db, "db", "", "Server database to read")
+	c.Flags().StringVar(schema, "schema", "", "PostgreSQL schema(s) to read, comma-separated (default public)")
+	c.Flags().StringSliceVar(include, "include", nil, "Only include tables matching glob pattern (repeatable)")
+	c.Flags().StringSliceVar(exclude, "exclude", nil, "Exclude tables matching glob pattern (repeatable)")
+	c.Flags().DurationVar(timeout, "timeout", 60*time.Second, "Connection and schema read timeout")
+}
+
+func resolveERDTargetModel(model string) (string, error) {
+	targetModel := model
+	if targetModel == "" {
+		targetModel = erd.DefaultModel
+	}
+	if err := erd.ValidModelName(targetModel); err != nil {
+		return "", err
+	}
+	return targetModel, nil
+}
+
+func saveAndValidateERD(cmd *cobra.Command, dir, dirFlag, targetModel, mainFile, dbml string, prevModel *erd.Model) error {
+	if err := erd.Save(mainFile, dbml); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Saved %s\n", erd.DisplayPath(mainFile)); err != nil {
+		return err
+	}
+	if prevModel != nil && len(prevModel.Errors) == 0 {
+		nextModel := erd.ParseDBML(targetModel, mainFile, dbml)
+		if len(nextModel.Errors) == 0 {
+			diff := erd.DiffModels(prevModel, nextModel)
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Changes: %s\n", diff.Summary()); err != nil {
+				return err
+			}
+		}
+	}
+	var m *erd.Model
+	var err error
+	if dirFlag == "" {
+		if allDirs, scanErr := erd.FindAllDirs("."); scanErr == nil && len(allDirs) > 1 {
+			m, err = erd.ValidateModelRefs(dir, targetModel, allDirs)
+		} else {
+			m, err = erd.Load(dir, targetModel)
+		}
+	} else {
+		m, err = erd.Load(dir, targetModel)
+	}
+	if err != nil {
+		return err
+	}
+	return writeIssues(cmd.ErrOrStderr(), m)
+}
+
+func pullSchemaForCommand(cmd *cobra.Command, store func() (Store, error), name, db, schema string, include, exclude []string, timeout time.Duration) (string, error) {
+	st, err := store()
+	if err != nil {
+		return "", err
+	}
+	p, err := st.Get(name)
+	if err != nil {
+		return "", err
+	}
+	if cmd.Flags().Changed("schema") && p.Driver != "postgres" {
+		return "", fmt.Errorf("--schema is only supported for PostgreSQL")
+	}
+	stopSpinner := startSpinner(cmd.ErrOrStderr(), "Reading schema")
+	dbml, err := pullDBMLWithOptions(cmd.Context(), p, db, cmd.Flags().Changed("db"), schema, include, exclude, timeout)
+	stopSpinner()
+	return dbml, err
+}
+
+func erdInitCommand(store func() (Store, error), names cobra.CompletionFunc, model, dirFlag *string) *cobra.Command {
+	var db, schema string
+	var include, exclude []string
+	var timeout time.Duration
+	c := &cobra.Command{Use: "init NAME", Short: "Initialize .dbh/<model>.dbml from the database schema", Args: cobra.ExactArgs(1), ValidArgsFunction: names}
+	addERDPullFlags(c, &db, &schema, &include, &exclude, &timeout)
+	c.RunE = func(cmd *cobra.Command, args []string) error {
+		targetModel, err := resolveERDTargetModel(*model)
+		if err != nil {
+			return err
+		}
+		if timeout <= 0 {
+			return fmt.Errorf("timeout must be positive")
+		}
+		var dir string
+		if *dirFlag != "" {
+			dir, err = resolveSaveERDDir(*dirFlag)
+			if err != nil {
+				return err
+			}
+		} else {
+			var create string
+			dir, create, err = erd.FindDir(".")
+			if err != nil {
+				return err
+			}
+			if dir == "" {
+				dir = create
+			}
+		}
+		mainFile, _ := erd.ModelFiles(dir, targetModel)
+		if _, err := os.Stat(mainFile); err == nil {
+			return fmt.Errorf("ERD model %q already exists at %s; use dbh erd resync %s to update", targetModel, erd.DisplayPath(mainFile), args[0])
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		dbml, err := pullSchemaForCommand(cmd, store, args[0], db, schema, include, exclude, timeout)
+		if err != nil {
+			return err
+		}
+		return saveAndValidateERD(cmd, dir, *dirFlag, targetModel, mainFile, dbml, nil)
+	}
+	return c
+}
+
+func erdResyncCommand(store func() (Store, error), names cobra.CompletionFunc, model, dirFlag *string) *cobra.Command {
+	var db, schema string
+	var include, exclude []string
+	var timeout time.Duration
+	c := &cobra.Command{Use: "resync NAME", Short: "Refresh an existing .dbh/<model>.dbml from the database schema", Args: cobra.ExactArgs(1), ValidArgsFunction: names}
+	addERDPullFlags(c, &db, &schema, &include, &exclude, &timeout)
+	c.RunE = func(cmd *cobra.Command, args []string) error {
+		targetModel, err := resolveERDTargetModel(*model)
+		if err != nil {
+			return err
+		}
+		if timeout <= 0 {
+			return fmt.Errorf("timeout must be positive")
+		}
+		var dir string
+		if *dirFlag != "" {
+			dir, err = resolveReadERDDir(*dirFlag)
+		} else {
+			dir, _, err = erd.FindDir(".")
+			if err == nil && dir == "" {
+				err = fmt.Errorf("no .dbh directory found; run dbh erd init %s", args[0])
+			}
+		}
+		if err != nil {
+			return err
+		}
+		mainFile, _ := erd.ModelFiles(dir, targetModel)
+		prevBytes, err := os.ReadFile(mainFile)
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("ERD model %q does not exist at %s; run dbh erd init %s", targetModel, erd.DisplayPath(mainFile), args[0])
+		}
+		if err != nil {
+			return err
+		}
+		prevModel := erd.ParseDBML(targetModel, mainFile, string(prevBytes))
+		dbml, err := pullSchemaForCommand(cmd, store, args[0], db, schema, include, exclude, timeout)
+		if err != nil {
+			return err
+		}
+		return saveAndValidateERD(cmd, dir, *dirFlag, targetModel, mainFile, dbml, prevModel)
+	}
+	return c
+}
+
 func erdPullCommand(store func() (Store, error), names cobra.CompletionFunc, model, dirFlag *string) *cobra.Command {
 	var db, schema, output string
 	var include, exclude []string
 	var save bool
 	var timeout time.Duration
 	c := &cobra.Command{Use: "pull NAME", Short: "Generate DBML from the database schema", Args: cobra.ExactArgs(1), ValidArgsFunction: names}
-	c.Flags().StringVar(&db, "db", "", "Server database to read")
-	c.Flags().StringVar(&schema, "schema", "", "PostgreSQL schema(s) to read, comma-separated (default public)")
-	c.Flags().StringSliceVar(&include, "include", nil, "Only include tables matching glob pattern (repeatable)")
-	c.Flags().StringSliceVar(&exclude, "exclude", nil, "Exclude tables matching glob pattern (repeatable)")
+	addERDPullFlags(c, &db, &schema, &include, &exclude, &timeout)
 	c.Flags().BoolVar(&save, "save", false, "Write .dbh/<model>.dbml instead of standard output")
 	c.Flags().StringVarP(&output, "output", "o", "", "Write the DBML to this file")
-	c.Flags().DurationVar(&timeout, "timeout", 60*time.Second, "Connection and schema read timeout")
 	c.MarkFlagsMutuallyExclusive("save", "output")
 	c.RunE = func(cmd *cobra.Command, args []string) error {
-		targetModel := *model
-		if targetModel == "" {
-			targetModel = erd.DefaultModel
-		}
-		if err := erd.ValidModelName(targetModel); err != nil {
+		targetModel, err := resolveERDTargetModel(*model)
+		if err != nil {
 			return err
 		}
 		if timeout <= 0 {
 			return fmt.Errorf("timeout must be positive")
 		}
-		st, err := store()
-		if err != nil {
-			return err
-		}
-		p, err := st.Get(args[0])
-		if err != nil {
-			return err
-		}
-		if cmd.Flags().Changed("schema") && p.Driver != "postgres" {
-			return fmt.Errorf("--schema is only supported for PostgreSQL")
-		}
-		stopSpinner := startSpinner(cmd.ErrOrStderr(), "Reading schema")
-		dbml, err := pullDBMLWithOptions(cmd.Context(), p, db, cmd.Flags().Changed("db"), schema, include, exclude, timeout)
-		stopSpinner()
+		dbml, err := pullSchemaForCommand(cmd, store, args[0], db, schema, include, exclude, timeout)
 		if err != nil {
 			return err
 		}
@@ -451,35 +592,7 @@ func erdPullCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 		if prevBytes, err := os.ReadFile(mainFile); err == nil {
 			prevModel = erd.ParseDBML(targetModel, mainFile, string(prevBytes))
 		}
-		if err := erd.Save(mainFile, dbml); err != nil {
-			return err
-		}
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Saved %s\n", erd.DisplayPath(mainFile)); err != nil {
-			return err
-		}
-		if prevModel != nil && len(prevModel.Errors) == 0 {
-			nextModel := erd.ParseDBML(targetModel, mainFile, dbml)
-			if len(nextModel.Errors) == 0 {
-				diff := erd.DiffModels(prevModel, nextModel)
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Changes: %s\n", diff.Summary()); err != nil {
-					return err
-				}
-			}
-		}
-		var m *erd.Model
-		if *dirFlag == "" {
-			if allDirs, scanErr := erd.FindAllDirs("."); scanErr == nil && len(allDirs) > 1 {
-				m, err = erd.ValidateModelRefs(dir, targetModel, allDirs)
-			} else {
-				m, err = erd.Load(dir, targetModel)
-			}
-		} else {
-			m, err = erd.Load(dir, targetModel)
-		}
-		if err != nil {
-			return err
-		}
-		return writeIssues(cmd.ErrOrStderr(), m)
+		return saveAndValidateERD(cmd, dir, *dirFlag, targetModel, mainFile, dbml, prevModel)
 	}
 	return c
 }
