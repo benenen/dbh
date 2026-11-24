@@ -1011,3 +1011,62 @@ Table orders {
 		t.Fatalf("default = %v", got.Values)
 	}
 }
+
+func TestRenderColumnNotesInDotMermaidHTML(t *testing.T) {
+	m := ParseDBML("app", "app.dbml", `Table items {
+  id int [pk, note: 'primary "id" & <key>']
+  code varchar(32) [unique, note: '''line1
+line2''']
+  plain text
+}
+`)
+	if len(m.Errors) != 0 {
+		t.Fatal(m.Errors)
+	}
+
+	var dot strings.Builder
+	if err := RenderDot(&dot, m, nil); err != nil {
+		t.Fatal(err)
+	}
+	dotStr := dot.String()
+	for _, want := range []string{
+		`id int [pk] <font color="#666666"># primary &quot;id&quot; &amp; &lt;key&gt;</font>`,
+		`code varchar(32) [unique] <font color="#666666"># line1 line2</font>`,
+		`<tr><td port="c2" align="left">plain text</td></tr>`,
+	} {
+		if !strings.Contains(dotStr, want) {
+			t.Fatalf("RenderDot missing %q:\n%s", want, dotStr)
+		}
+	}
+
+	var mermaid strings.Builder
+	if err := RenderMermaid(&mermaid, m, nil); err != nil {
+		t.Fatal(err)
+	}
+	mermaidStr := mermaid.String()
+	for _, want := range []string{
+		`int id PK "primary 'id' & <key>"`,
+		`varchar(32) code UK "line1 line2"`,
+		"    text plain\n",
+	} {
+		if !strings.Contains(mermaidStr, want) {
+			t.Fatalf("RenderMermaid missing %q:\n%s", want, mermaidStr)
+		}
+	}
+
+	var htmlOut strings.Builder
+	if err := RenderHTML(&htmlOut, m, nil); err != nil {
+		t.Fatal(err)
+	}
+	htmlStr := htmlOut.String()
+	for _, want := range []string{
+		`"note":"line1 line2"`,
+		`const NOTE_H = 16;`,
+		`colLayout.set(c.name`,
+		`const noteFont = '10.5px -apple-system, sans-serif';`,
+	} {
+		if !strings.Contains(htmlStr, want) {
+			t.Fatalf("RenderHTML missing %q", want)
+		}
+	}
+}

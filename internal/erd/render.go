@@ -293,7 +293,11 @@ func RenderDot(out io.Writer, m *Model, include map[string]bool) error {
 			if flags := columnFlags(c); flags != "" {
 				text += " [" + flags + "]"
 			}
-			fmt.Fprintf(&b, "    <tr><td port=\"c%d\" align=\"left\">%s</td></tr>\n", i, htmlEscape(text))
+			cell := htmlEscape(text)
+			if note := columnNote(c); note != "" {
+				cell += ` <font color="#666666"># ` + htmlEscape(note) + `</font>`
+			}
+			fmt.Fprintf(&b, "    <tr><td port=\"c%d\" align=\"left\">%s</td></tr>\n", i, cell)
 		}
 		portMap[name] = cols
 		b.WriteString("  </table>>];\n")
@@ -369,6 +373,9 @@ func RenderMermaid(out io.Writer, m *Model, include map[string]bool) error {
 			}
 			if len(keys) > 0 {
 				b.WriteString(" " + strings.Join(keys, ","))
+			}
+			if note := columnNote(c); note != "" {
+				b.WriteString(` "` + strings.ReplaceAll(note, `"`, "'") + `"`)
 			}
 			b.WriteString("\n")
 		}
