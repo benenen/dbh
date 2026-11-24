@@ -262,6 +262,14 @@ func TestAcceptSQLInput(t *testing.T) {
 		{"GET k", "redis", true},
 		{"SET k \"a\nb\"", "redis", true},
 		{"SET k \"unfinished", "redis", false},
+		{"GET /_cat/indices", "elasticsearch", true},
+		{"POST /users/_search {\"query\":{\"match_all\":{}}}", "elasticsearch", true},
+		{"POST /users/_search {\"query\":", "elasticsearch", false},
+		{"POST /users/_search {\"query\":{};", "elasticsearch", true},
+		{"SELECT [a;b] FROM t;", "mssql", true},
+		{"SELECT 1;", "oracle", true},
+		{"SELECT 1;", "trino", true},
+		{"SELECT 1;", "dm", true},
 	} {
 		t.Run(tt.input, func(t *testing.T) {
 			if got := acceptSQLInput(tt.input, tt.driver); got != tt.accept {
@@ -409,6 +417,7 @@ func TestCLIProxies(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"n", "lite", "--driver", "sqlite", "--dsn", ":memory:", "--proxy", "socks5://p:1080"},
+		{"n", "dm1", "--driver", "dm", "--dsn", "dm://SYSDBA:SYSDBA@localhost:5236", "--proxy", "socks5://p:1080"},
 		{"n", "bad", "--driver", "mysql", "--dsn", "u@tcp(db)/app", "--proxy", "http://p:8080"},
 		{"e", "pg", "--proxy", "socks5://p:1080", "--no-proxy"},
 	} {
@@ -444,7 +453,8 @@ func TestShellCompletion(t *testing.T) {
 	for args, want := range map[string]string{
 		"exec zgy-mysql ":          ":4",
 		"new x ":                   ":4",
-		"new x --driver ":          "clickhouse",
+		"new x --driver ":          "elasticsearch",
+		"new y --driver ":          "trino",
 		"exec local --format ":     "csv",
 		"exec local --file ":       ":0",
 		"connect local -f ":        ":0",

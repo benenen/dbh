@@ -261,7 +261,13 @@ func diagnosticStage(err error) string {
 
 func authenticationError(err error) bool {
 	text := strings.ToLower(err.Error())
-	for _, marker := range []string{"authentication failed", "authentication failure", "failed to authenticate", "password authentication", "access denied for user", "wrongpass", "noauth", "unable to authenticate", "authenticationfailed", "no supported methods remain", "no ssh credentials"} {
+	for _, marker := range []string{
+		"authentication failed", "authentication failure", "failed to authenticate",
+		"password authentication", "access denied for user", "wrongpass", "noauth",
+		"unable to authenticate", "authenticationfailed", "no supported methods remain",
+		"no ssh credentials", "login failed", "ora-01017", "invalid username or password",
+		"unauthorized", "security_exception", "401",
+	} {
 		if strings.Contains(text, marker) {
 			return true
 		}

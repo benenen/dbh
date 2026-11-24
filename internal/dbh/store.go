@@ -139,8 +139,8 @@ func validate(p Profile) error {
 	if p.DSN == "" {
 		return errors.New("DSN cannot be empty")
 	}
-	if len(p.Proxies) > 0 && p.Driver == "sqlite" {
-		return errors.New("proxies are not supported for SQLite")
+	if len(p.Proxies) > 0 && (p.Driver == "sqlite" || p.Driver == "dm") {
+		return fmt.Errorf("proxies are not supported for %s", p.Driver)
 	}
 	for _, hop := range p.Proxies {
 		if _, err := proxy.Parse(hop); err != nil {

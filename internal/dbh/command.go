@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/benenen/dbh/internal/database"
 	"github.com/benenen/dbh/internal/database/proxy"
 	"github.com/benenen/dbh/internal/database/registry"
 	"github.com/spf13/cobra"
@@ -124,7 +125,7 @@ func NewCommand() *cobra.Command {
 	ls.Flags().StringVar(&listFormat, "format", "", "Structured output: table, csv, json or tsv")
 	ls.Flags().StringVar(&listDriver, "driver", "", "Filter connections by driver")
 	_ = ls.RegisterFlagCompletionFunc("format", fixed("table", "csv", "json", "tsv"))
-	_ = ls.RegisterFlagCompletionFunc("driver", fixed("sqlite", "postgres", "mysql", "mongo", "clickhouse", "redis"))
+	_ = ls.RegisterFlagCompletionFunc("driver", fixed(registry.Drivers()...))
 	root.AddCommand(ls)
 	for _, create := range []bool{true, false} {
 		var driver, dsn, dsnEnv string
@@ -140,13 +141,13 @@ func NewCommand() *cobra.Command {
 		if !create {
 			c.ValidArgsFunction = names
 		}
-		c.Flags().StringVar(&driver, "driver", "", "sqlite, postgres, mysql, mongo, clickhouse or redis")
+		c.Flags().StringVar(&driver, "driver", "", strings.Join(registry.Drivers(), ", "))
 		c.Flags().StringVar(&dsn, "dsn", "", "Driver DSN (stored locally)")
 		c.Flags().StringVar(&dsnEnv, "dsn-env", "", "Read DSN from this environment variable")
 		c.Flags().BoolVar(&prompt, "prompt-dsn", false, "Read DSN with terminal echo disabled")
 		c.Flags().StringArrayVar(&proxies, "proxy", nil, "Proxy hop socks5://[user:pass@]host:port or ssh://[user[:pass]@]host[:port]; repeat in dial order")
 		c.MarkFlagsMutuallyExclusive("dsn", "dsn-env", "prompt-dsn")
-		_ = c.RegisterFlagCompletionFunc("driver", fixed("sqlite", "postgres", "mysql", "mongo", "clickhouse", "redis"))
+		_ = c.RegisterFlagCompletionFunc("driver", fixed(registry.Drivers()...))
 		// SQLite DSNs are file paths.
 		_ = c.RegisterFlagCompletionFunc("dsn", files)
 		_ = c.RegisterFlagCompletionFunc("dsn-env", func(_ *cobra.Command, _ []string, prefix string) ([]cobra.Completion, cobra.ShellCompDirective) {
@@ -323,8 +324,15 @@ func NewCommand() *cobra.Command {
 						return err
 					}
 				}
-				if len(params) > 0 && (len(statements) != 1 || p.Driver == "mongo" || p.Driver == "redis") {
-					return fmt.Errorf("--param requires exactly one SQL statement")
+				if len(params) > 0 {
+					backend, lookupErr := registry.Lookup(p.Driver)
+					syntax := database.Syntax{}
+					if lookupErr == nil {
+						syntax = backend.Syntax()
+					}
+					if len(statements) != 1 || syntax.JSONCommands || syntax.LineCommands || syntax.HTTPCommands {
+						return fmt.Errorf("--param requires exactly one SQL statement")
+					}
 				}
 				bound := make([]any, len(params))
 				for i, value := range params {

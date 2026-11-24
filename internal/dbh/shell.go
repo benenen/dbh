@@ -64,7 +64,7 @@ func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 		start--
 	}
 	prefix := string(line[start:pos])
-	if !c.syntax.JSONCommands && !c.syntax.LineCommands && !strings.HasPrefix(prefix, `\`) {
+	if !c.syntax.JSONCommands && !c.syntax.LineCommands && !c.syntax.HTTPCommands && !strings.HasPrefix(prefix, `\`) {
 		before := contextTokens(string(line[:start]), c.syntax)
 		if tableContext(before) {
 			matches := matching(c.tables, prefix)
@@ -165,7 +165,7 @@ func completionAllowed(input, driver string) bool {
 	if err != nil {
 		return false
 	}
-	if backend.Syntax().JSONCommands {
+	if backend.Syntax().JSONCommands || backend.Syntax().HTTPCommands {
 		return true
 	}
 	if backend.Syntax().LineCommands {
@@ -273,8 +273,13 @@ func acceptSQLInput(line, driver string) bool {
 	if trimmed == "" || (strings.HasPrefix(trimmed, `\`) && !strings.Contains(trimmed, "\n")) {
 		return true
 	}
-	if backend, err := registry.Lookup(driver); err == nil && backend.Syntax().JSONCommands && json.Valid([]byte(trimmed)) {
-		return true
+	if backend, err := registry.Lookup(driver); err == nil {
+		if backend.Syntax().JSONCommands && json.Valid([]byte(trimmed)) {
+			return true
+		}
+		if backend.Syntax().HTTPCommands && acceptHTTPInput(trimmed) {
+			return true
+		}
 	}
 	statements, rest, err := splitSQL(line, driver)
 	if backend, lookupErr := registry.Lookup(driver); lookupErr == nil && backend.Syntax().LineCommands {
@@ -282,6 +287,29 @@ func acceptSQLInput(line, driver string) bool {
 		return err == nil
 	}
 	return err == nil && len(statements) > 0 && stripComments(rest, driver) == ""
+}
+
+func acceptHTTPInput(trimmed string) bool {
+	if strings.HasSuffix(trimmed, ";") {
+		return true
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) < 2 {
+		return false
+	}
+	switch strings.ToUpper(fields[0]) {
+	case "GET", "POST", "PUT", "DELETE", "HEAD", "PATCH":
+	default:
+		return false
+	}
+	rest := strings.TrimSpace(trimmed[len(fields[0]):])
+	// Find end of path token.
+	idx := strings.IndexAny(rest, " \t\r\n")
+	if idx < 0 {
+		return true
+	}
+	body := strings.TrimSpace(rest[idx:])
+	return body == "" || json.Valid([]byte(body))
 }
 
 func shell(ctx context.Context, s *Session, p Profile, store Store, format string, noHistory bool, out, errOut io.Writer) error {
@@ -478,6 +506,8 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 					help = "Redis accepts redis-cli style commands, one per line. Press Enter to execute.\nQuote arguments that contain spaces. \\tables lists up to 1000 keys.\n" + shellHelp[strings.Index(shellHelp, `\help`):]
 				} else if s.backend.Syntax().JSONCommands {
 					help = "MongoDB accepts native JSON command documents. Press Enter when complete.\nUse ; between commands in batch input.\n" + shellHelp[strings.Index(shellHelp, `\help`):]
+				} else if s.backend.Syntax().HTTPCommands {
+					help = "Elasticsearch accepts HTTP REST commands (e.g. GET /_cat/indices, POST /idx/_search {...}).\nPress Enter when complete; use ; between commands in batch input.\n" + shellHelp[strings.Index(shellHelp, `\help`):]
 				}
 				_, _ = fmt.Fprint(out, help)
 			case `\clear`:
@@ -565,7 +595,7 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 			continue
 		}
 		statements, rest, _ := splitSQL(line, s.Driver)
-		if syntax := s.backend.Syntax(); (syntax.JSONCommands || syntax.LineCommands) && strings.TrimSpace(rest) != "" {
+		if syntax := s.backend.Syntax(); (syntax.JSONCommands || syntax.LineCommands || syntax.HTTPCommands) && strings.TrimSpace(rest) != "" {
 			statements = append(statements, rest)
 		}
 		for _, q := range statements {
@@ -583,7 +613,7 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 			s.BeforeOutput = nil
 			if execErr != nil {
 				label := "SQL error:"
-				if syntax := s.backend.Syntax(); syntax.JSONCommands || syntax.LineCommands {
+				if syntax := s.backend.Syntax(); syntax.JSONCommands || syntax.LineCommands || syntax.HTTPCommands {
 					label = "Command error:"
 				}
 				_, _ = fmt.Fprintln(errOut, label, execErr)

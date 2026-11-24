@@ -56,6 +56,7 @@ type Syntax struct {
 	BracketIdentifiers      bool
 	DollarQuotes            bool
 	JSONCommands            bool
+	HTTPCommands            bool
 	LineCommands            bool // a newline outside quotes ends each command, not a semicolon
 	FoldUnquotedIdentifiers bool
 	CompletionWords         []string
