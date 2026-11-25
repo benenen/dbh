@@ -64,7 +64,7 @@ func NewCommand() *cobra.Command {
 	fixed := func(values ...string) cobra.CompletionFunc {
 		return cobra.FixedCompletions(values, cobra.ShellCompDirectiveNoFileComp)
 	}
-	var listFormat, listDriver string
+	var listFormat, listDriver, listTag string
 	ls := &cobra.Command{Use: "list", Aliases: []string{"ls"}, Short: "List saved connections (credentials are hidden)", Args: cobra.NoArgs, ValidArgsFunction: cobra.NoFileCompletions, RunE: func(cmd *cobra.Command, args []string) error {
 		if listFormat != "" && !validFormat(listFormat) {
 			return fmt.Errorf("format must be table, csv, json or tsv")
@@ -85,6 +85,9 @@ func NewCommand() *cobra.Command {
 		var filtered []Profile
 		for _, p := range profiles {
 			if listDriver != "" && !strings.EqualFold(p.Driver, listDriver) {
+				continue
+			}
+			if listTag != "" && !hasTag(p, listTag) {
 				continue
 			}
 			filtered = append(filtered, p)
@@ -124,13 +127,14 @@ func NewCommand() *cobra.Command {
 	}}
 	ls.Flags().StringVar(&listFormat, "format", "", "Structured output: table, csv, json or tsv")
 	ls.Flags().StringVar(&listDriver, "driver", "", "Filter connections by driver")
+	ls.Flags().StringVar(&listTag, "tag", "", "Filter connections by tag")
 	_ = ls.RegisterFlagCompletionFunc("format", fixed("table", "csv", "json", "tsv"))
 	_ = ls.RegisterFlagCompletionFunc("driver", fixed(registry.Drivers()...))
 	root.AddCommand(ls)
 	for _, create := range []bool{true, false} {
-		var driver, dsn, dsnEnv string
-		var proxies []string
-		var prompt, noProxy bool
+		var driver, dsn, dsnEnv, dsnCmd, env string
+		var proxies, tags []string
+		var prompt, noProxy, readOnly, noReadOnly, noTags bool
 		verb := "new"
 		short := "Create a connection"
 		if !create {
@@ -142,11 +146,15 @@ func NewCommand() *cobra.Command {
 			c.ValidArgsFunction = names
 		}
 		c.Flags().StringVar(&driver, "driver", "", strings.Join(registry.Drivers(), ", "))
-		c.Flags().StringVar(&dsn, "dsn", "", "Driver DSN (stored locally)")
+		c.Flags().StringVar(&dsn, "dsn", "", "Driver DSN (stored encrypted locally)")
 		c.Flags().StringVar(&dsnEnv, "dsn-env", "", "Read DSN from this environment variable")
+		c.Flags().StringVar(&dsnCmd, "dsn-cmd", "", "Shell command executed at connect time to obtain DSN")
 		c.Flags().BoolVar(&prompt, "prompt-dsn", false, "Read DSN with terminal echo disabled")
 		c.Flags().StringArrayVar(&proxies, "proxy", nil, "Proxy hop socks5://[user:pass@]host:port or ssh://[user[:pass]@]host[:port]; repeat in dial order")
-		c.MarkFlagsMutuallyExclusive("dsn", "dsn-env", "prompt-dsn")
+		c.Flags().BoolVar(&readOnly, "read-only", false, "Block write statements by default")
+		c.Flags().StringVar(&env, "env", "", "Environment label (e.g. prod, staging, dev)")
+		c.Flags().StringArrayVar(&tags, "tag", nil, "Connection tag; repeat to set multiple")
+		c.MarkFlagsMutuallyExclusive("dsn", "dsn-env", "dsn-cmd", "prompt-dsn")
 		_ = c.RegisterFlagCompletionFunc("driver", fixed(registry.Drivers()...))
 		// SQLite DSNs are file paths.
 		_ = c.RegisterFlagCompletionFunc("dsn", files)
@@ -162,7 +170,11 @@ func NewCommand() *cobra.Command {
 		_ = c.RegisterFlagCompletionFunc("proxy", cobra.NoFileCompletions)
 		if !create {
 			c.Flags().BoolVar(&noProxy, "no-proxy", false, "Remove all proxies")
+			c.Flags().BoolVar(&noReadOnly, "no-read-only", false, "Disable read-only protection")
+			c.Flags().BoolVar(&noTags, "no-tags", false, "Remove all tags")
 			c.MarkFlagsMutuallyExclusive("proxy", "no-proxy")
+			c.MarkFlagsMutuallyExclusive("read-only", "no-read-only")
+			c.MarkFlagsMutuallyExclusive("tag", "no-tags")
 		}
 		c.RunE = func(cmd *cobra.Command, args []string) error {
 			s, err := store()
@@ -181,6 +193,7 @@ func NewCommand() *cobra.Command {
 			}
 			if cmd.Flags().Changed("dsn") {
 				p.DSN = dsn
+				p.DSNCmd = ""
 			}
 			if cmd.Flags().Changed("dsn-env") {
 				value, ok := os.LookupEnv(dsnEnv)
@@ -188,12 +201,32 @@ func NewCommand() *cobra.Command {
 					return fmt.Errorf("environment variable %q is not set", dsnEnv)
 				}
 				p.DSN = value
+				p.DSNCmd = ""
+			}
+			if cmd.Flags().Changed("dsn-cmd") {
+				p.DSNCmd = dsnCmd
+				p.DSN = ""
 			}
 			if cmd.Flags().Changed("proxy") {
 				p.Proxies = proxies
 			}
 			if noProxy {
 				p.Proxies = nil
+			}
+			if cmd.Flags().Changed("read-only") {
+				p.ReadOnly = readOnly
+			}
+			if noReadOnly {
+				p.ReadOnly = false
+			}
+			if cmd.Flags().Changed("env") {
+				p.Env = strings.TrimSpace(env)
+			}
+			if cmd.Flags().Changed("tag") {
+				p.Tags = tags
+			}
+			if noTags {
+				p.Tags = nil
 			}
 			if prompt {
 				if !term.IsTerminal(int(os.Stdin.Fd())) {
@@ -206,9 +239,10 @@ func NewCommand() *cobra.Command {
 					return err
 				}
 				p.DSN = string(value)
+				p.DSNCmd = ""
 			}
-			if !create && !cmd.Flags().Changed("driver") && !cmd.Flags().Changed("dsn") && !cmd.Flags().Changed("dsn-env") && !prompt && !cmd.Flags().Changed("proxy") && !noProxy {
-				return fmt.Errorf("provide --driver, --dsn, --dsn-env, --prompt-dsn, --proxy or --no-proxy")
+			if !create && !cmd.Flags().Changed("driver") && !cmd.Flags().Changed("dsn") && !cmd.Flags().Changed("dsn-env") && !cmd.Flags().Changed("dsn-cmd") && !prompt && !cmd.Flags().Changed("proxy") && !noProxy && !cmd.Flags().Changed("read-only") && !noReadOnly && !cmd.Flags().Changed("env") && !cmd.Flags().Changed("tag") && !noTags {
+				return fmt.Errorf("provide --driver, --dsn, --dsn-env, --dsn-cmd, --prompt-dsn, --proxy, --no-proxy, --read-only, --env or --tag")
 			}
 			if err = s.Put(p, create); err != nil {
 				return err
@@ -235,8 +269,8 @@ func NewCommand() *cobra.Command {
 	for _, executeOnly := range []bool{false, true} {
 		var query, file, format, databaseName, outputPath string
 		var timeout time.Duration
-		var noHistory, stats bool
-		var maxRows, batchSize int
+		var noHistory, stats, allowWrite, expanded bool
+		var maxRows, maxCellWidth, batchSize int
 		var params []string
 		connect := &cobra.Command{Use: "connect NAME", Aliases: []string{"c"}, Short: "Open a database shell, or execute queries from --sql, --file or stdin", Args: cobra.ExactArgs(1), ValidArgsFunction: names, RunE: func(cmd *cobra.Command, args []string) error {
 			if executeOnly && len(args) == 2 {
@@ -251,8 +285,8 @@ func NewCommand() *cobra.Command {
 			if !validFormat(format) {
 				return fmt.Errorf("format must be table, csv, json or tsv")
 			}
-			if maxRows < 0 || batchSize <= 0 {
-				return fmt.Errorf("max-rows must be nonnegative and table-batch-size positive")
+			if maxRows < 0 || maxCellWidth < 0 || batchSize <= 0 {
+				return fmt.Errorf("max-rows and max-cell-width must be nonnegative and table-batch-size positive")
 			}
 			if timeout <= 0 {
 				return fmt.Errorf("timeout must be positive")
@@ -305,6 +339,10 @@ func NewCommand() *cobra.Command {
 			}
 			defer session.Close()
 			session.MaxRows, session.BatchSize, session.Notice = maxRows, batchSize, cmd.ErrOrStderr()
+			session.MaxCellWidth = maxCellWidth
+			session.MaxCellWidthSet = cmd.Flags().Changed("max-cell-width")
+			session.AllowWrite = allowWrite
+			session.Expanded = expanded
 			session.Stats = stats
 			if cmd.Flags().Changed("db") {
 				if err := session.UseDatabase(cmd.Context(), databaseName); err != nil {
@@ -407,9 +445,12 @@ func NewCommand() *cobra.Command {
 		connect.Flags().StringVar(&format, "format", "table", "table, csv, json (newline-delimited objects) or tsv (compact, for agents)")
 		connect.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Connection/query timeout")
 		connect.Flags().IntVar(&maxRows, "max-rows", 0, "Maximum result rows per statement (0 for unlimited)")
+		connect.Flags().IntVar(&maxCellWidth, "max-cell-width", 0, "Maximum cell display width (0 for unlimited; table defaults to 200)")
 		connect.Flags().IntVar(&batchSize, "table-batch-size", 500, "Rows per rendered table batch")
 		connect.Flags().BoolVar(&stats, "stats", false, "Write query timing and row counts to stderr")
 		connect.Flags().BoolVar(&noHistory, "no-history", false, "Disable persisted query history")
+		connect.Flags().BoolVar(&allowWrite, "allow-write", false, "Allow write or destructive statements on read-only/prod connections")
+		connect.Flags().BoolVarP(&expanded, "expanded", "x", false, "Display table rows vertically")
 		connect.MarkFlagsMutuallyExclusive("sql", "file")
 		_ = connect.RegisterFlagCompletionFunc("file", files)
 		_ = connect.RegisterFlagCompletionFunc("format", fixed("table", "csv", "json", "tsv"))
@@ -484,6 +525,9 @@ func NewCommand() *cobra.Command {
 	addMetadataCommands(root, store, names)
 	addCheckCommand(root, store, names)
 	addERDCommands(root, store, names)
+	addTransferCommands(root, store, names)
+	addExplainCommand(root, store, names)
+	addSnippetCommand(root, store, names)
 	return root
 }
 
@@ -520,6 +564,10 @@ func readHistory(s Store, name string) ([]string, error) {
 func cleanInput(s string) string { return strings.TrimSpace(s) }
 
 func writeAtomicFile(path string, data []byte) error {
+	return writeAtomicFileMode(path, data, 0o644)
+}
+
+func writeAtomicFileMode(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -533,7 +581,7 @@ func writeAtomicFile(path string, data []byte) error {
 		_ = f.Close()
 		return err
 	}
-	if err := f.Chmod(0o644); err != nil {
+	if err := f.Chmod(mode); err != nil {
 		_ = f.Close()
 		return err
 	}

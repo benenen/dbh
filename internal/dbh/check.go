@@ -25,7 +25,7 @@ type checkStageResult struct {
 
 func addCheckCommand(root *cobra.Command, store func() (Store, error), names cobra.CompletionFunc) {
 	var timeout time.Duration
-	var db, format string
+	var db, format, tag string
 	var checkAll bool
 	cmd := &cobra.Command{
 		Use:               "check [NAME]",
@@ -36,6 +36,7 @@ func addCheckCommand(root *cobra.Command, store func() (Store, error), names cob
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Total diagnostic timeout per connection")
 	cmd.Flags().StringVar(&db, "db", "", "Server database to switch to and verify")
 	cmd.Flags().BoolVar(&checkAll, "all", false, "Check all saved connections")
+	cmd.Flags().StringVar(&tag, "tag", "", "Filter --all connections by tag")
 	cmd.Flags().StringVar(&format, "format", "", "Structured output: table, csv, json or tsv")
 	_ = cmd.RegisterFlagCompletionFunc("format", cobra.FixedCompletions([]string{"table", "csv", "json", "tsv"}, cobra.ShellCompDirectiveNoFileComp))
 	_ = cmd.RegisterFlagCompletionFunc("db", cobra.NoFileCompletions)
@@ -67,6 +68,15 @@ func addCheckCommand(root *cobra.Command, store func() (Store, error), names cob
 			profiles, err := st.List()
 			if err != nil {
 				return err
+			}
+			if tag != "" {
+				var filtered []Profile
+				for _, p := range profiles {
+					if hasTag(p, tag) {
+						filtered = append(filtered, p)
+					}
+				}
+				profiles = filtered
 			}
 			return checkAllConnections(cmd, profiles, timeout, format)
 		}
@@ -190,6 +200,14 @@ func runCheckStages(parent context.Context, p Profile, targetDB string, timeout 
 	record("Configuration", time.Since(started), err)
 	if err != nil {
 		return results, fmt.Errorf("connection check failed: invalid configuration")
+	}
+	if p.DSN == "" && p.DSNCmd != "" {
+		started = time.Now()
+		p, err = resolveRuntimeProfile(ctx, p)
+		record("Credential command", time.Since(started), err)
+		if err != nil {
+			return results, fmt.Errorf("connection check failed at credential command: %s", diagnosticReason(err))
+		}
 	}
 	backend, err := registry.Lookup(p.Driver)
 	if err != nil {

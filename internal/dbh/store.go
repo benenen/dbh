@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/benenen/dbh/internal/database/proxy"
 	"github.com/benenen/dbh/internal/database/registry"
@@ -17,9 +18,13 @@ import (
 type Profile struct {
 	Name   string `json:"name"`
 	Driver string `json:"driver"`
-	DSN    string `json:"dsn"`
+	DSN    string `json:"dsn,omitempty"`
+	DSNCmd string `json:"dsn_cmd,omitempty"`
 	// Proxies are dialed in order, starting from the local machine.
-	Proxies []string `json:"proxies,omitempty"`
+	Proxies  []string `json:"proxies,omitempty"`
+	ReadOnly bool     `json:"read_only,omitempty"`
+	Env      string   `json:"env,omitempty"`
+	Tags     []string `json:"tags,omitempty"`
 }
 
 type Store struct {
@@ -54,7 +59,11 @@ func (s Store) load() (map[string]Profile, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = json.Unmarshal(data, &profiles); err != nil {
+	plain, _, err := decryptConnections(s.Dir, data)
+	if err != nil {
+		return nil, err
+	}
+	if err = json.Unmarshal(plain, &profiles); err != nil {
 		return nil, fmt.Errorf("invalid connections.json: %w", err)
 	}
 	if profiles == nil {
@@ -108,12 +117,20 @@ func (s Store) update(fn func(map[string]Profile) error) error {
 	if err != nil {
 		return err
 	}
+	encrypted, err := encryptConnections(s.Dir, append(data, '\n'))
+	if err != nil {
+		return err
+	}
 	f, err := os.CreateTemp(s.Dir, ".connections-*")
 	if err != nil {
 		return err
 	}
 	defer func() { _ = os.Remove(f.Name()) }()
-	if _, err = f.Write(append(data, '\n')); err != nil {
+	if _, err = f.Write(append(encrypted, '\n')); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Chmod(0600); err != nil {
 		_ = f.Close()
 		return err
 	}
@@ -127,6 +144,15 @@ func (s Store) update(fn func(map[string]Profile) error) error {
 	return os.Rename(f.Name(), filepath.Join(s.Dir, "connections.json"))
 }
 
+func hasTag(p Profile, tag string) bool {
+	for _, t := range p.Tags {
+		if strings.EqualFold(t, tag) {
+			return true
+		}
+	}
+	return false
+}
+
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
 func validate(p Profile) error {
@@ -136,10 +162,10 @@ func validate(p Profile) error {
 	if _, err := registry.Lookup(p.Driver); err != nil {
 		return err
 	}
-	if p.DSN == "" {
-		return errors.New("DSN cannot be empty")
+	if p.DSN == "" && p.DSNCmd == "" {
+		return errors.New("DSN or --dsn-cmd cannot be empty")
 	}
-	if len(p.Proxies) > 0 && (p.Driver == "sqlite" || p.Driver == "dm") {
+	if len(p.Proxies) > 0 && p.Driver == "sqlite" {
 		return fmt.Errorf("proxies are not supported for %s", p.Driver)
 	}
 	for _, hop := range p.Proxies {

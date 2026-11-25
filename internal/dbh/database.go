@@ -19,9 +19,15 @@ type Session struct {
 	Driver          string
 	Timeout         time.Duration
 	MaxRows         int
+	MaxCellWidth    int
+	MaxCellWidthSet bool
 	BatchSize       int
 	Notice          io.Writer
 	Stats           bool
+	ReadOnly        bool
+	Env             string
+	AllowWrite      bool
+	Expanded        bool
 	CurrentDatabase string
 	BeforeOutput    func()
 	Pager           func(columns []string, rows [][]string) (bool, error)
@@ -38,7 +44,19 @@ func openSession(ctx context.Context, p Profile, timeout time.Duration) (*Sessio
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	s := &Session{Driver: p.Driver, Timeout: timeout, backend: backend, dsn: p.DSN, proxies: append([]string(nil), p.Proxies...)}
+	p, err = resolveRuntimeProfile(pingCtx, p)
+	if err != nil {
+		return nil, fmt.Errorf("cannot connect to %q: %w", p.Name, err)
+	}
+	s := &Session{
+		Driver:   p.Driver,
+		Timeout:  timeout,
+		ReadOnly: p.ReadOnly,
+		Env:      p.Env,
+		backend:  backend,
+		dsn:      p.DSN,
+		proxies:  append([]string(nil), p.Proxies...),
+	}
 	if len(p.Proxies) > 0 {
 		if s.proxy, err = proxy.Open(pingCtx, p.Proxies); err != nil {
 			return nil, fmt.Errorf("cannot connect to %q: %s", p.Name, redact(err.Error(), "", p.Proxies))
@@ -68,6 +86,13 @@ func redact(message, dsn string, proxies []string) string {
 		message = strings.ReplaceAll(message, hop, proxy.Redact(hop))
 	}
 	return message
+}
+
+func (s *Session) syntax() database.Syntax {
+	if s.backend != nil {
+		return s.backend.Syntax()
+	}
+	return database.Syntax{}
 }
 
 func (s *Session) dial() database.Dial {
@@ -159,6 +184,16 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 	}()
 	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
+	if !s.AllowWrite && isWriteStatement(query, s.syntax()) {
+		if s.ReadOnly {
+			return fmt.Errorf("write blocked: connection is marked read-only (use --allow-write to override)")
+		}
+		if strings.EqualFold(s.Env, "prod") {
+			if reason, dangerous := dangerousWriteReason(query, s.syntax()); dangerous {
+				return fmt.Errorf("%s (use --allow-write to override)", reason)
+			}
+		}
+	}
 	beforeOutput := func() {
 		if s.BeforeOutput != nil {
 			s.BeforeOutput()
@@ -233,6 +268,7 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 		if batchSize <= 0 {
 			batchSize = 500
 		}
+		maxCell := s.effectiveMaxCellWidth(format)
 		for rows.Next() {
 			if s.MaxRows > 0 && count >= s.MaxRows {
 				truncated = true
@@ -243,12 +279,18 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 				return err
 			}
 			fields := make([]string, len(cols))
+			jsonVals := make([]any, len(cols))
 			object := row.Object
 			for i, v := range row.Values {
-				if v == nil {
-					fields[i] = "NULL"
+				text, jv := formatCellValue(v, maxCell)
+				fields[i] = text
+				jsonVals[i] = jv
+			}
+			if maxCell > 0 && format == "json" {
+				if m, ok := object.(map[string]any); ok {
+					object = summarizeJSONValue(m, maxCell)
 				} else {
-					fields[i] = fmt.Sprint(v)
+					object = database.NewRow(cols, jsonVals).Object
 				}
 			}
 			switch format {
@@ -299,8 +341,14 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 					}
 				}
 				if !paged && (len(tableRows) > 0 || count == 0) {
-					if err := renderTable(out, cols, tableRows, tableWidth(out)); err != nil {
-						return err
+					var renderErr error
+					if s.Expanded {
+						renderErr = renderExpandedTable(out, cols, tableRows, tableWidth(out))
+					} else {
+						renderErr = renderTable(out, cols, tableRows, tableWidth(out))
+					}
+					if renderErr != nil {
+						return renderErr
 					}
 				}
 				if _, err := fmt.Fprintf(out, "(%d rows)\n", count); err != nil {

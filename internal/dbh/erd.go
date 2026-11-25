@@ -598,12 +598,19 @@ func erdPullCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 }
 
 func erdDiffCommand(store func() (Store, error), names cobra.CompletionFunc, model, dirFlag *string) *cobra.Command {
-	var db, schema, format string
+	var db, schema, targetDB, targetSchema, format string
 	var include, exclude []string
 	var timeout time.Duration
-	c := &cobra.Command{Use: "diff NAME", Short: "Compare the local .dbh/<model>.dbml against the live database schema", Args: cobra.ExactArgs(1), ValidArgsFunction: names}
+	c := &cobra.Command{
+		Use:               "diff NAME [TARGET]",
+		Short:             "Compare local .dbh/<model>.dbml against a live database, or compare two connections",
+		Args:              cobra.RangeArgs(1, 2),
+		ValidArgsFunction: names,
+	}
 	c.Flags().StringVar(&db, "db", "", "Server database to read")
-	c.Flags().StringVar(&schema, "schema", "", "PostgreSQL schema(s) to read, comma-separated (default public)")
+	c.Flags().StringVar(&schema, "schema", "", "Schema(s) to read, comma-separated")
+	c.Flags().StringVar(&targetDB, "target-db", "", "Second connection database (when comparing two connections)")
+	c.Flags().StringVar(&targetSchema, "target-schema", "", "Second connection schema(s) (when comparing two connections)")
 	c.Flags().StringSliceVar(&include, "include", nil, "Only include tables matching glob pattern (repeatable)")
 	c.Flags().StringSliceVar(&exclude, "exclude", nil, "Exclude tables matching glob pattern (repeatable)")
 	c.Flags().DurationVar(&timeout, "timeout", 60*time.Second, "Connection and schema read timeout")
@@ -613,6 +620,58 @@ func erdDiffCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 		if !validFormat(format) {
 			return fmt.Errorf("format must be table, csv, json or tsv")
 		}
+		if timeout <= 0 {
+			return fmt.Errorf("timeout must be positive")
+		}
+		st, err := store()
+		if err != nil {
+			return err
+		}
+		if len(args) == 2 {
+			p1, err := st.Get(args[0])
+			if err != nil {
+				return err
+			}
+			p2, err := st.Get(args[1])
+			if err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("schema") && !supportsSchemaFlag(p1.Driver) {
+				return fmt.Errorf("--schema is not supported for %s", p1.Driver)
+			}
+			tDB, tDBChanged := targetDB, cmd.Flags().Changed("target-db")
+			if !tDBChanged {
+				tDB, tDBChanged = db, cmd.Flags().Changed("db")
+			}
+			tSchema := targetSchema
+			if !cmd.Flags().Changed("target-schema") {
+				tSchema = schema
+			}
+			if tSchema != "" && !supportsSchemaFlag(p2.Driver) {
+				return fmt.Errorf("--target-schema is not supported for %s", p2.Driver)
+			}
+			stopSpinner := startSpinner(cmd.ErrOrStderr(), "Reading schemas")
+			leftDBML, err := pullDBMLWithOptions(cmd.Context(), p1, db, cmd.Flags().Changed("db"), schema, include, exclude, timeout)
+			if err != nil {
+				stopSpinner()
+				return err
+			}
+			rightDBML, err := pullDBMLWithOptions(cmd.Context(), p2, tDB, tDBChanged, tSchema, include, exclude, timeout)
+			stopSpinner()
+			if err != nil {
+				return err
+			}
+			leftModel := erd.ParseDBML(args[0], args[0], leftDBML)
+			if len(leftModel.Errors) > 0 {
+				return fmt.Errorf("cannot parse %s schema: %s", args[0], leftModel.Errors[0])
+			}
+			rightModel := erd.ParseDBML(args[1], args[1], rightDBML)
+			if len(rightModel.Errors) > 0 {
+				return fmt.Errorf("cannot parse %s schema: %s", args[1], rightModel.Errors[0])
+			}
+			diff := erd.DiffModels(leftModel, rightModel)
+			return writeERDRows(cmd.OutOrStdout(), diff.Rows(), format)
+		}
 		targetModel := *model
 		if targetModel == "" {
 			targetModel = erd.DefaultModel
@@ -620,11 +679,7 @@ func erdDiffCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 		if err := erd.ValidModelName(targetModel); err != nil {
 			return err
 		}
-		if timeout <= 0 {
-			return fmt.Errorf("timeout must be positive")
-		}
 		var dir string
-		var err error
 		if *dirFlag != "" {
 			dir, err = resolveReadERDDir(*dirFlag)
 		} else {
@@ -643,7 +698,7 @@ func erdDiffCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 		if err := local.Usable(); err != nil {
 			return err
 		}
-		st, err := store()
+		st, err = store()
 		if err != nil {
 			return err
 		}

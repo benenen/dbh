@@ -40,26 +40,7 @@ func renderTable(out io.Writer, columns []string, rows [][]string, width int) er
 		minimum += minimumWidths[i] + 3
 	}
 	if minimum > width && len(columns) > 2 {
-		if len(rows) == 0 {
-			fields := make([][]string, len(columns))
-			for i, column := range columns {
-				fields[i] = []string{column, ""}
-			}
-			return renderTable(out, []string{"Column", "Value"}, fields, width)
-		}
-		for i, row := range rows {
-			if _, err := fmt.Fprintf(out, "Row %d:\n", i+1); err != nil {
-				return err
-			}
-			fields := make([][]string, len(columns))
-			for j, column := range columns {
-				fields[j] = []string{column, row[j]}
-			}
-			if err := renderTable(out, []string{"Column", "Value"}, fields, width); err != nil {
-				return err
-			}
-		}
-		return nil
+		return renderExpandedTable(out, columns, rows, width)
 	}
 	for {
 		total := 1
@@ -120,6 +101,29 @@ func renderTable(out io.Writer, columns []string, rows [][]string, width int) er
 		}
 	}
 	return rule("└", "┴", "┘")
+}
+
+func renderExpandedTable(out io.Writer, columns []string, rows [][]string, width int) error {
+	if len(rows) == 0 {
+		fields := make([][]string, len(columns))
+		for i, column := range columns {
+			fields[i] = []string{column, ""}
+		}
+		return renderTable(out, []string{"Column", "Value"}, fields, width)
+	}
+	for i, row := range rows {
+		if _, err := fmt.Fprintf(out, "Row %d:\n", i+1); err != nil {
+			return err
+		}
+		fields := make([][]string, len(columns))
+		for j, column := range columns {
+			fields[j] = []string{column, row[j]}
+		}
+		if err := renderTable(out, []string{"Column", "Value"}, fields, width); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func cleanCell(text string) string {

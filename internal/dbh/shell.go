@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/benenen/dbh/internal/database"
@@ -50,6 +51,8 @@ func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 			names = []string{"table", "csv", "json", "tsv"}
 		case `\pager`:
 			names = []string{"auto", "on", "off"}
+		case `\truncate`:
+			names = []string{"off", "0", "80", "200", "500"}
 		}
 		return matching(names, name), name
 	}
@@ -126,7 +129,7 @@ func matching(words []string, text string) []string {
 func commandArgument(line []rune) (command, name string, ok bool) {
 	text := string(line)
 	text = strings.TrimLeft(text[strings.LastIndex(text, "\n")+1:], " \t")
-	for _, command := range []string{`\use`, `\describe`, `\indexes`, `\format`, `\pager`} {
+	for _, command := range []string{`\use`, `\describe`, `\indexes`, `\format`, `\pager`, `\truncate`} {
 		rest, found := strings.CutPrefix(text, command)
 		if !found || rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
 			continue
@@ -199,7 +202,7 @@ func (c *completer) refresh(ctx context.Context, s *Session) error {
 	if native := s.backend.Syntax().CompletionWords; len(native) > 0 {
 		words = append([]string{}, native...)
 	}
-	words = append(words, `\help`, `\q`, `\database`, `\use`, `\tables`, `\describe`, `\indexes`, `\history`, `\refresh`, `\clear`, `\format`, `\pager`)
+	words = append(words, `\help`, `\q`, `\database`, `\use`, `\tables`, `\describe`, `\indexes`, `\history`, `\refresh`, `\clear`, `\format`, `\pager`, `\truncate`, `\x`, `\run`)
 	// SQLite has no database list; \use then offers no candidates.
 	c.databases, _ = s.Databases(ctx)
 	tables, err := s.Tables(ctx)
@@ -266,6 +269,9 @@ Ctrl-C clears input; Ctrl-D exits.
 \clear              Clear pending query
 \format table|csv|json|tsv  Change output format
 \pager auto|on|off  Scroll wide/tall table results in an interactive pager
+\truncate [N|off]   Limit cell display width (table defaults to 200)
+\x                  Toggle expanded vertical table display
+\run SNIPPET        Execute a saved snippet
 `
 
 func acceptSQLInput(line, driver string) bool {
@@ -443,7 +449,20 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 		if s.CurrentDatabase != "" {
 			label += "/" + s.CurrentDatabase
 		}
+		var badges string
+		if p.ReadOnly {
+			badges += "[RO]"
+		}
+		if strings.EqualFold(p.Env, "prod") {
+			badges += "[PROD]"
+		}
+		if badges != "" {
+			label += " " + badges
+		}
 		if color {
+			if strings.EqualFold(p.Env, "prod") {
+				return "\x1b[31m" + label + "> \x1b[0m"
+			}
 			return "\x1b[36m" + label + "> \x1b[0m"
 		}
 		return label + "> "
@@ -580,6 +599,50 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 					_, _ = fmt.Fprintln(errOut, `Usage: \pager auto|on|off`)
 				} else {
 					pagerMode = fields[1]
+				}
+			case `\truncate`:
+				if len(fields) == 1 {
+					w := s.effectiveMaxCellWidth(format)
+					if w == 0 {
+						_, _ = fmt.Fprintln(out, "Truncate: off")
+					} else {
+						_, _ = fmt.Fprintf(out, "Truncate: %d\n", w)
+					}
+				} else if len(fields) != 2 {
+					_, _ = fmt.Fprintln(errOut, `Usage: \truncate [N|off]`)
+				} else if fields[1] == "off" || fields[1] == "0" {
+					s.MaxCellWidth = 0
+					s.MaxCellWidthSet = true
+				} else if n, convErr := strconv.Atoi(fields[1]); convErr != nil || n < 0 {
+					_, _ = fmt.Fprintln(errOut, `Usage: \truncate [N|off]`)
+				} else {
+					s.MaxCellWidth = n
+					s.MaxCellWidthSet = true
+				}
+			case `\x`:
+				s.Expanded = !s.Expanded
+				if s.Expanded {
+					_, _ = fmt.Fprintln(out, "Expanded display is on.")
+				} else {
+					_, _ = fmt.Fprintln(out, "Expanded display is off.")
+				}
+			case `\run`:
+				if len(fields) != 2 {
+					_, _ = fmt.Fprintln(errOut, `Usage: \run SNIPPET`)
+					break
+				}
+				snippets, snErr := store.loadSnippets()
+				if snErr != nil {
+					_, _ = fmt.Fprintln(errOut, snErr)
+					break
+				}
+				sn, ok := snippets[fields[1]]
+				if !ok {
+					_, _ = fmt.Fprintf(errOut, "snippet %q does not exist\n", fields[1])
+					break
+				}
+				if execErr := s.Run(ctx, sn.Query, format, out); execErr != nil {
+					_, _ = fmt.Fprintln(errOut, "SQL error:", execErr)
 				}
 			default:
 				_, _ = fmt.Fprintln(errOut, "Unknown command. Type \\help.")

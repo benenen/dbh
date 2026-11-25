@@ -419,7 +419,6 @@ func TestCLIProxies(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"n", "lite", "--driver", "sqlite", "--dsn", ":memory:", "--proxy", "socks5://p:1080"},
-		{"n", "dm1", "--driver", "dm", "--dsn", "dm://SYSDBA:SYSDBA@localhost:5236", "--proxy", "socks5://p:1080"},
 		{"n", "bad", "--driver", "mysql", "--dsn", "u@tcp(db)/app", "--proxy", "http://p:8080"},
 		{"e", "pg", "--proxy", "socks5://p:1080", "--no-proxy"},
 	} {
