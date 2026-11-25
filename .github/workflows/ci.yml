@@ -71,3 +71,111 @@ jobs:
         with:
           version: v2.19.0
           args: check
+
+  e2e-databases:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        driver:
+          - postgres
+          - mysql
+          - mongo
+          - redis
+          - clickhouse
+          - mssql
+          - trino
+          - elasticsearch
+          - oracle
+          - milvus
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Start database container and run e2e (${{ matrix.driver }})
+        run: |
+          set -euo pipefail
+          case "${{ matrix.driver }}" in
+            postgres)
+              docker run -d --name db-pg -e POSTGRES_USER=dbh -e POSTGRES_PASSWORD=dbh -e POSTGRES_DB=dbh_test -p 15432:5432 postgres:17-alpine
+              for i in $(seq 1 30); do docker exec db-pg pg_isready -U dbh -d dbh_test && break; sleep 1; done
+              docker exec db-pg psql -U dbh -d dbh_test -c "CREATE DATABASE dbh_alt;"
+              export DBH_TEST_POSTGRES_DSN="postgres://dbh:dbh@127.0.0.1:15432/dbh_test?sslmode=disable"
+              export DBH_TEST_POSTGRES_ALT_DATABASE="dbh_alt"
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestExecDatabaseSelection/postgres|TestTerminalDatabase|TestERDDatabases/postgres' ./tests
+              ;;
+            mysql)
+              docker run -d --name db-mysql -e MYSQL_ROOT_PASSWORD=dbh -e MYSQL_DATABASE=dbh_test -p 13306:3306 mysql:8.0
+              for i in $(seq 1 60); do docker exec db-mysql mysqladmin ping -h 127.0.0.1 -uroot -pdbh --silent && break; sleep 2; done
+              docker exec db-mysql mysql -uroot -pdbh -e "CREATE DATABASE IF NOT EXISTS dbh_alt;"
+              export DBH_TEST_MYSQL_DSN="root:dbh@tcp(127.0.0.1:13306)/dbh_test?parseTime=true&multiStatements=true"
+              export DBH_TEST_MYSQL_ALT_DATABASE="dbh_alt"
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestExecDatabaseSelection/mysql|TestComment|TestTerminalDatabase|TestERDDatabases/mysql' ./tests
+              ;;
+            mongo)
+              docker run -d --name db-mongo -p 27017:27017 mongo:7
+              for i in $(seq 1 30); do docker exec db-mongo mongosh --quiet --eval "db.runCommand({ping:1}).ok" | grep -q 1 && break; sleep 1; done
+              export DBH_TEST_MONGO_DSN="mongodb://127.0.0.1:27017/dbh_test"
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestMongo|TestExecDatabaseSelection/mongo' ./tests
+              ;;
+            redis)
+              docker run -d --name db-redis -p 16379:6379 redis:7-alpine
+              for i in $(seq 1 30); do docker exec db-redis redis-cli ping | grep -q PONG && break; sleep 1; done
+              export DBH_TEST_REDIS_DSN="redis://127.0.0.1:16379/0"
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestRedis' ./tests
+              ;;
+            clickhouse)
+              docker run -d --name db-ch -e CLICKHOUSE_DB=dbh_test -e CLICKHOUSE_USER=default -e CLICKHOUSE_PASSWORD=dbh -p 19000:9000 -p 18123:8123 clickhouse/clickhouse-server:24.8
+              for i in $(seq 1 45); do curl -sf "http://default:dbh@127.0.0.1:18123/?query=SELECT%201" | grep -q 1 && break; sleep 2; done
+              curl -sf "http://default:dbh@127.0.0.1:18123/?query=CREATE%20DATABASE%20IF%20NOT%20EXISTS%20dbh_alt"
+              export DBH_TEST_CLICKHOUSE_DSN="clickhouse://default:dbh@127.0.0.1:19000/dbh_test"
+              export DBH_TEST_CLICKHOUSE_ALT_DATABASE="dbh_alt"
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestClickHouse|TestComment' ./tests
+              ;;
+            mssql)
+              docker run -d --name db-mssql -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD="DbhTest!2026" -e MSSQL_PID=Express -p 11433:1433 mcr.microsoft.com/mssql/server:2022-latest
+              export DBH_TEST_MSSQL_DSN="sqlserver://sa:DbhTest%212026@127.0.0.1:11433?database=master"
+              go build -o /tmp/dbh-ci .
+              TMP_CFG=$(mktemp -d)
+              /tmp/dbh-ci --config-dir "$TMP_CFG" new mssql --driver mssql --dsn-env DBH_TEST_MSSQL_DSN
+              for i in $(seq 1 45); do /tmp/dbh-ci --config-dir "$TMP_CFG" exec mssql "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
+              /tmp/dbh-ci --config-dir "$TMP_CFG" exec mssql "CREATE DATABASE dbh_test;"
+              export DBH_TEST_MSSQL_ALT_DATABASE="dbh_test"
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestNewDriversE2E/mssql|TestERDDatabases/mssql' ./tests
+              ;;
+            trino)
+              docker run -d --name db-trino -p 18080:8080 trinodb/trino:451
+              for i in $(seq 1 60); do curl -sf http://127.0.0.1:18080/v1/info | grep -q '"starting":false' && break; sleep 2; done
+              export DBH_TEST_TRINO_DSN="http://test@127.0.0.1:18080?catalog=memory&schema=default"
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestNewDriversE2E/trino|TestERDDatabases/trino' ./tests
+              ;;
+            elasticsearch)
+              docker run -d --name db-es -e discovery.type=single-node -e xpack.security.enabled=false -e "ES_JAVA_OPTS=-Xms512m -Xmx512m" -p 19200:9200 docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+              for i in $(seq 1 60); do curl -sf http://127.0.0.1:19200 >/dev/null 2>&1 && break; sleep 2; done
+              export DBH_TEST_ELASTICSEARCH_DSN="http://127.0.0.1:19200"
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestNewDriversE2E/elasticsearch' ./tests
+              ;;
+            oracle)
+              docker run -d --name db-oracle -e ORACLE_PASSWORD=DbhTest2026 -p 11521:1521 gvenzl/oracle-free:23-slim-faststart
+              export DBH_TEST_ORACLE_DSN="oracle://system:DbhTest2026@127.0.0.1:11521/FREEPDB1"
+              go build -o /tmp/dbh-ci .
+              TMP_CFG=$(mktemp -d)
+              /tmp/dbh-ci --config-dir "$TMP_CFG" new ora --driver oracle --dsn-env DBH_TEST_ORACLE_DSN
+              for i in $(seq 1 90); do /tmp/dbh-ci --config-dir "$TMP_CFG" exec ora "SELECT 1 FROM DUAL" >/dev/null 2>&1 && break; sleep 2; done
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestNewDriversE2E/oracle|TestERDDatabases/oracle' ./tests
+              ;;
+            milvus)
+              docker run -d --name db-milvus -e ETCD_USE_EMBED=true -e ETCD_DATA_DIR=/var/lib/milvus/etcd -e COMMON_STORAGETYPE=local -p 19530:19530 -p 19091:9091 milvusdb/milvus:v2.4.15 milvus run standalone
+              for i in $(seq 1 90); do curl -sf http://127.0.0.1:19091/healthz | grep -q OK && break; sleep 2; done
+              export DBH_TEST_MILVUS_DSN="http://127.0.0.1:19530/default"
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestNewDriversE2E/milvus' ./tests
+              ;;
+          esac
