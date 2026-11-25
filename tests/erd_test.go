@@ -198,3 +198,71 @@ func TestERDScansAllProjectDirs(t *testing.T) {
 	contains(t, saved, "svc-c/.dbh/schema.dbml")
 	contains(t, readFile(t, filepath.Join(repo, "svc-c", ".dbh", "schema.dbml")), `Table "items"`)
 }
+
+func TestERDInitResyncColumnsAndFormats(t *testing.T) {
+	f := newFixture(t)
+	repo := filepath.Join(f.root, "repo-init")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n")
+	f.dir = repo
+
+	f.sql(`CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT NOT NULL, created_at TEXT);
+		CREATE TABLE orders(id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), total REAL);`, "--no-history")
+
+	contains(t, f.fail("erd", "resync", "demo"), "no .dbh directory found; run dbh erd init demo")
+
+	initOut := f.run("erd", "init", "demo")
+	contains(t, initOut, "Saved .dbh/schema.dbml")
+	schemaPath := filepath.Join(repo, ".dbh", "schema.dbml")
+	dbml := readFile(t, schemaPath)
+	contains(t, dbml, `Table "users"`)
+	contains(t, dbml, `Table "orders"`)
+
+	secondInit := f.fail("erd", "init", "demo")
+	contains(t, secondInit, "already exists")
+	contains(t, secondInit, "dbh erd resync demo")
+
+	refsPath := filepath.Join(repo, ".dbh", "schema.refs.dbml")
+	refsContent := "// app/order.go:10\nRef: orders.id > users.id\n"
+	writeFile(t, refsPath, refsContent)
+	f.sql(`ALTER TABLE users ADD COLUMN bio TEXT; CREATE TABLE tags(id INTEGER PRIMARY KEY, label TEXT);`, "--no-history")
+
+	resyncOut := f.run("erd", "resync", "demo")
+	contains(t, resyncOut, "Saved")
+	contains(t, resyncOut, "Changes:")
+	resynced := readFile(t, schemaPath)
+	contains(t, resynced, `Table "tags"`)
+	contains(t, resynced, `"bio"`)
+	equal(t, readFile(t, refsPath), refsContent)
+
+	colsUsers := f.run("erd", "columns", "users", "--format", "tsv")
+	contains(t, colsUsers, "users\temail\t")
+	contains(t, colsUsers, "users\tbio\t")
+	excludes(t, colsUsers, "orders\t")
+	excludes(t, colsUsers, "tags\t")
+
+	colsMatch := f.run("erd", "cols", "--match", "*mail*", "--format", "json")
+	contains(t, colsMatch, `"column":"email"`)
+	excludes(t, colsMatch, `"column":"created_at"`)
+
+	colsWithModel := f.run("erd", "columns", "--with-model", "--format", "tsv")
+	contains(t, colsWithModel, "models\n")
+	contains(t, colsWithModel, "schema\n")
+
+	dotOut := f.run("erd", "show", "--format", "dot")
+	contains(t, dotOut, "digraph")
+	contains(t, dotOut, "orders")
+	contains(t, dotOut, "users")
+
+	contains(t, f.run("er", "status", "--format", "tsv"), "schema\t")
+	erTables := f.run("er", "tables", "--format", "tsv")
+	contains(t, erTables, "users\t")
+	contains(t, erTables, "orders\t")
+	equal(t, f.run("er", "cols", "users", "--format", "tsv"), colsUsers)
+
+	pullOutPath := filepath.Join(f.root, "pulled.dbml")
+	equal(t, f.run("erd", "pull", "demo", "-o", pullOutPath), "")
+	contains(t, readFile(t, pullOutPath), `Table "tags"`)
+}

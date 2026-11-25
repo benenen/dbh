@@ -149,19 +149,19 @@ jobs:
               for i in $(seq 1 45); do /tmp/dbh-ci --config-dir "$TMP_CFG" exec mssql "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
               /tmp/dbh-ci --config-dir "$TMP_CFG" exec mssql "CREATE DATABASE dbh_test;"
               export DBH_TEST_MSSQL_ALT_DATABASE="dbh_test"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestNewDriversE2E/mssql|TestERDDatabases/mssql' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestMSSQLE2E|TestERDDatabases/mssql' ./tests
               ;;
             trino)
               docker run -d --name db-trino -p 18080:8080 trinodb/trino:451
               for i in $(seq 1 60); do curl -sf http://127.0.0.1:18080/v1/info | grep -q '"starting":false' && break; sleep 2; done
               export DBH_TEST_TRINO_DSN="http://test@127.0.0.1:18080?catalog=memory&schema=default"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestNewDriversE2E/trino|TestERDDatabases/trino' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestTrinoE2E|TestERDDatabases/trino' ./tests
               ;;
             elasticsearch)
               docker run -d --name db-es -e discovery.type=single-node -e xpack.security.enabled=false -e "ES_JAVA_OPTS=-Xms512m -Xmx512m" -p 19200:9200 docker.elastic.co/elasticsearch/elasticsearch:8.15.0
               for i in $(seq 1 60); do curl -sf http://127.0.0.1:19200 >/dev/null 2>&1 && break; sleep 2; done
               export DBH_TEST_ELASTICSEARCH_DSN="http://127.0.0.1:19200"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestNewDriversE2E/elasticsearch' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestElasticsearchE2E' ./tests
               ;;
             oracle)
               docker run -d --name db-oracle -e ORACLE_PASSWORD=DbhTest2026 -p 11521:1521 gvenzl/oracle-free:23-slim-faststart
@@ -170,12 +170,12 @@ jobs:
               TMP_CFG=$(mktemp -d)
               /tmp/dbh-ci --config-dir "$TMP_CFG" new ora --driver oracle --dsn-env DBH_TEST_ORACLE_DSN
               for i in $(seq 1 90); do /tmp/dbh-ci --config-dir "$TMP_CFG" exec ora "SELECT 1 FROM DUAL" >/dev/null 2>&1 && break; sleep 2; done
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestNewDriversE2E/oracle|TestERDDatabases/oracle' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestOracleE2E|TestERDDatabases/oracle' ./tests
               ;;
             milvus)
               docker run -d --name db-milvus -e ETCD_USE_EMBED=true -e ETCD_DATA_DIR=/var/lib/milvus/etcd -e COMMON_STORAGETYPE=local -p 19530:19530 -p 19091:9091 milvusdb/milvus:v2.4.15 milvus run standalone
               for i in $(seq 1 90); do curl -sf http://127.0.0.1:19091/healthz | grep -q OK && break; sleep 2; done
               export DBH_TEST_MILVUS_DSN="http://127.0.0.1:19530/default"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestNewDriversE2E/milvus' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestMilvusE2E' ./tests
               ;;
           esac
