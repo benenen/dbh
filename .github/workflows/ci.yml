@@ -106,8 +106,8 @@ jobs:
           case "${{ matrix.driver }}" in
             postgres)
               docker run -d --name db-pg -e POSTGRES_USER=dbh -e POSTGRES_PASSWORD=dbh -e POSTGRES_DB=dbh_test -p 15432:5432 postgres:17-alpine
-              for i in $(seq 1 30); do docker exec db-pg pg_isready -U dbh -d dbh_test && break; sleep 1; done
-              docker exec db-pg psql -U dbh -d dbh_test -c "CREATE DATABASE dbh_alt;"
+              for i in $(seq 1 30); do docker exec db-pg psql -h 127.0.0.1 -U dbh -d dbh_test -c "SELECT 1" >/dev/null 2>&1 && break; sleep 1; done
+              docker exec db-pg psql -h 127.0.0.1 -U dbh -d dbh_test -c "CREATE DATABASE dbh_alt;"
               export DBH_TEST_POSTGRES_DSN="postgres://dbh:dbh@127.0.0.1:15432/dbh_test?sslmode=disable"
               export DBH_TEST_POSTGRES_ALT_DATABASE="dbh_alt"
               go test -tags=e2e -count=1 -timeout=10m -v -run 'TestExecDatabaseSelection/postgres|TestTerminalDatabase|TestERDDatabases/postgres' ./tests
@@ -135,7 +135,7 @@ jobs:
             clickhouse)
               docker run -d --name db-ch -e CLICKHOUSE_DB=dbh_test -e CLICKHOUSE_USER=default -e CLICKHOUSE_PASSWORD=dbh -p 19000:9000 -p 18123:8123 clickhouse/clickhouse-server:24.8
               for i in $(seq 1 45); do curl -sf "http://default:dbh@127.0.0.1:18123/?query=SELECT%201" | grep -q 1 && break; sleep 2; done
-              curl -sf "http://default:dbh@127.0.0.1:18123/?query=CREATE%20DATABASE%20IF%20NOT%20EXISTS%20dbh_alt"
+              curl -sf -X POST "http://default:dbh@127.0.0.1:18123/" --data "CREATE DATABASE IF NOT EXISTS dbh_alt"
               export DBH_TEST_CLICKHOUSE_DSN="clickhouse://default:dbh@127.0.0.1:19000/dbh_test"
               export DBH_TEST_CLICKHOUSE_ALT_DATABASE="dbh_alt"
               go test -tags=e2e -count=1 -timeout=10m -v -run 'TestClickHouse|TestComment' ./tests

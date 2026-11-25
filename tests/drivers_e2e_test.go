@@ -43,7 +43,7 @@ func TestNewDriversE2E(t *testing.T) {
 
 			case "oracle":
 				t.Cleanup(func() {
-					f.run("exec", "srv", "BEGIN EXECUTE IMMEDIATE 'DROP TABLE dbh_e2e_items'; EXCEPTION WHEN OTHERS THEN NULL; END; /", "--no-history")
+					f.run("exec", "srv", "DROP TABLE IF EXISTS dbh_e2e_items;", "--no-history")
 				})
 				f.run("exec", "srv", "CREATE TABLE dbh_e2e_items (id NUMBER PRIMARY KEY, name VARCHAR2(50)); INSERT INTO dbh_e2e_items VALUES (1, 'alpha'); COMMIT;", "--no-history")
 				got := f.run("exec", "srv", "SELECT id, name FROM dbh_e2e_items", "--format", "tsv")
