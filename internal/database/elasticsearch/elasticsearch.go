@@ -185,7 +185,7 @@ func (Driver) ColumnDetails(ctx context.Context, conn database.Connection, table
 		return database.Query{}, fmt.Errorf("index %q does not exist", table)
 	}
 	if status < 200 || status >= 300 {
-		return database.Query{}, fmt.Errorf("Elasticsearch returned status %d", status)
+		return database.Query{}, fmt.Errorf("elasticsearch returned status %d", status)
 	}
 	return database.Query{
 		Text:    internalMappingPrefix + table,
@@ -267,7 +267,7 @@ func collectProperties(prefix string, props map[string]any, out *[]mappingField)
 
 func (c *connection) Query(ctx context.Context, text string, args ...any) (database.Rows, error) {
 	if len(args) != 0 {
-		return nil, fmt.Errorf("Elasticsearch commands do not accept SQL parameters")
+		return nil, fmt.Errorf("elasticsearch commands do not accept SQL parameters")
 	}
 	if strings.HasPrefix(text, internalMappingPrefix) {
 		table := strings.TrimPrefix(text, internalMappingPrefix)
@@ -349,7 +349,7 @@ func (c *connection) do(ctx context.Context, method, path string, body []byte) (
 func parseCommand(text, currentIndex string) (method, path string, body []byte, err error) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
-		return "", "", nil, fmt.Errorf("Elasticsearch command cannot be empty")
+		return "", "", nil, fmt.Errorf("elasticsearch command cannot be empty")
 	}
 	fields := strings.Fields(trimmed)
 	if len(fields) < 2 {
@@ -370,7 +370,7 @@ func parseCommand(text, currentIndex string) (method, path string, body []byte, 
 		rawBody := strings.TrimSpace(rest[idx:])
 		if rawBody != "" {
 			if !json.Valid([]byte(rawBody)) {
-				return "", "", nil, fmt.Errorf("Elasticsearch request body must be valid JSON")
+				return "", "", nil, fmt.Errorf("elasticsearch request body must be valid JSON")
 			}
 			body = []byte(rawBody)
 		}
@@ -503,15 +503,15 @@ func formatESError(status int, body []byte) error {
 	}
 	if json.Unmarshal(body, &errResp) == nil && (errResp.Error.Reason != "" || errResp.Error.Type != "") {
 		if errResp.Error.Type != "" && errResp.Error.Reason != "" {
-			return fmt.Errorf("Elasticsearch %d (%s): %s", status, errResp.Error.Type, errResp.Error.Reason)
+			return fmt.Errorf("elasticsearch %d (%s): %s", status, errResp.Error.Type, errResp.Error.Reason)
 		}
-		return fmt.Errorf("Elasticsearch %d: %s%s", status, errResp.Error.Type, errResp.Error.Reason)
+		return fmt.Errorf("elasticsearch %d: %s%s", status, errResp.Error.Type, errResp.Error.Reason)
 	}
 	msg := strings.TrimSpace(string(body))
 	if msg != "" {
-		return fmt.Errorf("Elasticsearch returned status %d: %s", status, msg)
+		return fmt.Errorf("elasticsearch returned status %d: %s", status, msg)
 	}
-	return fmt.Errorf("Elasticsearch returned status %d", status)
+	return fmt.Errorf("elasticsearch returned status %d", status)
 }
 
 func validateIndex(name string) error {

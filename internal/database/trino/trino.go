@@ -40,7 +40,7 @@ func (c *connection) Close() error {
 func (c *connection) ReleasePool() (*sql.DB, error) {
 	pool, ok := c.Connection.(database.SQLPool)
 	if !ok {
-		return nil, fmt.Errorf("Trino connection does not expose a SQL pool")
+		return nil, fmt.Errorf("trino connection does not expose a SQL pool")
 	}
 	return pool.ReleasePool()
 }
