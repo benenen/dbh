@@ -9,6 +9,7 @@ import (
 
 	"github.com/benenen/dbh/internal/database"
 	gomssql "github.com/microsoft/go-mssqldb"
+	"github.com/microsoft/go-mssqldb/msdsn"
 )
 
 type Driver struct{}
@@ -19,29 +20,41 @@ var _ database.ColumnNames = Driver{}
 var _ database.TableColumns = Driver{}
 
 func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (database.Connection, error) {
-	connector, err := gomssql.NewConnector(dsn)
-	if err != nil {
-		return nil, fmt.Errorf("invalid SQL Server connection configuration: %w", err)
-	}
-	if dial != nil {
-		connector.Dialer = dial
-	}
-	return database.ConnectSQL(ctx, sql.OpenDB(connector))
+	return open(ctx, dsn, "", dial)
 }
 
 func (Driver) Syntax() database.Syntax {
 	return database.Syntax{BracketIdentifiers: true}
 }
 
-func (Driver) SwitchDatabase(ctx context.Context, conn database.Connection, _ string, name string, _ database.Dial) (database.Connection, error) {
+func (Driver) SwitchDatabase(ctx context.Context, _ database.Connection, dsn, name string, dial database.Dial) (database.Connection, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, fmt.Errorf("database name cannot be empty")
 	}
-	escaped := strings.ReplaceAll(name, "]", "]]")
-	if err := conn.Exec(ctx, "USE ["+escaped+"]"); err != nil {
+	return open(ctx, dsn, name, dial)
+}
+
+func parseConfig(dsn, dbName string) (msdsn.Config, error) {
+	config, err := msdsn.Parse(dsn)
+	if err != nil {
+		return msdsn.Config{}, fmt.Errorf("invalid SQL Server connection configuration: %w", err)
+	}
+	if dbName != "" {
+		config.Database = dbName
+	}
+	return config, nil
+}
+
+func open(ctx context.Context, dsn, name string, dial database.Dial) (database.Connection, error) {
+	config, err := parseConfig(dsn, name)
+	if err != nil {
 		return nil, err
 	}
-	return nil, nil
+	connector := gomssql.NewConnectorConfig(config)
+	if dial != nil {
+		connector.Dialer = dial
+	}
+	return database.ConnectSQL(ctx, sql.OpenDB(connector))
 }
 
 func (Driver) CurrentDatabase(ctx context.Context, conn database.Connection) (string, error) {
