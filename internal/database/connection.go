@@ -4,11 +4,26 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 )
+
+// Binary represents raw non-textual bytes (e.g. BLOB/BYTEA) so formatters can
+// render hex summaries in tables and preserve lossless hex strings in JSON/CSV/TSV.
+type Binary []byte
+
+func (b Binary) String() string {
+	return "0x" + hex.EncodeToString(b)
+}
+
+func (b Binary) MarshalJSON() ([]byte, error) {
+	return json.Marshal(b.String())
+}
 
 // Connection is the live session shared by commands, metadata and transactions.
 type Connection interface {
@@ -174,7 +189,54 @@ func (c *sqlConnection) Close() error {
 	return errors.Join(c.conn.Close(), c.db.Close())
 }
 
-type sqlRows struct{ *sql.Rows }
+type sqlRows struct {
+	*sql.Rows
+	binaryCols     []bool
+	binaryColsInit bool
+}
+
+func (r *sqlRows) isBinaryColumn(i int) bool {
+	if !r.binaryColsInit {
+		r.binaryColsInit = true
+		if types, err := r.ColumnTypes(); err == nil {
+			r.binaryCols = make([]bool, len(types))
+			for idx, ct := range types {
+				r.binaryCols[idx] = isBinaryDBType(ct.DatabaseTypeName())
+			}
+		}
+	}
+	return i < len(r.binaryCols) && r.binaryCols[i]
+}
+
+func isBinaryDBType(typeName string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(typeName))
+	if i := strings.IndexByte(upper, '('); i >= 0 {
+		upper = strings.TrimSpace(upper[:i])
+	}
+	switch upper {
+	case "BLOB", "TINYBLOB", "MEDIUMBLOB", "LONGBLOB",
+		"BYTEA", "BINARY", "VARBINARY", "IMAGE",
+		"RAW", "LONG RAW", "BFILE":
+		return true
+	default:
+		return false
+	}
+}
+
+func isBinaryBytes(raw []byte) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	if !utf8.Valid(raw) {
+		return true
+	}
+	for _, b := range raw {
+		if b == 0 || (b < 0x20 && b != '\t' && b != '\n' && b != '\r') {
+			return true
+		}
+	}
+	return false
+}
 
 func (r *sqlRows) Row() (Row, error) {
 	columns, err := r.Columns()
@@ -191,8 +253,11 @@ func (r *sqlRows) Row() (Row, error) {
 	}
 	for i, value := range row.Values {
 		if raw, ok := value.([]byte); ok {
-			value = string(raw)
-			row.Values[i] = value
+			if r.isBinaryColumn(i) || isBinaryBytes(raw) {
+				row.Values[i] = Binary(append([]byte(nil), raw...))
+			} else {
+				row.Values[i] = string(raw)
+			}
 		}
 	}
 	row.Object = newObject(columns, row.Values)

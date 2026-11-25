@@ -4,7 +4,11 @@ package dm
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
+	"net/url"
 	"strings"
+	"sync"
 
 	_ "gitee.com/chunanyong/dm"
 	"github.com/benenen/dbh/internal/database"
@@ -17,14 +21,127 @@ var _ database.CurrentDatabase = Driver{}
 var _ database.ColumnNames = Driver{}
 var _ database.TableColumns = Driver{}
 
+type bridgedConn struct {
+	database.Connection
+	bridge *proxyBridge
+}
+
+func (c *bridgedConn) Close() error {
+	err := c.Connection.Close()
+	if c.bridge != nil {
+		c.bridge.Close()
+	}
+	return err
+}
+
+type proxyBridge struct {
+	ln   net.Listener
+	wg   sync.WaitGroup
+	done chan struct{}
+}
+
+func startProxyBridge(target string, dial database.Dial) (*proxyBridge, string, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, "", err
+	}
+	b := &proxyBridge{ln: ln, done: make(chan struct{})}
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+		for {
+			local, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			b.wg.Add(1)
+			go func(c net.Conn) {
+				defer b.wg.Done()
+				defer func() { _ = c.Close() }()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				go func() {
+					select {
+					case <-b.done:
+						cancel()
+					case <-ctx.Done():
+					}
+				}()
+				remote, err := dial(ctx, "tcp", target)
+				if err != nil {
+					return
+				}
+				defer func() { _ = remote.Close() }()
+				var cp sync.WaitGroup
+				cp.Add(2)
+				go func() {
+					defer cp.Done()
+					_, _ = io.Copy(remote, c)
+					if tc, ok := remote.(interface{ CloseWrite() error }); ok {
+						_ = tc.CloseWrite()
+					}
+				}()
+				go func() {
+					defer cp.Done()
+					_, _ = io.Copy(c, remote)
+					if tc, ok := c.(interface{ CloseWrite() error }); ok {
+						_ = tc.CloseWrite()
+					}
+				}()
+				cp.Wait()
+			}(local)
+		}
+	}()
+	return b, ln.Addr().String(), nil
+}
+
+func (b *proxyBridge) Close() {
+	close(b.done)
+	_ = b.ln.Close()
+	b.wg.Wait()
+}
+
+func rewriteDMDSN(dsn, localAddr string) (target string, rewritten string, err error) {
+	u, err := url.Parse(dsn)
+	if err != nil || !strings.EqualFold(u.Scheme, "dm") || u.Host == "" {
+		return "", "", fmt.Errorf("invalid Dameng connection URI")
+	}
+	host := u.Hostname()
+	port := u.Port()
+	if port == "" {
+		port = "5236"
+	}
+	target = net.JoinHostPort(host, port)
+	u.Host = localAddr
+	return target, u.String(), nil
+}
+
 func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (database.Connection, error) {
 	if !strings.HasPrefix(strings.ToLower(dsn), "dm://") {
 		return nil, fmt.Errorf("invalid Dameng connection URI")
 	}
-	if dial != nil {
-		return nil, fmt.Errorf("proxies are not supported for dm")
+	if dial == nil {
+		return database.OpenSQL(ctx, "dm", dsn)
 	}
-	return database.OpenSQL(ctx, "dm", dsn)
+	target, rewritten, err := rewriteDMDSN(dsn, "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	bridge, localAddr, err := startProxyBridge(target, dial)
+	if err != nil {
+		return nil, err
+	}
+	_, rewritten, err = rewriteDMDSN(dsn, localAddr)
+	if err != nil {
+		bridge.Close()
+		return nil, err
+	}
+	conn, err := database.OpenSQL(ctx, "dm", rewritten)
+	if err != nil {
+		bridge.Close()
+		return nil, err
+	}
+	return &bridgedConn{Connection: conn, bridge: bridge}, nil
 }
 
 func (Driver) Syntax() database.Syntax {

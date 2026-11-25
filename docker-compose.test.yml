@@ -1,0 +1,60 @@
+# Optional local test stack for dbh integration / e2e tests.
+# Start selected services with profiles, e.g.:
+#   docker compose -f docker-compose.test.yml --profile postgres --profile redis up -d
+services:
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres", "all"]
+    environment:
+      POSTGRES_USER: dbh
+      POSTGRES_PASSWORD: dbh_test_password
+      POSTGRES_DB: dbh_test
+    ports: ["5432:5432"]
+
+  mysql:
+    image: mysql:8.4
+    profiles: ["mysql", "all"]
+    environment:
+      MYSQL_ROOT_PASSWORD: dbh_test_password
+      MYSQL_DATABASE: dbh_test
+    ports: ["3306:3306"]
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    profiles: ["mssql", "all"]
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "DbhTest!Password123"
+    ports: ["1433:1433"]
+
+  trino:
+    image: trinodb/trino:latest
+    profiles: ["trino", "all"]
+    ports: ["8080:8080"]
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    profiles: ["elasticsearch", "all"]
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+    ports: ["9200:9200"]
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis", "all"]
+    ports: ["6379:6379"]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    profiles: ["clickhouse", "all"]
+    environment:
+      CLICKHOUSE_DB: dbh_test
+      CLICKHOUSE_USER: dbh
+      CLICKHOUSE_PASSWORD: dbh_test_password
+    ports: ["9000:9000", "8123:8123"]
+
+  mongo:
+    image: mongo:7
+    profiles: ["mongo", "all"]
+    ports: ["27017:27017"]

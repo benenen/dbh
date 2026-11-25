@@ -2,20 +2,55 @@ package dm
 
 import (
 	"context"
+	"io"
 	"net"
+	"sync/atomic"
 	"testing"
 )
 
-func TestOpenValidationAndProxyRejection(t *testing.T) {
+func TestOpenValidationAndProxyBridge(t *testing.T) {
 	d := Driver{}
 	if _, err := d.Open(context.Background(), "mysql://localhost:5236", nil); err == nil {
 		t.Fatal("expected error for non-dm DSN")
 	}
-	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
-		return nil, nil
+
+	// Start a dummy TCP echo/close server to verify proxyBridge invokes dial.
+	srv, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := d.Open(context.Background(), "dm://SYSDBA:SYSDBA@localhost:5236", dial); err == nil {
-		t.Fatal("expected error when dial is non-nil")
+	defer func() { _ = srv.Close() }()
+	go func() {
+		for {
+			c, err := srv.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+
+	var dialed atomic.Bool
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialed.Store(true)
+		return (&net.Dialer{}).DialContext(ctx, network, srv.Addr().String())
+	}
+
+	bridge, localAddr, err := startProxyBridge("10.0.0.1:5236", dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridge.Close()
+
+	conn, err := net.Dial("tcp", localAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(conn)
+	_ = conn.Close()
+
+	if !dialed.Load() {
+		t.Fatal("expected proxyBridge to invoke custom dialer")
 	}
 }
 

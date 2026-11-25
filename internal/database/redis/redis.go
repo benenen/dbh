@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,18 +32,162 @@ var (
 	_ database.ColumnNames = Driver{}
 )
 
+type redisCmdable interface {
+	Do(ctx context.Context, args ...any) *goredis.Cmd
+	Ping(ctx context.Context) *goredis.StatusCmd
+	Info(ctx context.Context, section ...string) *goredis.StringCmd
+	Scan(ctx context.Context, cursor uint64, match string, count int64) *goredis.ScanCmd
+	Type(ctx context.Context, key string) *goredis.StatusCmd
+	ObjectEncoding(ctx context.Context, key string) *goredis.StringCmd
+}
+
 type connection struct {
-	client *goredis.Client
-	conn   *goredis.Conn
+	client goredis.UniversalClient
+	conn   redisCmdable
+	closer interface{ Close() error }
 	db     int
+	mode   string // "", "cluster", "sentinel"
 }
 
 func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (database.Connection, error) {
 	return open(ctx, dsn, -1, dial)
 }
 
+func wrapProxyDialer(dial database.Dial, tlsCfg *tls.Config) func(ctx context.Context, network, address string) (net.Conn, error) {
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := dial(ctx, network, address)
+		if err != nil || tlsCfg == nil {
+			return conn, err
+		}
+		// A custom dialer replaces go-redis TLS, so negotiate it over the proxy here.
+		secure := tls.Client(conn, tlsCfg)
+		if err := secure.HandshakeContext(ctx); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		return secure, nil
+	}
+}
+
+func parseClusterOrSentinel(dsn string, db int, dial database.Dial) (*connection, bool, error) {
+	lower := strings.ToLower(dsn)
+	var mode, rest string
+	var useTLS bool
+	switch {
+	case strings.HasPrefix(lower, "redis+cluster://"):
+		mode, rest = "cluster", dsn[len("redis+cluster://"):]
+	case strings.HasPrefix(lower, "rediss+cluster://"):
+		mode, useTLS, rest = "cluster", true, dsn[len("rediss+cluster://"):]
+	case strings.HasPrefix(lower, "redis+sentinel://"):
+		mode, rest = "sentinel", dsn[len("redis+sentinel://"):]
+	case strings.HasPrefix(lower, "rediss+sentinel://"):
+		mode, useTLS, rest = "sentinel", true, dsn[len("rediss+sentinel://"):]
+	default:
+		return nil, false, nil
+	}
+
+	authority, pathAndQuery := rest, ""
+	if idx := strings.IndexAny(rest, "/?"); idx >= 0 {
+		authority = rest[:idx]
+		pathAndQuery = rest[idx:]
+	}
+	var user, pass string
+	if at := strings.LastIndex(authority, "@"); at >= 0 {
+		userInfo := authority[:at]
+		authority = authority[at+1:]
+		if u, p, ok := strings.Cut(userInfo, ":"); ok {
+			user, pass = u, p
+		} else {
+			user = userInfo
+		}
+	}
+	u, err := url.Parse("http://placeholder" + pathAndQuery)
+	if err != nil {
+		return nil, true, fmt.Errorf("invalid Redis %s URL: %w", mode, err)
+	}
+	addrs := strings.Split(authority, ",")
+	for i := range addrs {
+		addrs[i] = strings.TrimSpace(addrs[i])
+		if addrs[i] != "" && !strings.Contains(addrs[i], ":") {
+			if mode == "sentinel" {
+				addrs[i] += ":26379"
+			} else {
+				addrs[i] += ":6379"
+			}
+		}
+	}
+	if len(addrs) == 0 || addrs[0] == "" {
+		return nil, true, fmt.Errorf("invalid Redis %s URL: missing host", mode)
+	}
+	q := u.Query()
+	var tlsCfg *tls.Config
+	if useTLS {
+		tlsCfg = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	var dialer func(ctx context.Context, network, address string) (net.Conn, error)
+	if dial != nil {
+		dialer = wrapProxyDialer(dial, tlsCfg)
+	}
+	if mode == "cluster" {
+		if db > 0 {
+			return nil, true, fmt.Errorf("redis cluster only supports database 0")
+		}
+		cc := goredis.NewClusterClient(&goredis.ClusterOptions{
+			Addrs:                    addrs,
+			Username:                 user,
+			Password:                 pass,
+			TLSConfig:                tlsCfg,
+			Dialer:                   dialer,
+			MaxRetries:               -1,
+			ContextTimeoutEnabled:    true,
+			DisableIdentity:          true,
+			MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+		})
+		return &connection{client: cc, conn: cc, db: 0, mode: "cluster"}, true, nil
+	}
+	masterName := q.Get("master_name")
+	if masterName == "" {
+		masterName = "mymaster"
+	}
+	if db < 0 {
+		if raw := strings.TrimPrefix(u.Path, "/"); raw != "" {
+			if parsedDB, convErr := strconv.Atoi(raw); convErr == nil && parsedDB >= 0 {
+				db = parsedDB
+			}
+		}
+		if db < 0 {
+			db = 0
+		}
+	}
+	fc := goredis.NewFailoverClient(&goredis.FailoverOptions{
+		MasterName:            masterName,
+		SentinelAddrs:         addrs,
+		SentinelUsername:      q.Get("sentinel_username"),
+		SentinelPassword:      q.Get("sentinel_password"),
+		Username:              user,
+		Password:              pass,
+		DB:                    db,
+		TLSConfig:             tlsCfg,
+		Dialer:                dialer,
+		MaxRetries:            -1,
+		ContextTimeoutEnabled: true,
+		DisableIdentity:       true,
+	})
+	return &connection{client: fc, conn: fc, db: db, mode: "sentinel"}, true, nil
+}
+
 // open connects to db, or to the URL's database when db is negative.
 func open(ctx context.Context, dsn string, db int, dial database.Dial) (database.Connection, error) {
+	if c, handled, err := parseClusterOrSentinel(dsn, db, dial); handled {
+		if err != nil {
+			return nil, err
+		}
+		if err := c.conn.Ping(ctx).Err(); err != nil {
+			_ = c.Close()
+			return nil, err
+		}
+		return c, nil
+	}
 	opts, err := goredis.ParseURL(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("invalid Redis connection URL")
@@ -54,20 +199,7 @@ func open(ctx context.Context, dsn string, db int, dial database.Dial) (database
 		if opts.Network == "unix" {
 			return nil, fmt.Errorf("redis Unix sockets do not support proxies")
 		}
-		config := opts.TLSConfig
-		opts.Dialer = func(ctx context.Context, network, address string) (net.Conn, error) {
-			conn, err := dial(ctx, network, address)
-			if err != nil || config == nil {
-				return conn, err
-			}
-			// A custom dialer replaces go-redis TLS, so negotiate it over the proxy here.
-			secure := tls.Client(conn, config)
-			if err := secure.HandshakeContext(ctx); err != nil {
-				_ = conn.Close()
-				return nil, err
-			}
-			return secure, nil
-		}
+		opts.Dialer = wrapProxyDialer(dial, opts.TLSConfig)
 	}
 	// One connection keeps SELECT and MULTI state; retries could repeat writes.
 	opts.PoolSize = 1
@@ -76,7 +208,8 @@ func open(ctx context.Context, dsn string, db int, dial database.Dial) (database
 	opts.DisableIdentity = true
 	opts.MaintNotificationsConfig = &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}
 	client := goredis.NewClient(opts)
-	c := &connection{client: client, conn: client.Conn(), db: opts.DB}
+	pinned := client.Conn()
+	c := &connection{client: client, conn: pinned, closer: pinned, db: opts.DB}
 	if err := c.conn.Ping(ctx).Err(); err != nil {
 		_ = c.Close()
 		return nil, err
@@ -251,7 +384,12 @@ func (c *connection) Exec(ctx context.Context, text string, args ...any) error {
 	_, err := c.Query(ctx, text, args...)
 	return err
 }
-func (c *connection) Close() error { return errors.Join(c.conn.Close(), c.client.Close()) }
+func (c *connection) Close() error {
+	if c.closer != nil {
+		return errors.Join(c.closer.Close(), c.client.Close())
+	}
+	return c.client.Close()
+}
 
 // replyRows shows maps as field/value rows, arrays as one row per element and
 // other replies as a single value.
