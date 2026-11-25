@@ -9,6 +9,7 @@ import (
 	"github.com/benenen/dbh/internal/database/clickhouse"
 	"github.com/benenen/dbh/internal/database/dm"
 	"github.com/benenen/dbh/internal/database/elasticsearch"
+	"github.com/benenen/dbh/internal/database/milvus"
 	"github.com/benenen/dbh/internal/database/mongo"
 	"github.com/benenen/dbh/internal/database/mssql"
 	"github.com/benenen/dbh/internal/database/mysql"
@@ -31,6 +32,7 @@ var drivers = []string{
 	"clickhouse",
 	"redis",
 	"elasticsearch",
+	"milvus",
 }
 
 // Drivers returns the supported driver names.
@@ -48,6 +50,8 @@ func Lookup(name string) (database.Driver, error) {
 		return dm.Driver{}, nil
 	case "elasticsearch":
 		return elasticsearch.Driver{}, nil
+	case "milvus":
+		return milvus.Driver{}, nil
 	case "mongo":
 		return mongo.Driver{}, nil
 	case "mssql":

@@ -36,7 +36,7 @@ ClickHouse 使用官方 Go 驱动，支持原生 TCP（`clickhouse://`）和 HTT
 
 ## SQL Server（`mssql`）
 
-SQL Server 使用纯 Go 驱动 `go-mssqldb`，支持 `[schema].[table]` 方括号标识符与 `--proxy` 代理链。`\use` 与 `USE` 在当前会话内切换数据库；`\describe` 显示列类型、可空性、默认值与主键序号，`\indexes` 显示索引类型、唯一性与列清单。
+SQL Server 使用纯 Go 驱动 `go-mssqldb`，支持 `[schema].[table]` 方括号标识符与 `--proxy` 代理链。`\use` 重新连接到目标数据库；`\describe` 显示列类型、可空性、默认值与主键序号，`\indexes` 显示索引类型、唯一性与列清单。
 
 ## Oracle（`oracle`）
 
@@ -53,3 +53,7 @@ Trino 使用官方 `trino-go-client`，支持 `http://`、`https://` 与 `trino:
 ## Elasticsearch（`elasticsearch`）
 
 Elasticsearch 使用 HTTP REST + JSON 命令（`GET|POST|PUT|DELETE|HEAD|PATCH <path> [JSON body]`），支持 Basic Auth、`?api_key=...`、`?insecure=true` 与 `--proxy` 代理链。相对路径会自动拼接当前默认索引（可用 `--db` 或 `\use INDEX` 切换）。`\tables` / `\database` 列出索引，`\describe INDEX` 展开 `_mapping` 字段与类型；搜索响应（`hits.hits`）和 `_sql` 响应可直接以表格/CSV/JSON/TSV 输出。
+
+## Milvus（`milvus`）
+
+Milvus 使用 RESTful API v2 + JSON 命令（`GET|POST|PUT|DELETE|PATCH <path> [JSON body]`），支持 `user:password`、`?token=...` Bearer 认证、`?insecure=true` 与 `--proxy` 代理链。不以 `/` 开头的相对路径会自动补全 `/v2/vectordb/` 前缀，并在请求体缺少 `dbName` 时注入当前数据库（默认 `default`，可用 `--db` 或 `\use DB` 切换）。`\database` 列出数据库，`\tables` 列出 Collection，`\describe COLLECTION` 展开字段定义，`\indexes COLLECTION` 列出向量/标量索引。

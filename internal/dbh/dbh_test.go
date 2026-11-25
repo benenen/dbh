@@ -266,6 +266,8 @@ func TestAcceptSQLInput(t *testing.T) {
 		{"POST /users/_search {\"query\":{\"match_all\":{}}}", "elasticsearch", true},
 		{"POST /users/_search {\"query\":", "elasticsearch", false},
 		{"POST /users/_search {\"query\":{};", "elasticsearch", true},
+		{"POST collections/list {}", "milvus", true},
+		{"POST entities/query {\"collectionName\":", "milvus", false},
 		{"SELECT [a;b] FROM t;", "mssql", true},
 		{"SELECT 1;", "oracle", true},
 		{"SELECT 1;", "trino", true},
@@ -453,7 +455,7 @@ func TestShellCompletion(t *testing.T) {
 	for args, want := range map[string]string{
 		"exec zgy-mysql ":          ":4",
 		"new x ":                   ":4",
-		"new x --driver ":          "elasticsearch",
+		"new x --driver ":          "milvus",
 		"new y --driver ":          "trino",
 		"exec local --format ":     "csv",
 		"exec local --file ":       ":0",

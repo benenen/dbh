@@ -90,7 +90,7 @@ func TestCompletionLexicalContext(t *testing.T) {
 		{"postgres", "/* outer /* inner */ sel", false},
 		{"sqlite", "SELECT [sel", false},
 		{"redis", "GET sel", true}, {"redis", "GET 'sel", false},
-		{"redis", "GET #sel", true}, {"mongo", `{"find":"sel`, true}, {"elasticsearch", `GET /_cat/sel`, true},
+		{"redis", "GET #sel", true}, {"mongo", `{"find":"sel`, true}, {"elasticsearch", `GET /_cat/sel`, true}, {"milvus", `POST collections/sel`, true},
 		{"mssql", "SELECT [sel", false},
 		{"missing", "sel", false},
 	} {
@@ -113,7 +113,7 @@ func FuzzCompletionCandidates(f *testing.F) {
 		if (pos < 0 || pos > len(line)) && prefix != "" {
 			t.Fatal("invalid cursor returned a prefix")
 		}
-		for _, driver := range []string{"sqlite", "postgres", "mysql", "clickhouse", "redis", "mongo", "mssql", "oracle", "trino", "dm", "elasticsearch"} {
+		for _, driver := range []string{"sqlite", "postgres", "mysql", "clickhouse", "redis", "mongo", "mssql", "oracle", "trino", "dm", "elasticsearch", "milvus"} {
 			completionAllowed(input, driver)
 		}
 	})
