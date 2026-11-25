@@ -30,7 +30,7 @@ local/main> \q
 - `\use DATABASE` 或 `USE DATABASE;` 切换当前数据库，成功后刷新表/集合和字段提示，不修改保存的连接配置。MySQL 保留当前会话；PostgreSQL 重新建立连接，临时表、会话设置和未提交事务不保留，连接失败时仍保留旧连接；MongoDB 复用客户端并选择数据库，新库在写入数据后出现。SQLite 不支持切库。
 - `\tables` 列出表和视图；`\describe TABLE` 显示每个字段的名称、类型、是否可空、默认值、主键顺序和注释，并附上索引列表；`\indexes TABLE` 单独查看索引。支持 `schema.table` 和带引号的名称（如 `"a.b"`、`"order items"`），可直接使用 `\tables` 列出的名称；SQLite 表名不区分大小写。结果遵循当前 `\format`。
 - 索引显示名称、唯一性、主键标记及索引字段/定义。MySQL 联合索引按字段顺序逐行显示，包含索引类型、前缀长度和排序方向。SQLite 没有原生字段注释，注释显示为 `NULL`；`INTEGER PRIMARY KEY` 使用 rowid 时没有独立索引，因此不会出现在索引列表中。CSV/JSON 下字段与索引结果顺序输出，不插入文本标题。
-- `\history` 查看历史，`\clear` 清除待执行 SQL，`\format table|csv|json|tsv` 切换格式，`\pager auto|on|off` 控制大结果集交互分页浏览（默认 `auto`，表格超出终端高度或为多行宽表时自动进入可上下左右滚动的分页视图，按 `↑↓←→`/`hjkl`/`PgUp`/`PgDn`/`g`/`G` 滚动，`q`/`Esc` 返回提示符），`\help` 查看帮助。
+- `\history` 查看历史，`\clear` 清除待执行 SQL，`\format table|csv|json|tsv` 切换格式，`\pager auto|on|off` 控制大结果集交互分页浏览（默认 `auto`，表格超出终端高度或为多行宽表时自动进入可上下左右滚动的分页视图，按 `↑↓←→`/`hjkl`/`PgUp`/`PgDn`/`g`/`G` 滚动，`q`/`Esc` 返回提示符），`\truncate [N|off]` 查看或调整单元格显示截断宽度（`table` 默认 `200` 字符，大 BLOB 与高维向量显示摘要；`off`/`0` 查看完整内容），`\help` 查看帮助。
 - 慢查询或 `dbh erd pull` 执行期间，若 stderr 为交互终端且耗时超过 120ms，会在行内显示动态进度 Spinner 与实时耗时，完成后自动清行再输出结果，不污染 stdout 或脚本管道。
 
 ## 历史

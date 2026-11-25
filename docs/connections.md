@@ -65,5 +65,6 @@ dbh edit pg --no-proxy                              # 改为直连
 
 - `socks5://[user:pass@]host:port`：主机名交给代理解析（等同 `socks5h`）。
 - `ssh://[user[:pass]@]host[:port]`：端口默认 22，用户默认当前用户。认证依次尝试 URL 中的密码、`identity=FILE`（可重复）、`SSH_AUTH_SOCK` 代理和 `~/.ssh/id_ed25519|id_ecdsa|id_rsa`（有口令的密钥请放进 ssh-agent）。主机密钥按 `~/.ssh/known_hosts` 严格校验，可用 `known_hosts=FILE` 指定，未知主机会拒绝连接。
-- 使用代理时，DSN 中的主机名由最后一跳解析，可直接写内网主机名。PostgreSQL、MySQL、SQL Server、Oracle、Trino、ClickHouse（TCP 与 HTTP）、MongoDB、Redis（含 `rediss://`）、Elasticsearch 和 Milvus 支持代理，SQLite、达梦（`dm`）和 Redis Unix socket 不支持；MySQL 需使用 `tcp(...)` 地址，PostgreSQL 不支持 Unix socket。`mongodb+srv://` 的 SRV 记录仍在本机解析。ClickHouse HTTP、Trino、Elasticsearch 和 Milvus 使用代理列表时不再读取 `HTTP_PROXY` 环境变量。
+- 使用代理时，DSN 中的主机名由最后一跳解析，可直接写内网主机名。PostgreSQL、MySQL、SQL Server、Oracle、Trino、达梦（`dm`，经本地桥接）、ClickHouse（TCP 与 HTTP）、MongoDB、Redis（含 `rediss://`、`redis+cluster://`、`redis+sentinel://`）、Elasticsearch 和 Milvus 支持代理，SQLite 和 Redis Unix socket 不支持；MySQL 需使用 `tcp(...)` 地址，PostgreSQL 不支持 Unix socket。`mongodb+srv://` 的 SRV 记录仍在本机解析。ClickHouse HTTP、Trino、Elasticsearch 和 Milvus 使用代理列表时不再读取 `HTTP_PROXY` 环境变量。
+- 安全与分组：`new`/`edit` 支持 `--read-only`（默认拦截写操作）、`--env prod`（默认拦截 `DROP`/`TRUNCATE` 及无 `WHERE` 的 `UPDATE`/`DELETE`，可用 `--allow-write` 放行）、`--dsn-cmd`（连接时执行命令获取动态 DSN）以及 `--tag`（配合 `ls --tag` / `check --all --tag` 过滤）。
 - 代理 URL 中的密码与 DSN 一样明文保存在配置文件；`ls` 的 `PROXIES` 列隐藏密码和参数。
