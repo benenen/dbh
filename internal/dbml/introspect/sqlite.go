@@ -69,7 +69,7 @@ func introspectSQLite(ctx context.Context, db *sql.DB) (*DBSchema, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tables_columns: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var (
@@ -89,6 +89,9 @@ func introspectSQLite(ctx context.Context, db *sql.DB) (*DBSchema, error) {
 			tableOrder = append(tableOrder, tableName)
 		}
 
+		if strings.TrimSpace(columnType) == "" {
+			columnType = "any"
+		}
 		col := &Column{
 			Name:       columnName,
 			Type:       columnType,
@@ -139,7 +142,7 @@ func introspectSQLite(ctx context.Context, db *sql.DB) (*DBSchema, error) {
 	if err != nil {
 		return nil, fmt.Errorf("indexes: %w", err)
 	}
-	defer rows2.Close()
+	defer func() { _ = rows2.Close() }()
 
 	type idxKey struct{ table, name string }
 	idxMap := map[idxKey]*Index{}
@@ -178,16 +181,6 @@ func introspectSQLite(ctx context.Context, db *sql.DB) (*DBSchema, error) {
 				idx.addKey(keys[columnPosition], true)
 			}
 		}
-
-		if origin == "u" && isUniqueInt != 0 {
-			if t, ok := tableMap[tableName]; ok {
-				for _, col := range t.Columns {
-					if col.Name == columnName.String {
-						col.IsUnique = true
-					}
-				}
-			}
-		}
 	}
 	if err := rows2.Err(); err != nil {
 		return nil, err
@@ -196,7 +189,13 @@ func introspectSQLite(ctx context.Context, db *sql.DB) (*DBSchema, error) {
 	for _, key := range idxOrder {
 		if t, ok := tableMap[key.table]; ok {
 			idx := idxMap[key]
-			if idxOrigin[key] == "u" && len(idx.Columns) == 1 {
+			if idxOrigin[key] == "u" && len(idx.Columns) == 1 && !idx.Exprs[0] {
+				for _, col := range t.Columns {
+					if col.Name == idx.Columns[0] {
+						col.IsUnique = true
+						break
+					}
+				}
 				continue
 			}
 			t.Indexes = append(t.Indexes, idx)
@@ -207,7 +206,7 @@ func introspectSQLite(ctx context.Context, db *sql.DB) (*DBSchema, error) {
 	if err != nil {
 		return nil, fmt.Errorf("foreign_keys: %w", err)
 	}
-	defer rows3.Close()
+	defer func() { _ = rows3.Close() }()
 
 	type fkKey struct {
 		table string
@@ -249,7 +248,13 @@ func introspectSQLite(ctx context.Context, db *sql.DB) (*DBSchema, error) {
 		return nil, err
 	}
 	for _, key := range fkOrder {
-		result.FKs = append(result.FKs, fkMap[key])
+		fk := fkMap[key]
+		if len(fk.RefColumns) == 0 {
+			if refPKs := pkCols[fk.RefTable]; len(refPKs) == len(fk.Columns) {
+				fk.RefColumns = append([]string(nil), refPKs...)
+			}
+		}
+		result.FKs = append(result.FKs, fk)
 	}
 
 	return result, nil
@@ -265,21 +270,7 @@ func inferSQLiteDefault(val string) string {
 	if strings.HasPrefix(val, "'") {
 		return "string"
 	}
-	trimmed := strings.TrimSpace(val)
-	isNum := true
-	for i, c := range trimmed {
-		if c == '-' && i == 0 {
-			continue
-		}
-		if c == '.' {
-			continue
-		}
-		if c < '0' || c > '9' {
-			isNum = false
-			break
-		}
-	}
-	if isNum && trimmed != "" {
+	if isNumericLiteral(val) {
 		return "number"
 	}
 	return "expression"

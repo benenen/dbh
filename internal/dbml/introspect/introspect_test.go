@@ -77,7 +77,7 @@ func TestIntrospectSQLite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	_, err = db.Exec(`
 		CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL);
@@ -158,5 +158,130 @@ func TestMSSQLAndOracleHelpers(t *testing.T) {
 	}
 	if len(parsed.Tables) != 2 || len(parsed.Refs) != 1 {
 		t.Fatalf("parsed = %+v", parsed)
+	}
+}
+
+func TestGenerateDBMLSpecialCasesRoundTrip(t *testing.T) {
+	exprDef := "json_extract(`data`, '$.a')"
+	schema := &DBSchema{
+		Tables: []*Table{
+			{
+				Name:    "events",
+				Comment: "line1\n'''triple''' and trailing '",
+				Columns: []*Column{
+					{Name: "id", Type: "int", IsPrimaryKey: true},
+					{Name: "payload", Type: "json", Default: &exprDef, DefaultType: "expression"},
+					{Name: "status", Type: "events_status"},
+				},
+				Indexes: []*Index{
+					{Name: "idx_expr", Columns: []string{"json_extract(`payload`, '$.k')"}, Exprs: []bool{true}, Type: "function-based normal"},
+					{Name: "idx_rev", Columns: []string{"id"}, Type: "normal/rev"},
+					{Name: "idx_cs", Columns: []string{"status"}, Type: "nonclustered columnstore"},
+				},
+			},
+		},
+		Enums: []*Enum{
+			{Name: "events_status", Values: []string{"open", "in-progress", "24h", "a,b"}},
+		},
+	}
+
+	out := GenerateDBML(schema, "Oracle", false)
+	parsed, errs := dbml.Parse(out, dbml.ParseOptions{})
+	if len(errs) > 0 {
+		t.Fatalf("re-parse failed: %v\n%s", errs, out)
+	}
+	if got := parsed.Tables[0].Note; got == nil || got.Value != "line1\n'''triple''' and trailing '" {
+		t.Fatalf("table note = %+v", got)
+	}
+	if got := parsed.Tables[0].Fields[1].DBDefault; got == nil || got.Value != exprDef {
+		t.Fatalf("expr default = %+v, want %q", got, exprDef)
+	}
+	if len(parsed.Enums) != 1 || len(parsed.Enums[0].Values) != 4 {
+		t.Fatalf("enums = %+v", parsed.Enums)
+	}
+}
+
+func TestParseEnumValuesEdgeCases(t *testing.T) {
+	got := parseEnumValues("('a,b','it''s','x\\'y','c')")
+	want := []string{"a,b", "it's", "x'y", "c"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("got[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestIntrospectSQLiteEdgeCases(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	_, err = db.Exec(`
+		CREATE TABLE parent (id INTEGER PRIMARY KEY);
+		CREATE TABLE child (
+			a,
+			b TEXT,
+			parent_id INTEGER REFERENCES parent,
+			UNIQUE(a, b)
+		);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Introspect(context.Background(), db, EngineSQLite, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var child *Table
+	for _, tbl := range s.Tables {
+		if tbl.Name == "child" {
+			child = tbl
+		}
+	}
+	if child == nil {
+		t.Fatal("child table not found")
+	}
+	if child.Columns[0].Type != "any" {
+		t.Fatalf("untyped column type = %q, want any", child.Columns[0].Type)
+	}
+	if child.Columns[0].IsUnique || child.Columns[1].IsUnique {
+		t.Fatalf("composite unique should not mark single columns unique: a=%v b=%v", child.Columns[0].IsUnique, child.Columns[1].IsUnique)
+	}
+	if len(child.Indexes) != 1 || !child.Indexes[0].IsUnique || len(child.Indexes[0].Columns) != 2 {
+		t.Fatalf("composite unique index = %+v", child.Indexes)
+	}
+	if len(s.FKs) != 1 || len(s.FKs[0].RefColumns) != 1 || s.FKs[0].RefColumns[0] != "id" {
+		t.Fatalf("implicit PK FK = %+v", s.FKs)
+	}
+
+	out := GenerateDBML(s, "SQLite", false)
+	if _, errs := dbml.Parse(out, dbml.ParseOptions{}); len(errs) > 0 {
+		t.Fatalf("re-parse failed: %v\n%s", errs, out)
+	}
+}
+
+func TestHelpersNumericMSSQLAndTrino(t *testing.T) {
+	if v, typ := inferMSSQLDefault("((1)+(2))"); v != "(1)+(2)" || typ != "expression" {
+		t.Fatalf("inferMSSQLDefault((1)+(2)) = (%q, %q)", v, typ)
+	}
+	for _, bad := range []string{"-", ".", "1.2.3", ""} {
+		if isNumericLiteral(bad) {
+			t.Errorf("isNumericLiteral(%q) = true, want false", bad)
+		}
+	}
+	for _, good := range []string{"0", "-42", "+3.14", "1e-5"} {
+		if !isNumericLiteral(good) {
+			t.Errorf("isNumericLiteral(%q) = false, want true", good)
+		}
+	}
+	q, sch := buildTrinoTablesColumnsSQL("hive.analytics")
+	if sch != "analytics" || !strings.Contains(q, `"hive".information_schema.tables`) {
+		t.Fatalf("buildTrinoTablesColumnsSQL = (%q, %q)", sch, q)
 	}
 }

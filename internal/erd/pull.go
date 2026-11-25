@@ -129,7 +129,7 @@ func PullWithOptions(ctx context.Context, db *sql.DB, driver string, opts PullOp
 	}
 
 	filterDBSchema(merged, opts.Include, opts.Exclude)
-	return sanitizeDBMLNotes(introspect.GenerateDBML(merged, label, false)), nil
+	return introspect.GenerateDBML(merged, label, false), nil
 }
 
 func schemaTableKey(schema, name string) string {
@@ -195,116 +195,6 @@ func filterDBSchema(s *introspect.DBSchema, include, exclude []string) {
 		}
 	}
 	s.FKs = fks
-}
-
-var dbmlSingleQuoteEscaper = strings.NewReplacer(`\`, `\\`, `'`, `\'`)
-
-// sanitizeDBMLNotes converts Go-quoted double-quoted Note/note strings that
-// contain backslash escapes (such as \" or \n from MySQL/PostgreSQL comments)
-// into DBML single-quoted or triple-single-quoted strings. The DBML lexer
-// treats double-quoted literals as unescaped identifiers, so raw \" breaks
-// parsing on subsequent erd check / load runs.
-func sanitizeDBMLNotes(src string) string {
-	lines := strings.Split(src, "\n")
-	changed := false
-	for i, line := range lines {
-		updated, ok := sanitizeDBMLNoteLine(line)
-		if ok {
-			lines[i] = updated
-			changed = true
-		}
-	}
-	if !changed {
-		return src
-	}
-	return strings.Join(lines, "\n")
-}
-
-func sanitizeDBMLNoteLine(line string) (string, bool) {
-	var b strings.Builder
-	pos := 0
-	changed := false
-	for pos < len(line) {
-		idx, prefixLen := findNoteDoubleQuote(line[pos:])
-		if idx < 0 {
-			if changed {
-				b.WriteString(line[pos:])
-			}
-			break
-		}
-		quoteStart := pos + idx + prefixLen
-		quoteEnd := scanGoDoubleQuoteEnd(line, quoteStart)
-		if quoteEnd < 0 {
-			if changed {
-				b.WriteString(line[pos:])
-			}
-			break
-		}
-		lit := line[quoteStart : quoteEnd+1]
-		if !strings.ContainsRune(lit, '\\') {
-			if changed {
-				b.WriteString(line[pos : quoteEnd+1])
-			}
-			pos = quoteEnd + 1
-			continue
-		}
-		raw, err := strconv.Unquote(lit)
-		if err != nil {
-			if changed {
-				b.WriteString(line[pos : quoteEnd+1])
-			}
-			pos = quoteEnd + 1
-			continue
-		}
-		if !changed {
-			b.WriteString(line[:quoteStart])
-			changed = true
-		} else {
-			b.WriteString(line[pos:quoteStart])
-		}
-		b.WriteString(formatDBMLNoteString(raw))
-		pos = quoteEnd + 1
-	}
-	if !changed {
-		return line, false
-	}
-	return b.String(), true
-}
-
-func findNoteDoubleQuote(s string) (idx int, prefixLen int) {
-	for i := 0; i < len(s); i++ {
-		if i+7 <= len(s) && (s[i:i+7] == `note: "` || s[i:i+7] == `Note: "`) {
-			if i == 0 || s[i-1] == ' ' || s[i-1] == '\t' || s[i-1] == '[' || s[i-1] == ',' {
-				return i, 6
-			}
-		}
-	}
-	return -1, 0
-}
-
-func scanGoDoubleQuoteEnd(s string, start int) int {
-	if start >= len(s) || s[start] != '"' {
-		return -1
-	}
-	for i := start + 1; i < len(s); i++ {
-		if s[i] == '\\' {
-			i++
-			continue
-		}
-		if s[i] == '"' {
-			return i
-		}
-	}
-	return -1
-}
-
-func formatDBMLNoteString(raw string) string {
-	if strings.ContainsAny(raw, "\n\r") {
-		escaped := strings.ReplaceAll(raw, `\`, `\\`)
-		escaped = strings.ReplaceAll(escaped, `'''`, `\'\'\'`)
-		return "'''" + escaped + "'''"
-	}
-	return "'" + dbmlSingleQuoteEscaper.Replace(raw) + "'"
 }
 
 // checkMySQLVersion rejects MySQL before 8.0.16, which lacks

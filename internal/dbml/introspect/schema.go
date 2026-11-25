@@ -1,6 +1,17 @@
 // Package introspect reads database schemas via *sql.DB and renders DBML.
 package introspect
 
+import (
+	"regexp"
+	"strings"
+)
+
+var numericLiteralRe = regexp.MustCompile(`^[+-]?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$`)
+
+func isNumericLiteral(s string) bool {
+	return numericLiteralRe.MatchString(strings.TrimSpace(s))
+}
+
 // Engine identifies a supported database backend.
 type Engine int
 

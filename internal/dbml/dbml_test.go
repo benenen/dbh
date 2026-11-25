@@ -108,3 +108,102 @@ func TestRefsOnly(t *testing.T) {
 		t.Fatalf("error pos = %+v, want 1:1", errs[0].Position)
 	}
 }
+
+func TestTripleQuotedTrailingQuoteAndEscapes(t *testing.T) {
+	src := "Table items {\n  id int [pk, note: '''line1\n\\'''quoted\\''' and trailing \\'''']\n}\n"
+	db, errs := Parse(src, ParseOptions{})
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	want := "line1\n'''quoted''' and trailing '"
+	if got := db.Tables[0].Fields[0].Note; got == nil || got.Value != want {
+		t.Fatalf("note = %+v, want %q", got, want)
+	}
+}
+
+func TestNumbersAndSingleStringNewlineTracking(t *testing.T) {
+	src := "Table metrics {\n  a float [default: 1e-5]\n  b int [default: +42]\n  c text [default: 'x\\\ny']\n  d int\n}\n"
+	db, errs := Parse(src, ParseOptions{})
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	fields := db.Tables[0].Fields
+	if fields[0].DBDefault == nil || fields[0].DBDefault.Type != "number" || fields[0].DBDefault.Value != "1e-5" {
+		t.Fatalf("a default = %+v", fields[0].DBDefault)
+	}
+	if fields[1].DBDefault == nil || fields[1].DBDefault.Type != "number" || fields[1].DBDefault.Value != "+42" {
+		t.Fatalf("b default = %+v", fields[1].DBDefault)
+	}
+	tokens, lexErrs := lex("'x\\\ny'\nident")
+	if len(lexErrs) > 0 {
+		t.Fatalf("lexErrs: %v", lexErrs)
+	}
+	lastIdent := tokens[len(tokens)-2]
+	if lastIdent.pos.Line != 3 {
+		t.Fatalf("line after escaped newline = %d, want 3", lastIdent.pos.Line)
+	}
+}
+
+func TestComplexColumnTypes(t *testing.T) {
+	src := `
+Table complex_types {
+  a character varying(50) [not null]
+  b bit varying(10)
+  c interval day(2) to second(6)
+  d text[]
+  e text[][]
+  f character varying(50)[]
+}
+`
+	db, errs := Parse(src, ParseOptions{})
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	fields := db.Tables[0].Fields
+	if len(fields) != 6 {
+		t.Fatalf("fields = %d, want 6", len(fields))
+	}
+	if fields[0].Type.TypeName != "character" || fields[0].Type.Suffix != "varying(50)" {
+		t.Fatalf("a type = %+v", fields[0].Type)
+	}
+	if fields[1].Type.TypeName != "bit" || fields[1].Type.Suffix != "varying(10)" {
+		t.Fatalf("b type = %+v", fields[1].Type)
+	}
+	if fields[2].Type.TypeName != "interval" || fields[2].Type.Suffix != "day(2) to second(6)" {
+		t.Fatalf("c type = %+v", fields[2].Type)
+	}
+	if fields[3].Type.TypeName != "text" || fields[3].Type.Suffix != "[]" {
+		t.Fatalf("d type = %+v", fields[3].Type)
+	}
+	if fields[4].Type.TypeName != "text" || fields[4].Type.Suffix != "[][]" {
+		t.Fatalf("e type = %+v", fields[4].Type)
+	}
+	if fields[5].Type.TypeName != "character" || fields[5].Type.Suffix != "varying(50)[]" {
+		t.Fatalf("f type = %+v", fields[5].Type)
+	}
+}
+
+func TestTableHeaderNoteAndSettingsErrors(t *testing.T) {
+	src := `Table users [headercolor: blue, note: 'table header note'] { id int [pk] }`
+	db, errs := Parse(src, ParseOptions{})
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if db.Tables[0].Note == nil || db.Tables[0].Note.Value != "table header note" {
+		t.Fatalf("table note = %+v", db.Tables[0].Note)
+	}
+
+	badInputs := []string{
+		`Table t [note: 'x' { id int }`,
+		`Table t { id int [not foo] }`,
+		`Table t { id int [note: ] }`,
+		`Table t { id int indexes { id [unique } }`,
+		`Ref: a.id > b.id [delete: cascade`,
+		`Enum s { a [note: 'x' }`,
+	}
+	for _, in := range badInputs {
+		if _, errs := Parse(in, ParseOptions{}); len(errs) == 0 {
+			t.Errorf("expected parse error for %q", in)
+		}
+	}
+}

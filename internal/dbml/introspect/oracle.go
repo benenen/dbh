@@ -39,6 +39,7 @@ LEFT JOIN ALL_TAB_COMMENTS tc
 LEFT JOIN ALL_COL_COMMENTS cc
   ON cc.OWNER = c.OWNER AND cc.TABLE_NAME = c.TABLE_NAME AND cc.COLUMN_NAME = c.COLUMN_NAME
 WHERE t.OWNER = :1
+  AND t.TABLE_NAME NOT LIKE 'BIN$%'
 ORDER BY t.TABLE_NAME, c.COLUMN_ID
 `
 
@@ -115,7 +116,7 @@ func introspectOracleLike(ctx context.Context, db *sql.DB, schema string, isDM b
 	if err != nil {
 		return nil, fmt.Errorf("tables_columns: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var (
@@ -167,11 +168,33 @@ func introspectOracleLike(ctx context.Context, db *sql.DB, schema string, isDM b
 		result.Tables = append(result.Tables, tableMap[name])
 	}
 
+	if !isDM {
+		idRows, err := db.QueryContext(ctx,
+			`SELECT TABLE_NAME, COLUMN_NAME FROM ALL_TAB_COLUMNS WHERE OWNER = :1 AND IDENTITY_COLUMN = 'YES'`,
+			schema)
+		if err == nil {
+			defer func() { _ = idRows.Close() }()
+			for idRows.Next() {
+				var tblName, colName string
+				if scanErr := idRows.Scan(&tblName, &colName); scanErr == nil {
+					if t, ok := tableMap[tblName]; ok {
+						for _, col := range t.Columns {
+							if col.Name == colName {
+								col.IsIncrement = true
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	rows2, err := db.QueryContext(ctx, oracleSQL(oracleConstraintsSQL, isDM), schema)
 	if err != nil {
 		return nil, fmt.Errorf("constraints: %w", err)
 	}
-	defer rows2.Close()
+	defer func() { _ = rows2.Close() }()
 
 	type conKey struct{ table, name string }
 	conMap := map[conKey]*Constraint{}
@@ -218,7 +241,7 @@ func introspectOracleLike(ctx context.Context, db *sql.DB, schema string, isDM b
 	if err != nil {
 		return nil, fmt.Errorf("indexes: %w", err)
 	}
-	defer rows3.Close()
+	defer func() { _ = rows3.Close() }()
 
 	type idxKey struct{ table, name string }
 	idxMap := map[idxKey]*Index{}
@@ -254,7 +277,7 @@ func introspectOracleLike(ctx context.Context, db *sql.DB, schema string, isDM b
 	if err != nil {
 		return nil, fmt.Errorf("foreign_keys: %w", err)
 	}
-	defer rows4.Close()
+	defer func() { _ = rows4.Close() }()
 
 	fkMap := map[string]*ForeignKey{}
 	var fkOrder []string

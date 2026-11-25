@@ -19,7 +19,7 @@ WITH comments AS (
   JOIN pg_namespace pn ON pc.relnamespace = pn.oid
   LEFT JOIN pg_attribute pa
     ON pd.objoid = pa.attrelid AND pd.objsubid = pa.attnum
-  WHERE pc.relkind = 'r'
+  WHERE pc.relkind IN ('r', 'p')
     AND pn.nspname NOT IN ('pg_catalog', 'information_schema')
 ),
 table_positions AS (
@@ -29,7 +29,7 @@ table_positions AS (
     pn.nspname  AS table_schema
   FROM pg_class     pc
   JOIN pg_namespace pn ON pc.relnamespace = pn.oid
-  WHERE pc.relkind = 'r'
+  WHERE pc.relkind IN ('r', 'p')
     AND pn.nspname = :schema
 )
 SELECT
@@ -52,7 +52,7 @@ SELECT
     WHEN c.column_default LIKE 'nextval(%'                    THEN 'increment'
     WHEN c.column_default LIKE '''%'                          THEN 'string'
     WHEN c.column_default = 'true' OR c.column_default = 'false' THEN 'boolean'
-    WHEN c.column_default ~ '^-?[0-9]+(.[0-9]+)?$'           THEN 'number'
+    WHEN c.column_default ~ '^-?[0-9]+(\.[0-9]+)?$'           THEN 'number'
     ELSE 'expression'
   END AS default_type,
   (SELECT description FROM comments
@@ -110,7 +110,7 @@ index_info AS (
   JOIN pg_index ix ON t.oid = ix.indrelid
   JOIN pg_class i  ON i.oid = ix.indexrelid
   JOIN pg_am am ON i.relam = am.oid
-  WHERE t.relkind = 'r'
+  WHERE t.relkind IN ('r', 'p')
 )
 SELECT
   ut.tableschema   AS table_schema,
@@ -204,7 +204,7 @@ func introspectPostgres(ctx context.Context, db *sql.DB, schema string) (*DBSche
 	if err != nil {
 		return nil, fmt.Errorf("tables_columns: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var (
@@ -273,7 +273,7 @@ func introspectPostgres(ctx context.Context, db *sql.DB, schema string) (*DBSche
 	if err != nil {
 		return nil, fmt.Errorf("indexes: %w", err)
 	}
-	defer rows2.Close()
+	defer func() { _ = rows2.Close() }()
 
 	for rows2.Next() {
 		var (
@@ -336,7 +336,7 @@ func introspectPostgres(ctx context.Context, db *sql.DB, schema string) (*DBSche
 	if err != nil {
 		return nil, fmt.Errorf("check_constraints: %w", err)
 	}
-	defer rows3.Close()
+	defer func() { _ = rows3.Close() }()
 
 	for rows3.Next() {
 		var tableSchema, tableName string
@@ -361,7 +361,7 @@ func introspectPostgres(ctx context.Context, db *sql.DB, schema string) (*DBSche
 	if err != nil {
 		return nil, fmt.Errorf("enums: %w", err)
 	}
-	defer rows4.Close()
+	defer func() { _ = rows4.Close() }()
 
 	enumMap := map[string]*Enum{}
 	var enumOrder []string
@@ -392,7 +392,7 @@ func introspectPostgres(ctx context.Context, db *sql.DB, schema string) (*DBSche
 	if err != nil {
 		return nil, fmt.Errorf("foreign_keys: %w", err)
 	}
-	defer rows5.Close()
+	defer func() { _ = rows5.Close() }()
 
 	for rows5.Next() {
 		var (

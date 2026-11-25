@@ -118,18 +118,20 @@ func lex(src string) ([]token, []Error) {
 			continue
 		}
 
-		// Negative number vs dash operator
-		if r == '-' {
+		// Signed number vs dash operator
+		if r == '-' || r == '+' {
 			next, _ := utf8.DecodeRuneInString(l.src[l.offset+width:])
 			if next >= '0' && next <= '9' {
 				val := l.readNumber()
 				tokens = append(tokens, token{kind: tokNumber, value: val, pos: pos})
 				continue
 			}
-			l.advance(width)
-			l.col++
-			tokens = append(tokens, token{kind: tokDash, value: "-", pos: pos})
-			continue
+			if r == '-' {
+				l.advance(width)
+				l.col++
+				tokens = append(tokens, token{kind: tokDash, value: "-", pos: pos})
+				continue
+			}
 		}
 
 		if r >= '0' && r <= '9' {
@@ -262,7 +264,12 @@ func (l *lexer) readSingleString(startPos Position) string {
 				b.WriteByte('\\')
 				b.WriteRune(next)
 				l.advance(1 + nw)
-				l.col += 2
+				if next == '\n' {
+					l.line++
+					l.col = 1
+				} else {
+					l.col += 2
+				}
 				continue
 			}
 		}
@@ -289,7 +296,7 @@ func (l *lexer) readTripleString(startPos Position) string {
 			l.col += 3
 			return b.String()
 		}
-		if strings.HasPrefix(l.src[l.offset:], `\'''`) {
+		if strings.HasPrefix(l.src[l.offset:], `\'''`) && (!strings.HasPrefix(l.src[l.offset:], `\''''`) || strings.HasPrefix(l.src[l.offset:], `\''''''`)) {
 			b.WriteString("'''")
 			l.advance(4)
 			l.col += 4
@@ -297,6 +304,12 @@ func (l *lexer) readTripleString(startPos Position) string {
 		}
 		if strings.HasPrefix(l.src[l.offset:], `\\`) {
 			b.WriteByte('\\')
+			l.advance(2)
+			l.col += 2
+			continue
+		}
+		if strings.HasPrefix(l.src[l.offset:], `\'`) {
+			b.WriteByte('\'')
 			l.advance(2)
 			l.col += 2
 			continue
@@ -399,7 +412,7 @@ func (l *lexer) readBacktick(startPos Position) string {
 
 func (l *lexer) readNumber() string {
 	start := l.offset
-	if l.src[l.offset] == '-' {
+	if l.src[l.offset] == '-' || l.src[l.offset] == '+' {
 		l.advance(1)
 		l.col++
 	}
@@ -418,6 +431,27 @@ func (l *lexer) readNumber() string {
 			continue
 		}
 		break
+	}
+	// Optional scientific notation exponent: [eE][+-]?[0-9]+
+	if l.offset < len(l.src) && (l.src[l.offset] == 'e' || l.src[l.offset] == 'E') {
+		expPos := l.offset + 1
+		if expPos < len(l.src) && (l.src[expPos] == '+' || l.src[expPos] == '-') {
+			expPos++
+		}
+		if expPos < len(l.src) && l.src[expPos] >= '0' && l.src[expPos] <= '9' {
+			adv := expPos - l.offset
+			l.advance(adv)
+			l.col += adv
+			for l.offset < len(l.src) {
+				r, w := l.peek()
+				if r >= '0' && r <= '9' {
+					l.advance(w)
+					l.col++
+					continue
+				}
+				break
+			}
+		}
 	}
 	return l.src[start:l.offset]
 }

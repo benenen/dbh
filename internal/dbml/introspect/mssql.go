@@ -18,10 +18,22 @@ SELECT
   c.NUMERIC_SCALE,
   c.IS_NULLABLE,
   c.COLUMN_DEFAULT,
-  COALESCE(COLUMNPROPERTY(OBJECT_ID(QUOTENAME(c.TABLE_SCHEMA) + '.' + QUOTENAME(c.TABLE_NAME)), c.COLUMN_NAME, 'IsIdentity'), 0) AS is_identity
+  COALESCE(COLUMNPROPERTY(OBJECT_ID(QUOTENAME(c.TABLE_SCHEMA) + '.' + QUOTENAME(c.TABLE_NAME)), c.COLUMN_NAME, 'IsIdentity'), 0) AS is_identity,
+  CAST(tep.value AS NVARCHAR(MAX)) AS table_comment,
+  CAST(cep.value AS NVARCHAR(MAX)) AS column_comment
 FROM INFORMATION_SCHEMA.TABLES t
 JOIN INFORMATION_SCHEMA.COLUMNS c
   ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME
+LEFT JOIN sys.extended_properties tep
+  ON tep.major_id = OBJECT_ID(QUOTENAME(c.TABLE_SCHEMA) + '.' + QUOTENAME(c.TABLE_NAME))
+  AND tep.minor_id = 0
+  AND tep.name = 'MS_Description'
+  AND tep.class = 1
+LEFT JOIN sys.extended_properties cep
+  ON cep.major_id = OBJECT_ID(QUOTENAME(c.TABLE_SCHEMA) + '.' + QUOTENAME(c.TABLE_NAME))
+  AND cep.minor_id = COLUMNPROPERTY(OBJECT_ID(QUOTENAME(c.TABLE_SCHEMA) + '.' + QUOTENAME(c.TABLE_NAME)), c.COLUMN_NAME, 'ColumnId')
+  AND cep.name = 'MS_Description'
+  AND cep.class = 1
 WHERE t.TABLE_TYPE = 'BASE TABLE'
   AND t.TABLE_SCHEMA = @p1
 ORDER BY t.TABLE_NAME, c.ORDINAL_POSITION
@@ -85,26 +97,31 @@ func introspectMSSQL(ctx context.Context, db *sql.DB, schema string) (*DBSchema,
 	if err != nil {
 		return nil, fmt.Errorf("tables_columns: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var (
 			tableSchema, tableName, columnName, dataType, isNullable string
 			charMaxLen, numPrecision, numScale                       sql.NullInt64
-			columnDefault                                            sql.NullString
+			columnDefault, tableComment, columnComment               sql.NullString
 			isIdentity                                               int
 		)
 		if err := rows.Scan(
 			&tableSchema, &tableName, &columnName, &dataType,
 			&charMaxLen, &numPrecision, &numScale,
 			&isNullable, &columnDefault, &isIdentity,
+			&tableComment, &columnComment,
 		); err != nil {
 			return nil, fmt.Errorf("tables_columns scan: %w", err)
 		}
 
 		t, ok := tableMap[tableName]
 		if !ok {
-			t = &Table{Schema: tableSchema, Name: tableName}
+			comment := ""
+			if tableComment.Valid {
+				comment = tableComment.String
+			}
+			t = &Table{Schema: tableSchema, Name: tableName, Comment: comment}
 			tableMap[tableName] = t
 			tableOrder = append(tableOrder, tableName)
 		}
@@ -114,6 +131,9 @@ func introspectMSSQL(ctx context.Context, db *sql.DB, schema string) (*DBSchema,
 			Type:        mssqlColumnType(dataType, charMaxLen, numPrecision, numScale),
 			IsNullable:  isNullable == "YES",
 			IsIncrement: isIdentity != 0,
+		}
+		if columnComment.Valid {
+			col.Comment = columnComment.String
 		}
 		if columnDefault.Valid {
 			defVal, defType := inferMSSQLDefault(columnDefault.String)
@@ -133,7 +153,7 @@ func introspectMSSQL(ctx context.Context, db *sql.DB, schema string) (*DBSchema,
 	if err != nil {
 		return nil, fmt.Errorf("indexes: %w", err)
 	}
-	defer rows2.Close()
+	defer func() { _ = rows2.Close() }()
 
 	type idxKey struct{ table, name string }
 	type mssqlIdx struct {
@@ -206,7 +226,7 @@ func introspectMSSQL(ctx context.Context, db *sql.DB, schema string) (*DBSchema,
 	if err != nil {
 		return nil, fmt.Errorf("foreign_keys: %w", err)
 	}
-	defer rows3.Close()
+	defer func() { _ = rows3.Close() }()
 
 	fkMap := map[string]*ForeignKey{}
 	var fkOrder []string
@@ -265,10 +285,7 @@ func mssqlColumnType(dataType string, charMaxLen, numPrecision, numScale sql.Nul
 }
 
 func inferMSSQLDefault(raw string) (string, string) {
-	v := strings.TrimSpace(raw)
-	for strings.HasPrefix(v, "(") && strings.HasSuffix(v, ")") {
-		v = strings.TrimSpace(v[1 : len(v)-1])
-	}
+	v := stripOuterParens(strings.TrimSpace(raw))
 	if strings.HasPrefix(v, "N'") {
 		v = v[1:]
 	}
@@ -281,20 +298,42 @@ func inferMSSQLDefault(raw string) (string, string) {
 	return v, "expression"
 }
 
-func isNumericLiteral(s string) bool {
-	if s == "" {
-		return false
+func stripOuterParens(s string) string {
+	for len(s) >= 2 && s[0] == '(' && s[len(s)-1] == ')' {
+		depth := 0
+		inQuote := false
+		matched := true
+		for i := 0; i < len(s); i++ {
+			c := s[i]
+			if inQuote {
+				if c == '\'' {
+					if i+1 < len(s) && s[i+1] == '\'' {
+						i++
+						continue
+					}
+					inQuote = false
+				}
+				continue
+			}
+			switch c {
+			case '\'':
+				inQuote = true
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 && i < len(s)-1 {
+					matched = false
+				}
+			}
+			if !matched {
+				break
+			}
+		}
+		if !matched || depth != 0 {
+			break
+		}
+		s = strings.TrimSpace(s[1 : len(s)-1])
 	}
-	for i, c := range s {
-		if c == '-' && i == 0 {
-			continue
-		}
-		if c == '.' {
-			continue
-		}
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
+	return s
 }

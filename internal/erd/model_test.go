@@ -587,23 +587,30 @@ func BenchmarkFindAllDirs(b *testing.B) {
 	}
 }
 
-func TestSanitizeDBMLNotes(t *testing.T) {
-	// Simulated dbml-tools output with Go-quoted double quotes and newlines.
-	raw := "Table \"items\" {\n" +
-		"  \"id\" int [pk, note: \"primary \\\"id\\\" field\"]\n" +
-		"  \"status\" varchar(20) [not null, default: 'open', note: \"line1\\nline2 with 'quote' and \\\"dbl\\\"\"]\n" +
-		"\n  Note: \"table \\\"items\\\" comment\"\n" +
-		"}\n"
-	sanitized := sanitizeDBMLNotes(raw)
-	m := ParseDBML("schema", "schema.dbml", sanitized)
+func TestGenerateDBMLNotesRoundTrip(t *testing.T) {
+	defVal := "'open'::text"
+	schema := &introspect.DBSchema{
+		Tables: []*introspect.Table{
+			{
+				Name:    "items",
+				Comment: "table \"items\" comment\nwith '''triple''' and trailing '",
+				Columns: []*introspect.Column{
+					{Name: "id", Type: "int", IsPrimaryKey: true, Comment: `primary "id" field`},
+					{Name: "status", Type: "varchar(20)", Default: &defVal, DefaultType: "string", Comment: "line1\nline2 with 'quote' and \"dbl\""},
+				},
+			},
+		},
+	}
+	generated := introspect.GenerateDBML(schema, "PostgreSQL", false)
+	m := ParseDBML("schema", "schema.dbml", generated)
 	if len(m.Errors) != 0 {
-		t.Fatalf("sanitized DBML failed to parse: %v\n%s", m.Errors, sanitized)
+		t.Fatalf("generated DBML failed to parse: %v\n%s", m.Errors, generated)
 	}
 	if len(m.Tables) != 1 {
 		t.Fatalf("tables = %d", len(m.Tables))
 	}
 	tbl := m.Tables[0]
-	if tbl.Note != `table "items" comment` {
+	if tbl.Note != "table \"items\" comment\nwith '''triple''' and trailing '" {
 		t.Fatalf("table note = %q", tbl.Note)
 	}
 	if tbl.Columns[0].Note == nil || tbl.Columns[0].Note.Value != `primary "id" field` {

@@ -194,7 +194,7 @@ func (p *parser) parseTable() {
 
 	// Optional table settings [...]
 	if p.cur().kind == tokLBracket {
-		p.skipBracketSettings()
+		p.parseTableSettings(&tbl)
 	}
 
 	p.skipNewlines()
@@ -255,20 +255,42 @@ func (p *parser) skipLineInBlock() {
 	}
 }
 
-func (p *parser) skipBracketSettings() {
+func (p *parser) parseTableSettings(tbl *Table) {
 	if p.cur().kind != tokLBracket {
 		return
 	}
-	p.next()
-	depth := 1
-	for p.cur().kind != tokEOF && depth > 0 {
-		t := p.next()
-		switch t.kind {
-		case tokLBracket:
-			depth++
-		case tokRBracket:
-			depth--
+	p.next() // [
+	for p.cur().kind != tokEOF && p.cur().kind != tokRBracket {
+		if p.cur().kind == tokComma || p.cur().kind == tokNewline {
+			p.next()
+			continue
 		}
+		t := p.cur()
+		if t.kind != tokIdent {
+			p.next()
+			continue
+		}
+		key := strings.ToLower(t.value)
+		p.next()
+		if key == "note" && p.cur().kind == tokColon {
+			p.next()
+			if p.isIdentOrString(p.cur()) {
+				tbl.Note = &Note{Value: p.cur().value}
+				p.next()
+			} else {
+				p.errorAt(p.cur().pos, "expected string after 'note:'")
+			}
+			continue
+		}
+		if p.cur().kind == tokColon {
+			p.next()
+			p.skipSettingValue()
+		}
+	}
+	if p.cur().kind == tokRBracket {
+		p.next()
+	} else {
+		p.errorAt(p.cur().pos, "unterminated table settings '['")
 	}
 }
 
@@ -279,9 +301,10 @@ func (p *parser) skipRecordsBlock() {
 		depth := 1
 		for p.cur().kind != tokEOF && depth > 0 {
 			t := p.next()
-			if t.kind == tokLParen {
+			switch t.kind {
+			case tokLParen:
 				depth++
-			} else if t.kind == tokRParen {
+			case tokRParen:
 				depth--
 			}
 		}
@@ -373,55 +396,65 @@ func (p *parser) parseColumnType() (ColumnType, bool) {
 
 	// Optional (args)
 	if p.cur().kind == tokLParen {
-		p.next()
-		var args []string
-		depth := 1
-		for p.cur().kind != tokEOF && depth > 0 {
-			tok := p.next()
-			if tok.kind == tokLParen {
-				depth++
-				args = append(args, "(")
-				continue
-			}
-			if tok.kind == tokRParen {
-				depth--
-				if depth > 0 {
-					args = append(args, ")")
-				}
-				continue
-			}
-			if tok.kind == tokNewline {
-				continue
-			}
-			args = append(args, tok.value)
-		}
-		ct.Args = joinTypeArgs(args)
+		ct.Args = p.parseTypeParenArgs()
 	}
 
-	// Optional array suffix [] or multi-word SQL type suffixes (e.g., "unsigned", "with time zone").
+	// Optional SQL type suffixes (e.g., "unsigned", "with time zone",
+	// "varying(50)", "day(2) to second(6)") and array suffixes ([] / [][]).
 	var suffixes []string
 	for p.cur().kind != tokEOF && p.cur().kind != tokNewline && p.cur().kind != tokLBracket && p.cur().kind != tokRBrace {
-		if p.cur().kind == tokLBracket && p.peekNonNewline(1).kind == tokRBracket {
-			// Not possible in our lexer since [ is always tokLBracket, handled below.
-			break
-		}
 		if p.cur().kind == tokIdent {
 			suffixes = append(suffixes, p.cur().value)
 			p.next()
 			continue
 		}
+		if p.cur().kind == tokLParen && len(suffixes) > 0 {
+			args := p.parseTypeParenArgs()
+			suffixes[len(suffixes)-1] += "(" + args + ")"
+			continue
+		}
 		break
 	}
-	if p.cur().kind == tokLBracket && p.peekNonNewline(1).kind == tokRBracket {
-		// Array suffix `[]` before optional `[settings]`
+	for p.cur().kind == tokLBracket && p.peekNonNewline(1).kind == tokRBracket {
+		// Repeated array suffix `[]` before optional `[settings]`
 		p.next()
 		p.next()
-		suffixes = append(suffixes, "[]")
+		if len(suffixes) > 0 {
+			suffixes[len(suffixes)-1] += "[]"
+		} else {
+			suffixes = append(suffixes, "[]")
+		}
 	}
 	if len(suffixes) > 0 {
 		ct.Suffix = strings.Join(suffixes, " ")
 	}
 	return ct, true
+}
+
+func (p *parser) parseTypeParenArgs() string {
+	p.next() // (
+	var args []string
+	depth := 1
+	for p.cur().kind != tokEOF && depth > 0 {
+		tok := p.next()
+		if tok.kind == tokLParen {
+			depth++
+			args = append(args, "(")
+			continue
+		}
+		if tok.kind == tokRParen {
+			depth--
+			if depth > 0 {
+				args = append(args, ")")
+			}
+			continue
+		}
+		if tok.kind == tokNewline {
+			continue
+		}
+		args = append(args, tok.value)
+	}
+	return joinTypeArgs(args)
 }
 
 func joinTypeArgs(parts []string) string {
@@ -475,6 +508,8 @@ func (p *parser) parseColumnSettings(col *Column, tableSchema *string, tableName
 				p.next()
 				v := true
 				col.NotNull = &v
+			} else {
+				p.errorAt(p.cur().pos, "expected 'null' after 'not'")
 			}
 		case "default":
 			if p.cur().kind == tokColon {
@@ -484,9 +519,11 @@ func (p *parser) parseColumnSettings(col *Column, tableSchema *string, tableName
 		case "note":
 			if p.cur().kind == tokColon {
 				p.next()
-				if p.cur().kind == tokString || p.cur().kind == tokDoubleString || p.cur().kind == tokIdent {
+				if p.isIdentOrString(p.cur()) {
 					col.Note = &Note{Value: p.cur().value}
 					p.next()
+				} else {
+					p.errorAt(p.cur().pos, "expected string after 'note:'")
 				}
 			}
 		case "ref":
@@ -677,6 +714,8 @@ func (p *parser) parseIndexSettings(idx *Index) {
 	}
 	if p.cur().kind == tokRBracket {
 		p.next()
+	} else {
+		p.errorAt(p.cur().pos, "unterminated index settings '['")
 	}
 }
 
@@ -880,6 +919,8 @@ func (p *parser) parseRefSettings(ref *Ref) {
 	}
 	if p.cur().kind == tokRBracket {
 		p.next()
+	} else {
+		p.errorAt(p.cur().pos, "unterminated ref settings '['")
 	}
 }
 
@@ -941,6 +982,8 @@ func (p *parser) parseEnum() {
 			}
 			if p.cur().kind == tokRBracket {
 				p.next()
+			} else {
+				p.errorAt(p.cur().pos, "unterminated enum value settings '['")
 			}
 		}
 		enum.Values = append(enum.Values, val)

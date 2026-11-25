@@ -137,7 +137,7 @@ func introspectMariaDB(ctx context.Context, db *sql.DB, schema string) (*DBSchem
 	if err != nil {
 		return nil, fmt.Errorf("tables_columns: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var (
@@ -190,7 +190,7 @@ func introspectMariaDB(ctx context.Context, db *sql.DB, schema string) (*DBSchem
 	if err != nil {
 		return nil, fmt.Errorf("enums: %w", err)
 	}
-	defer rows2.Close()
+	defer func() { _ = rows2.Close() }()
 
 	for rows2.Next() {
 		var tableName, columnName, rawValues string
@@ -219,7 +219,7 @@ func introspectMariaDB(ctx context.Context, db *sql.DB, schema string) (*DBSchem
 	if err != nil {
 		return nil, fmt.Errorf("constraints: %w", err)
 	}
-	defer rows3.Close()
+	defer func() { _ = rows3.Close() }()
 
 	for rows3.Next() {
 		var tableName, constraintName, columnNames, constraintType string
@@ -267,7 +267,7 @@ func introspectMariaDB(ctx context.Context, db *sql.DB, schema string) (*DBSchem
 	if err != nil {
 		return nil, fmt.Errorf("indexes: %w", err)
 	}
-	defer rows4.Close()
+	defer func() { _ = rows4.Close() }()
 
 	type idxKey struct{ table, name string }
 	idxMap := map[idxKey]*Index{}
@@ -275,10 +275,11 @@ func introspectMariaDB(ctx context.Context, db *sql.DB, schema string) (*DBSchem
 
 	for rows4.Next() {
 		var (
-			tableName, idxName, columnName, idxType string
-			isUniqueInt                             int64
-			idxSubPart                              sql.NullInt64
-			idxExpression                           sql.NullString
+			tableName, idxName, idxType string
+			isUniqueInt                 int64
+			columnName                  sql.NullString
+			idxSubPart                  sql.NullInt64
+			idxExpression               sql.NullString
 		)
 		if err := rows4.Scan(&tableName, &isUniqueInt, &idxName, &columnName,
 			&idxSubPart, &idxType, &idxExpression); err != nil {
@@ -295,17 +296,17 @@ func introspectMariaDB(ctx context.Context, db *sql.DB, schema string) (*DBSchem
 			idxMap[key] = idx
 			idxOrder = append(idxOrder, key)
 		}
-		if idxExpression.Valid {
+		if idxExpression.Valid && idxExpression.String != "" {
 			idx.addKey(idxExpression.String, true)
-		} else if columnName != "" {
-			idx.addKey(columnName, false)
+		} else if columnName.Valid && columnName.String != "" {
+			idx.addKey(columnName.String, false)
 		}
 	}
 	if err := rows4.Err(); err != nil {
 		return nil, err
 	}
 	for _, key := range idxOrder {
-		if t, ok := tableMap[key.table]; ok {
+		if t, ok := tableMap[key.table]; ok && len(idxMap[key].Columns) > 0 {
 			t.Indexes = append(t.Indexes, idxMap[key])
 		}
 	}
@@ -314,7 +315,7 @@ func introspectMariaDB(ctx context.Context, db *sql.DB, schema string) (*DBSchem
 	if err != nil {
 		_ = err
 	} else {
-		defer rows5.Close()
+		defer func() { _ = rows5.Close() }()
 		for rows5.Next() {
 			var constraintName, tableName, checkClause string
 			if err := rows5.Scan(&constraintName, &tableName, &checkClause); err != nil {
@@ -336,7 +337,7 @@ func introspectMariaDB(ctx context.Context, db *sql.DB, schema string) (*DBSchem
 	if err != nil {
 		return nil, fmt.Errorf("foreign_keys: %w", err)
 	}
-	defer rows6.Close()
+	defer func() { _ = rows6.Close() }()
 
 	for rows6.Next() {
 		var constraintName, foreignTableName, foreignColumnNames string
@@ -364,14 +365,31 @@ func parseEnumValues(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	raw = strings.TrimPrefix(raw, "(")
 	raw = strings.TrimSuffix(raw, ")")
-	parts := strings.Split(raw, ",")
-	values := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		p = strings.Trim(p, "'")
-		if p != "" {
-			values = append(values, p)
+	var values []string
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '\'' {
+			continue
 		}
+		i++
+		var b strings.Builder
+		for i < len(raw) {
+			if raw[i] == '\\' && i+1 < len(raw) {
+				b.WriteByte(raw[i+1])
+				i += 2
+				continue
+			}
+			if raw[i] == '\'' {
+				if i+1 < len(raw) && raw[i+1] == '\'' {
+					b.WriteByte('\'')
+					i += 2
+					continue
+				}
+				break
+			}
+			b.WriteByte(raw[i])
+			i++
+		}
+		values = append(values, b.String())
 	}
 	return values
 }

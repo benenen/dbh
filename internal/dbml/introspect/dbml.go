@@ -56,8 +56,9 @@ func writeTable(sb *strings.Builder, t *Table, normalize bool) {
 	var indexLines []string
 
 	for _, c := range t.Constraints {
-		if len(c.Columns) <= 1 && !(c.IsPrimary && len(c.Columns) == 1 &&
-			c.Name != "" && c.Name != t.Name+"_pkey" && c.Name != "PRIMARY") {
+		namedSinglePK := c.IsPrimary && len(c.Columns) == 1 &&
+			c.Name != "" && c.Name != t.Name+"_pkey" && c.Name != "PRIMARY"
+		if len(c.Columns) <= 1 && !namedSinglePK {
 			continue
 		}
 		var attrs []string
@@ -77,7 +78,7 @@ func writeTable(sb *strings.Builder, t *Table, normalize bool) {
 		keys := make([]string, len(idx.Columns))
 		for i, c := range idx.Columns {
 			if i < len(idx.Exprs) && idx.Exprs[i] {
-				keys[i] = "`" + c + "`"
+				keys[i] = "`" + dbmlBacktick(c) + "`"
 			} else {
 				keys[i] = fmt.Sprintf("%q", c)
 			}
@@ -91,7 +92,11 @@ func writeTable(sb *strings.Builder, t *Table, normalize bool) {
 			attrs = append(attrs, fmt.Sprintf("name: %s", formatDBMLString(idx.Name)))
 		}
 		if typ := strings.ToLower(idx.Type); typ != "" && typ != "btree" {
-			attrs = append(attrs, "type: "+typ)
+			if isSimpleIdent(typ) {
+				attrs = append(attrs, "type: "+typ)
+			} else {
+				attrs = append(attrs, "type: "+formatDBMLString(typ))
+			}
 		}
 		line := "    " + colStr
 		if len(attrs) > 0 {
@@ -195,7 +200,7 @@ func columnAttrs(col *Column, isSerial bool) []string {
 		case "boolean":
 			attrs = append(attrs, "default: "+strings.ToLower(*col.Default))
 		case "expression":
-			attrs = append(attrs, fmt.Sprintf("default: `%s`", *col.Default))
+			attrs = append(attrs, fmt.Sprintf("default: `%s`", dbmlBacktick(*col.Default)))
 		}
 	}
 	if col.Comment != "" {
@@ -209,12 +214,19 @@ func writeEnum(sb *strings.Builder, e *Enum) {
 	sb.WriteString(tableIdent(e.Schema, e.Name))
 	sb.WriteString(" {\n")
 	for _, v := range e.Values {
-		fmt.Fprintf(sb, "  %s\n", v)
+		if isSimpleIdent(v) {
+			fmt.Fprintf(sb, "  %s\n", v)
+		} else {
+			fmt.Fprintf(sb, "  %s\n", formatDBMLString(v))
+		}
 	}
 	sb.WriteString("}\n")
 }
 
 func writeRef(sb *strings.Builder, fk *ForeignKey) {
+	if len(fk.Columns) == 0 || len(fk.RefColumns) == 0 || len(fk.Columns) != len(fk.RefColumns) {
+		return
+	}
 	fromTbl := tableIdent(fk.Schema, fk.TableName)
 	toTbl := tableIdent(fk.RefSchema, fk.RefTable)
 
@@ -298,10 +310,35 @@ func dbmlString(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s)
 }
 
+func dbmlBacktick(s string) string {
+	return strings.NewReplacer(`\`, `\\`, "`", "\\`").Replace(s)
+}
+
+func isSimpleIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isLetter := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+		isDigit := c >= '0' && c <= '9'
+		if i == 0 && !isLetter {
+			return false
+		}
+		if !isLetter && !isDigit {
+			return false
+		}
+	}
+	return true
+}
+
 func formatDBMLString(s string) string {
 	if strings.ContainsAny(s, "\n\r") {
 		escaped := strings.ReplaceAll(s, `\`, `\\`)
-		escaped = strings.ReplaceAll(escaped, `'''`, `\'\'\'`)
+		escaped = strings.ReplaceAll(escaped, `'''`, `\'''`)
+		if strings.HasSuffix(escaped, "'") {
+			escaped = escaped[:len(escaped)-1] + `\'`
+		}
 		return "'''" + escaped + "'''"
 	}
 	return "'" + dbmlString(s) + "'"

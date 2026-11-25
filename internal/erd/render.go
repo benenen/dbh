@@ -19,7 +19,11 @@ func columnType(c dbml.Column) string {
 		text += "(" + c.Type.Args + ")"
 	}
 	if c.Type.Suffix != "" {
-		text += " " + c.Type.Suffix
+		if strings.HasPrefix(c.Type.Suffix, "[") {
+			text += c.Type.Suffix
+		} else {
+			text += " " + c.Type.Suffix
+		}
 	}
 	return text
 }
