@@ -248,25 +248,30 @@ func diagnosticStage(err error) string {
 	if errors.As(err, &hop) {
 		return fmt.Sprintf("Proxy hop %d", hop.Hop)
 	}
-	if authenticationError(err) {
-		return "Authentication"
-	}
 	var network *net.OpError
 	var dns *net.DNSError
 	if errors.As(err, &network) || errors.As(err, &dns) || errors.Is(err, context.DeadlineExceeded) {
 		return "Network"
 	}
+	if authenticationError(err) {
+		return "Authentication"
+	}
 	return "Database"
 }
 
 func authenticationError(err error) bool {
+	var network *net.OpError
+	var dns *net.DNSError
+	if errors.As(err, &network) || errors.As(err, &dns) {
+		return false
+	}
 	text := strings.ToLower(err.Error())
 	for _, marker := range []string{
 		"authentication failed", "authentication failure", "failed to authenticate",
 		"password authentication", "access denied for user", "wrongpass", "noauth",
 		"unable to authenticate", "authenticationfailed", "no supported methods remain",
 		"no ssh credentials", "login failed", "ora-01017", "invalid username or password",
-		"unauthorized", "security_exception", "401",
+		"unauthorized", "security_exception", "status 401", "http 401", "401 unauthorized", "elasticsearch 401",
 	} {
 		if strings.Contains(text, marker) {
 			return true

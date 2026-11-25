@@ -294,6 +294,25 @@ func TestConnectionDiagnosticsDoNotExposeSecrets(t *testing.T) {
 	<-done
 }
 
+func TestDiagnosticStagePort401(t *testing.T) {
+	netErr := &net.OpError{
+		Op:   "dial",
+		Net:  "tcp",
+		Addr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 40123},
+		Err:  fmt.Errorf("connect: connection refused"),
+	}
+	if stage := diagnosticStage(netErr); stage != "Network" {
+		t.Fatalf("diagnosticStage(port 40123 OpError) = %q, want Network", stage)
+	}
+	if reason := diagnosticReason(netErr); !strings.Contains(reason, "connection refused") {
+		t.Fatalf("diagnosticReason(port 40123 OpError) = %q", reason)
+	}
+	authErr := fmt.Errorf("elasticsearch returned status 401")
+	if stage := diagnosticStage(authErr); stage != "Authentication" {
+		t.Fatalf("diagnosticStage(status 401) = %q, want Authentication", stage)
+	}
+}
+
 func TestSQLFeaturesOnExternalDrivers(t *testing.T) {
 	for _, driver := range []string{"postgres", "mysql"} {
 		t.Run(driver, func(t *testing.T) {
