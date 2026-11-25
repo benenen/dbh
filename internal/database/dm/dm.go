@@ -123,7 +123,7 @@ func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (databas
 	if dial == nil {
 		return database.OpenSQL(ctx, "dm", dsn)
 	}
-	target, rewritten, err := rewriteDMDSN(dsn, "127.0.0.1:0")
+	target, _, err := rewriteDMDSN(dsn, "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +131,7 @@ func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (databas
 	if err != nil {
 		return nil, err
 	}
-	_, rewritten, err = rewriteDMDSN(dsn, localAddr)
+	_, rewritten, err := rewriteDMDSN(dsn, localAddr)
 	if err != nil {
 		bridge.Close()
 		return nil, err

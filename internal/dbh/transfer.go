@@ -94,7 +94,7 @@ func exportCommand(store func() (Store, error), names cobra.CompletionFunc) *cob
 			}
 		}
 
-		var out io.Writer = cmd.OutOrStdout()
+		out := cmd.OutOrStdout()
 		var f *os.File
 		var tmpPath string
 		if outputPath != "" {
@@ -292,7 +292,7 @@ func importCommand(store func() (Store, error), names cobra.CompletionFunc) *cob
 			return fmt.Errorf("import blocked: connection is marked read-only (use --allow-write to override)")
 		}
 
-		var reader io.Reader = cmd.InOrStdin()
+		reader := cmd.InOrStdin()
 		var f *os.File
 		if file != "-" {
 			f, err = os.Open(file)
