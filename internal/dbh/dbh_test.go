@@ -506,3 +506,61 @@ func TestCompletionLoadsColumnsInOneQuery(t *testing.T) {
 		t.Fatalf("candidates: %v", words)
 	}
 }
+
+func TestConnectAndExecArgErrors(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) error {
+		cmd := NewCommand()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(append([]string{"--config-dir", dir}, args...))
+		return cmd.Execute()
+	}
+
+	err := run("c", "demo", "SELECT 1;")
+	if err == nil || !strings.Contains(err.Error(), "connect does not take a positional query") || !strings.Contains(err.Error(), `dbh exec demo "SELECT 1;"`) {
+		t.Fatalf("unexpected c 2-arg error: %v", err)
+	}
+	err = run("c")
+	if err == nil || !strings.Contains(err.Error(), "missing connection NAME") {
+		t.Fatalf("unexpected c 0-arg error: %v", err)
+	}
+	err = run("exec", "demo", "SELECT", "1")
+	if err == nil || !strings.Contains(err.Error(), "quote the query as a single argument") {
+		t.Fatalf("unexpected exec 3-arg error: %v", err)
+	}
+}
+
+func TestEnvEnumValidation(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) error {
+		cmd := NewCommand()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(append([]string{"--config-dir", dir}, args...))
+		return cmd.Execute()
+	}
+
+	for _, valid := range []string{"dev", "test", "staging", "PROD"} {
+		name := "c_" + strings.ToLower(valid)
+		if err := run("new", name, "--driver", "sqlite", "--dsn", ":memory:", "--env", valid); err != nil {
+			t.Fatalf("expected --env %s to succeed: %v", valid, err)
+		}
+	}
+	st := Store{Dir: dir}
+	p, err := st.Get("c_prod")
+	if err != nil || p.Env != "prod" {
+		t.Fatalf("expected normalized env=prod, got %+v (%v)", p, err)
+	}
+	if err := run("edit", "c_prod", "--env", ""); err != nil {
+		t.Fatalf("clear env: %v", err)
+	}
+	if p, err = st.Get("c_prod"); err != nil || p.Env != "" {
+		t.Fatalf("expected cleared env, got %+v (%v)", p, err)
+	}
+	if err := run("new", "bad_env", "--driver", "sqlite", "--dsn", ":memory:", "--env", "prd"); err == nil || !strings.Contains(err.Error(), "env must be dev, test, staging or prod") {
+		t.Fatalf("expected enum error for --env prd, got: %v", err)
+	}
+}

@@ -92,34 +92,41 @@ func NewCommand() *cobra.Command {
 			}
 			filtered = append(filtered, p)
 		}
+		formatProxyCol := func(proxies []string) string {
+			if len(proxies) == 0 {
+				return "-"
+			}
+			hops := make([]string, len(proxies))
+			for i, hop := range proxies {
+				hops[i] = proxy.Display(hop)
+			}
+			return strings.Join(hops, " -> ")
+		}
 		if listFormat != "" {
 			values := make([][]any, 0, len(filtered))
 			for _, p := range filtered {
-				hops := make([]string, len(p.Proxies))
-				for i, hop := range p.Proxies {
-					hops[i] = proxy.Display(hop)
-				}
-				proxyCol := "-"
-				if len(hops) > 0 {
-					proxyCol = strings.Join(hops, " -> ")
-				}
-				values = append(values, []any{p.Name, p.Driver, proxyCol})
+				values = append(values, []any{p.Name, p.Driver, p.Env, p.ReadOnly, strings.Join(p.Tags, ","), formatProxyCol(p.Proxies)})
 			}
-			return writeRows(cmd.OutOrStdout(), []string{"name", "driver", "proxies"}, values, listFormat)
+			return writeRows(cmd.OutOrStdout(), []string{"name", "driver", "env", "read_only", "tags", "proxies"}, values, listFormat)
 		}
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-		if _, err := fmt.Fprintln(w, "NAME\tDRIVER\tPROXIES"); err != nil {
+		if _, err := fmt.Fprintln(w, "NAME\tDRIVER\tENV\tMODE\tTAGS\tPROXIES"); err != nil {
 			return err
 		}
 		for _, p := range filtered {
-			hops := make([]string, len(p.Proxies))
-			for i, hop := range p.Proxies {
-				hops[i] = proxy.Display(hop)
+			envCol := p.Env
+			if envCol == "" {
+				envCol = "-"
 			}
-			if len(hops) == 0 {
-				hops = []string{"-"}
+			modeCol := "rw"
+			if p.ReadOnly {
+				modeCol = "ro"
 			}
-			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", p.Name, p.Driver, strings.Join(hops, " -> ")); err != nil {
+			tagsCol := "-"
+			if len(p.Tags) > 0 {
+				tagsCol = strings.Join(p.Tags, ",")
+			}
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, p.Driver, envCol, modeCol, tagsCol, formatProxyCol(p.Proxies)); err != nil {
 				return err
 			}
 		}
@@ -152,10 +159,11 @@ func NewCommand() *cobra.Command {
 		c.Flags().BoolVar(&prompt, "prompt-dsn", false, "Read DSN with terminal echo disabled")
 		c.Flags().StringArrayVar(&proxies, "proxy", nil, "Proxy hop socks5://[user:pass@]host:port or ssh://[user[:pass]@]host[:port]; repeat in dial order")
 		c.Flags().BoolVar(&readOnly, "read-only", false, "Block write statements by default")
-		c.Flags().StringVar(&env, "env", "", "Environment label (e.g. prod, staging, dev)")
+		c.Flags().StringVar(&env, "env", "", "Environment: dev, test, staging or prod")
 		c.Flags().StringArrayVar(&tags, "tag", nil, "Connection tag; repeat to set multiple")
 		c.MarkFlagsMutuallyExclusive("dsn", "dsn-env", "dsn-cmd", "prompt-dsn")
 		_ = c.RegisterFlagCompletionFunc("driver", fixed(registry.Drivers()...))
+		_ = c.RegisterFlagCompletionFunc("env", fixed("dev", "test", "staging", "prod"))
 		// SQLite DSNs are file paths.
 		_ = c.RegisterFlagCompletionFunc("dsn", files)
 		_ = c.RegisterFlagCompletionFunc("dsn-env", func(_ *cobra.Command, _ []string, prefix string) ([]cobra.Completion, cobra.ShellCompDirective) {
@@ -220,7 +228,11 @@ func NewCommand() *cobra.Command {
 				p.ReadOnly = false
 			}
 			if cmd.Flags().Changed("env") {
-				p.Env = strings.TrimSpace(env)
+				normEnv, envErr := normalizeEnv(env)
+				if envErr != nil {
+					return envErr
+				}
+				p.Env = normEnv
 			}
 			if cmd.Flags().Changed("tag") {
 				p.Tags = tags
@@ -272,7 +284,18 @@ func NewCommand() *cobra.Command {
 		var noHistory, stats, allowWrite, expanded bool
 		var maxRows, maxCellWidth, batchSize int
 		var params []string
-		connect := &cobra.Command{Use: "connect NAME", Aliases: []string{"c"}, Short: "Open a database shell, or execute queries from --sql, --file or stdin", Args: cobra.ExactArgs(1), ValidArgsFunction: names, RunE: func(cmd *cobra.Command, args []string) error {
+		connect := &cobra.Command{Use: "connect NAME", Aliases: []string{"c"}, Short: "Open a database shell, or execute queries from --sql, --file or stdin", Args: func(cmd *cobra.Command, args []string) error {
+			switch len(args) {
+			case 0:
+				return fmt.Errorf("missing connection NAME (usage: dbh %s NAME)", cmd.CalledAs())
+			case 1:
+				return nil
+			case 2:
+				return fmt.Errorf("connect does not take a positional query; use `dbh exec %s %q` or `dbh %s %s -e %q`", args[0], args[1], cmd.CalledAs(), args[0], args[1])
+			default:
+				return fmt.Errorf("connect expects 1 argument (NAME), got %d; to run a query use `dbh exec NAME QUERY` or `--sql`", len(args))
+			}
+		}, ValidArgsFunction: names, RunE: func(cmd *cobra.Command, args []string) error {
 			if executeOnly && len(args) == 2 {
 				if cmd.Flags().Changed("sql") || cmd.Flags().Changed("file") {
 					return fmt.Errorf("positional query cannot be combined with --sql or --file")
@@ -438,7 +461,16 @@ func NewCommand() *cobra.Command {
 			connect.Use = "exec NAME [QUERY]"
 			connect.Aliases = []string{"x"}
 			connect.Short = "Execute queries using a saved connection and optional database"
-			connect.Args = cobra.RangeArgs(1, 2)
+			connect.Args = func(cmd *cobra.Command, args []string) error {
+				switch {
+				case len(args) == 0:
+					return fmt.Errorf("missing connection NAME (usage: dbh %s NAME [QUERY])", cmd.CalledAs())
+				case len(args) > 2:
+					return fmt.Errorf("exec expects 1 or 2 arguments (NAME [QUERY]), got %d; quote the query as a single argument or use --sql / --file", len(args))
+				default:
+					return nil
+				}
+			}
 		}
 		connect.Flags().StringVarP(&query, "sql", "e", "", "Execute SQL, a MongoDB JSON command or Redis commands and exit")
 		connect.Flags().StringVarP(&file, "file", "f", "", "Execute a query file (- for stdin)")
@@ -562,6 +594,16 @@ func readHistory(s Store, name string) ([]string, error) {
 }
 
 func cleanInput(s string) string { return strings.TrimSpace(s) }
+
+func normalizeEnv(raw string) (string, error) {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	switch v {
+	case "", "dev", "test", "staging", "prod":
+		return v, nil
+	default:
+		return "", fmt.Errorf("env must be dev, test, staging or prod")
+	}
+}
 
 func writeAtomicFile(path string, data []byte) error {
 	return writeAtomicFileMode(path, data, 0o644)

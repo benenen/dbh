@@ -58,7 +58,11 @@ func TestDSNCmdAndTagsE2E(t *testing.T) {
 	contains(t, f.run("exec", "dyn", "SELECT 1 AS ok;", "--format", "tsv"), "1")
 
 	listed := f.run("ls", "--tag", "analytics")
+	contains(t, listed, "ENV")
+	contains(t, listed, "MODE")
+	contains(t, listed, "TAGS")
 	contains(t, listed, "dyn")
+	contains(t, listed, "analytics,local")
 	if strings.Contains(listed, "other") {
 		t.Fatalf("unexpected connection in --tag analytics list: %s", listed)
 	}
@@ -69,13 +73,20 @@ func TestDSNCmdAndTagsE2E(t *testing.T) {
 		t.Fatalf("unexpected connection in --tag analytics check: %s", checkOut)
 	}
 
-	contains(t, f.run("ls", "--tag", "analytics", "--format", "json"), `"name":"dyn"`)
+	lsJSON := f.run("ls", "--tag", "analytics", "--format", "json")
+	contains(t, lsJSON, `"name":"dyn"`)
+	contains(t, lsJSON, `"env":""`)
+	contains(t, lsJSON, `"read_only":false`)
+	contains(t, lsJSON, `"tags":"analytics,local"`)
 	contains(t, f.run("ls", "--tag", "analytics", "--format", "tsv"), "dyn\t")
 
 	f.run("edit", "dyn", "--no-tags")
 	excludes(t, f.run("ls", "--tag", "analytics"), "dyn")
 
 	f.run("edit", "other", "--env", "prod", "--read-only")
+	lsProd := f.run("ls")
+	contains(t, lsProd, "prod")
+	contains(t, lsProd, "ro")
 	contains(t, f.fail("exec", "other", "CREATE TABLE x (id INT);"), "read-only")
 	f.run("edit", "other", "--no-read-only", "--env", "")
 	f.run("exec", "other", "CREATE TABLE x (id INT);")

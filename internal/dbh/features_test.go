@@ -476,7 +476,7 @@ func TestSubcommandEnhancements(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(listed, "name\tdriver\tproxies\n") || !strings.Contains(listed, "demo\tsqlite\t-\n") {
+	if !strings.Contains(listed, "name\tdriver\tenv\tread_only\ttags\tproxies\n") || !strings.Contains(listed, "demo\tsqlite\t\tfalse\t\t-\n") {
 		t.Fatalf("unexpected list tsv:\n%s", listed)
 	}
 	if _, err := run("list", "--driver", "unknown"); err == nil {
