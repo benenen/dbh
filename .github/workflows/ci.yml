@@ -89,6 +89,11 @@ jobs:
           - elasticsearch
           - oracle
           - milvus
+          - qdrant
+          - neo4j
+          - influxdb
+          - tdengine
+          - cassandra
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -177,5 +182,35 @@ jobs:
               for i in $(seq 1 90); do curl -sf http://127.0.0.1:19091/healthz | grep -q OK && break; sleep 2; done
               export DBH_TEST_MILVUS_DSN="http://127.0.0.1:19530/default"
               go test -tags=e2e -count=1 -timeout=10m -v -run 'TestMilvusE2E' ./tests
+              ;;
+            qdrant)
+              docker run -d --name db-qdrant -p 6333:6333 qdrant/qdrant:v1.12.5
+              for i in $(seq 1 30); do curl -sf http://127.0.0.1:6333/collections >/dev/null 2>&1 && break; sleep 1; done
+              export DBH_TEST_QDRANT_DSN="http://127.0.0.1:6333"
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestQdrantE2E' ./tests
+              ;;
+            neo4j)
+              docker run -d --name db-neo4j -e NEO4J_AUTH=neo4j/DbhTest2026 -p 7474:7474 -p 7687:7687 neo4j:5-community
+              for i in $(seq 1 60); do curl -sf -u neo4j:DbhTest2026 -H "Content-Type: application/json" -d '{"statements":[{"statement":"RETURN 1"}]}' http://127.0.0.1:7474/db/neo4j/tx/commit | grep -q '"errors":\[\]' && break; sleep 2; done
+              export DBH_TEST_NEO4J_DSN="http://neo4j:DbhTest2026@127.0.0.1:7474/neo4j"
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestNeo4jE2E' ./tests
+              ;;
+            influxdb)
+              docker run -d --name db-influxdb -e DOCKER_INFLUXDB_INIT_MODE=setup -e DOCKER_INFLUXDB_INIT_USERNAME=admin -e DOCKER_INFLUXDB_INIT_PASSWORD=DbhTest2026 -e DOCKER_INFLUXDB_INIT_ORG=acme -e DOCKER_INFLUXDB_INIT_BUCKET=dbh_test -e DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=dbh-test-token -p 8086:8086 influxdb:2.7-alpine
+              for i in $(seq 1 45); do curl -sf http://127.0.0.1:8086/health | grep -q '"status":"pass"' && break; sleep 2; done
+              export DBH_TEST_INFLUXDB_DSN="http://127.0.0.1:8086/dbh_test?org=acme&token=dbh-test-token"
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestInfluxDBE2E' ./tests
+              ;;
+            tdengine)
+              docker run -d --name db-tdengine -p 6041:6041 tdengine/tdengine:latest
+              for i in $(seq 1 60); do curl -sf -u root:taosdata -d "SELECT SERVER_VERSION()" http://127.0.0.1:6041/rest/sql | grep -q '"code":0' && break; sleep 2; done
+              export DBH_TEST_TDENGINE_DSN="http://root:taosdata@127.0.0.1:6041"
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestTDengineE2E' ./tests
+              ;;
+            cassandra)
+              docker run -d --name db-cassandra -e MAX_HEAP_SIZE=512M -e HEAP_NEWSIZE=128M -p 9042:9042 cassandra:4.1
+              for i in $(seq 1 90); do docker exec db-cassandra cqlsh -e "SELECT release_version FROM system.local" >/dev/null 2>&1 && break; sleep 2; done
+              export DBH_TEST_CASSANDRA_DSN="cassandra://127.0.0.1:9042"
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestCassandraE2E' ./tests
               ;;
           esac
