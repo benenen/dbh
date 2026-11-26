@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -77,36 +78,43 @@ type pagerMatch struct {
 }
 
 type tablePagerModel struct {
-	lines      []string
-	maxWidth   int
-	rows       int
-	cols       int
-	elapsed    time.Duration
-	hasElapsed bool
-	width      int
-	height     int
-	yOffset    int
-	xOffset    int
-	searching  bool
-	query      string
-	matches    []pagerMatch
-	matchIdx   int
+	lines          []string
+	headerLines    int
+	pinnedColWidth int
+	maxWidth       int
+	rows           int
+	cols           int
+	elapsed        time.Duration
+	hasElapsed     bool
+	width          int
+	height         int
+	yOffset        int
+	xOffset        int
+	searching      bool
+	query          string
+	matches        []pagerMatch
+	matchIdx       int
 }
 
 func newTablePagerModel(content string, rows, cols int) *tablePagerModel {
 	trimmed := strings.TrimSuffix(content, "\n")
 	lines := strings.Split(trimmed, "\n")
 	maxW := 0
-	for _, l := range lines {
+	headerLines := 0
+	for i, l := range lines {
 		maxW = max(maxW, uniseg.StringWidth(l))
+		if headerLines == 0 && strings.HasPrefix(l, "├") && i+1 < len(lines) {
+			headerLines = i + 1
+		}
 	}
 	return &tablePagerModel{
-		lines:    lines,
-		maxWidth: maxW,
-		rows:     rows,
-		cols:     cols,
-		width:    80,
-		height:   24,
+		lines:       lines,
+		headerLines: headerLines,
+		maxWidth:    maxW,
+		rows:        rows,
+		cols:        cols,
+		width:       80,
+		height:      24,
 	}
 }
 
@@ -120,8 +128,35 @@ func (m *tablePagerModel) viewHeight() int {
 	return max(1, m.height-2)
 }
 
+func (m *tablePagerModel) pinnedLines() int {
+	if m.headerLines > 0 && m.viewHeight() > m.headerLines {
+		return m.headerLines
+	}
+	return 0
+}
+
+func (m *tablePagerModel) pinFirstColumn() {
+	if len(m.lines) == 0 {
+		return
+	}
+	if idx := strings.Index(m.lines[0], "┬"); idx >= 0 {
+		m.pinnedColWidth = uniseg.StringWidth(m.lines[0][:idx+len("┬")])
+	}
+}
+
+func (m *tablePagerModel) pinnedCols() int {
+	if m.pinnedColWidth > 0 && m.width > m.pinnedColWidth+4 {
+		return m.pinnedColWidth
+	}
+	return 0
+}
+
+func (m *tablePagerModel) bodyHeight() int {
+	return max(1, m.viewHeight()-m.pinnedLines())
+}
+
 func (m *tablePagerModel) maxYOffset() int {
-	return max(0, len(m.lines)-m.viewHeight())
+	return max(0, len(m.lines)-m.pinnedLines()-m.bodyHeight())
 }
 
 func (m *tablePagerModel) maxXOffset() int {
@@ -185,17 +220,23 @@ func (m *tablePagerModel) scrollToMatch(idx int) {
 		return
 	}
 	match := m.matches[idx]
-	vh := m.viewHeight()
-	if match.line < m.yOffset || match.line >= m.yOffset+vh {
-		m.yOffset = match.line - vh/3
+	pinned := m.pinnedLines()
+	bh := m.bodyHeight()
+	if match.line >= pinned {
+		bodyLine := match.line - pinned
+		if bodyLine < m.yOffset || bodyLine >= m.yOffset+bh {
+			m.yOffset = bodyLine - bh/3
+		}
 	}
-	if match.colStart < m.xOffset || match.colEnd > m.xOffset+m.width {
-		m.xOffset = match.colStart - m.width/4
+	pinW := m.pinnedCols()
+	scrollW := m.width - pinW
+	if match.colStart >= pinW && (match.colStart < pinW+m.xOffset || match.colEnd > pinW+m.xOffset+scrollW) {
+		m.xOffset = (match.colStart - pinW) - scrollW/4
 	}
 	m.clamp()
 }
 
-func (m *tablePagerModel) highlightVisibleLine(visible string, lineIdx int) string {
+func (m *tablePagerModel) highlightVisibleLine(visible string, lineIdx, startCol int) string {
 	if m.query == "" || len(m.matches) == 0 {
 		return visible
 	}
@@ -210,7 +251,7 @@ func (m *tablePagerModel) highlightVisibleLine(visible string, lineIdx int) stri
 		return visible
 	}
 	var b strings.Builder
-	col := m.xOffset
+	col := startCol
 	state := 0 // 0=none, 1=other match, 2=active match
 	g := uniseg.NewGraphemes(visible)
 	for g.Next() {
@@ -289,9 +330,9 @@ func (m *tablePagerModel) HandleKey(k tuiKey) bool {
 	case keyRight:
 		m.xOffset += 4
 	case keyPgUp:
-		m.yOffset -= max(1, m.viewHeight()-1)
+		m.yOffset -= max(1, m.bodyHeight()-1)
 	case keyPgDown:
-		m.yOffset += max(1, m.viewHeight()-1)
+		m.yOffset += max(1, m.bodyHeight()-1)
 	case keyHome:
 		m.yOffset = 0
 	case keyEnd:
@@ -331,7 +372,7 @@ func (m *tablePagerModel) HandleKey(k tuiKey) bool {
 		case 'G':
 			m.yOffset = m.maxYOffset()
 		case ' ':
-			m.yOffset += max(1, m.viewHeight()-1)
+			m.yOffset += max(1, m.bodyHeight()-1)
 		}
 	}
 	m.clamp()
@@ -347,13 +388,19 @@ func (m *tablePagerModel) Render() string {
 		fmt.Fprintf(&b, "\x1b[1;36mdbh results (%d rows × %d cols)\x1b[0m\n", m.rows, m.cols)
 	}
 	vh := m.viewHeight()
-	end := min(len(m.lines), m.yOffset+vh)
-	for i := m.yOffset; i < end; i++ {
-		visible := sliceColumns(m.lines[i], m.xOffset, m.width)
-		b.WriteString(m.highlightVisibleLine(visible, i))
+	pinned := m.pinnedLines()
+	bh := m.bodyHeight()
+	for i := 0; i < pinned; i++ {
+		b.WriteString(m.renderLine(i))
 		b.WriteByte('\n')
 	}
-	for i := end - m.yOffset; i < vh; i++ {
+	start := min(len(m.lines), pinned+m.yOffset)
+	end := min(len(m.lines), start+bh)
+	for i := start; i < end; i++ {
+		b.WriteString(m.renderLine(i))
+		b.WriteByte('\n')
+	}
+	for i := pinned + (end - start); i < vh; i++ {
 		b.WriteByte('\n')
 	}
 	if m.searching {
@@ -381,15 +428,41 @@ func (m *tablePagerModel) Render() string {
 	return b.String()
 }
 
+func (m *tablePagerModel) renderLine(lineIdx int) string {
+	if pinW := m.pinnedCols(); pinW > 0 {
+		left := m.highlightVisibleLine(sliceColumns(m.lines[lineIdx], 0, pinW), lineIdx, 0)
+		right := m.highlightVisibleLine(sliceColumns(m.lines[lineIdx], pinW+m.xOffset, m.width-pinW), lineIdx, pinW+m.xOffset)
+		return left + right
+	}
+	return m.highlightVisibleLine(sliceColumns(m.lines[lineIdx], m.xOffset, m.width), lineIdx, m.xOffset)
+}
+
+func prependRowNumbers(columns []string, rows [][]string) ([]string, [][]string) {
+	numberedCols := make([]string, len(columns)+1)
+	numberedCols[0] = "No"
+	copy(numberedCols[1:], columns)
+
+	numberedRows := make([][]string, len(rows))
+	for i, row := range rows {
+		r := make([]string, len(row)+1)
+		r[0] = strconv.Itoa(i + 1)
+		copy(r[1:], row)
+		numberedRows[i] = r
+	}
+	return numberedCols, numberedRows
+}
+
 // runTablePager opens an interactive scrollable viewport for wide or tall table
 // results, preserving horizontal width without forced column wrapping.
 func runTablePager(columns []string, rows [][]string, elapsed time.Duration) error {
+	numberedCols, numberedRows := prependRowNumbers(columns, rows)
 	var buf bytes.Buffer
-	width := max(tableNaturalWidth(columns, rows), 80)
-	if err := renderTable(&buf, columns, rows, width); err != nil {
+	width := max(tableNaturalWidth(numberedCols, numberedRows), 80)
+	if err := renderTable(&buf, numberedCols, numberedRows, width); err != nil {
 		return err
 	}
 	m := newTablePagerModel(buf.String(), len(rows), len(columns))
+	m.pinFirstColumn()
 	m.elapsed = elapsed
 	m.hasElapsed = true
 	return runAltScreenTUI(m)

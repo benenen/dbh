@@ -51,6 +51,9 @@ func TestTerminalLargeResultSetPager(t *testing.T) {
 	// 40 rows exceeds 20-row terminal height: auto pager opens.
 	pagerView := term.exchange("SELECT * FROM nums ORDER BY id;\r", "dbh results (40 rows")
 	contains(t, pagerView, "row-01")
+	bottomView := term.exchange("G", "row-40")
+	contains(t, bottomView, "id")
+	contains(t, bottomView, "note")
 	afterQuit := term.exchange("q", "demo/main> ")
 	contains(t, afterQuit, "(40 rows)")
 
@@ -89,8 +92,10 @@ func TestTerminalWideSmallResultOpensPager(t *testing.T) {
 	pagerView := term.exchange("SELECT * FROM wide_items LIMIT 2;\r", "dbh results (2 rows")
 	contains(t, pagerView, "Time:")
 	contains(t, pagerView, "2 rows returned")
+	contains(t, pagerView, "No")
 	contains(t, pagerView, "alpha-1")
 	searchView := term.exchange("/kappa-2\r", "(1/1)")
+	contains(t, searchView, "No")
 	contains(t, searchView, "kappa-2")
 	afterQuit := term.exchange("q", "demo/main> ")
 	contains(t, afterQuit, "(2 rows)")

@@ -200,6 +200,86 @@ func TestSessionMaxPagerRowsAndCanceledContext(t *testing.T) {
 	}
 }
 
+func TestTablePagerPinnedHeaderOnVerticalAndHorizontalScroll(t *testing.T) {
+	cols := []string{"first_col", "second_col", "third_col", "fourth_col"}
+	rows := make([][]string, 40)
+	for i := range rows {
+		tag := string(rune('0'+i/10)) + string(rune('0'+i%10))
+		rows[i] = []string{
+			"r-" + tag,
+			strings.Repeat("b", 12),
+			strings.Repeat("c", 12),
+			"row-" + tag,
+		}
+	}
+	var buf bytes.Buffer
+	if err := renderTable(&buf, cols, rows, tableNaturalWidth(cols, rows)); err != nil {
+		t.Fatal(err)
+	}
+	m := newTablePagerModel(buf.String(), len(rows), len(cols))
+	m.Resize(30, 12)
+
+	// Scroll to bottom: header should stay pinned at the top while bottom row is visible.
+	m.HandleKey(tuiKey{kind: keyRune, r: 'G'})
+	view := m.Render()
+	if !strings.Contains(view, "first_col") {
+		t.Fatalf("expected pinned header first_col after scrolling to bottom:\n%s", view)
+	}
+	if !strings.Contains(view, "r-39") {
+		t.Fatalf("expected bottom r-39 after scrolling to bottom:\n%s", view)
+	}
+
+	// Scroll horizontally to the right: pinned header should track xOffset too.
+	for range 12 {
+		m.HandleKey(tuiKey{kind: keyRight})
+	}
+	hView := m.Render()
+	if !strings.Contains(hView, "fourth_col") || !strings.Contains(hView, "row-39") {
+		t.Fatalf("expected pinned header fourth_col and row-39 after horizontal scroll:\n%s", hView)
+	}
+	if strings.Contains(hView, "first_col") {
+		t.Fatalf("did not expect first_col after scrolling past it:\n%s", hView)
+	}
+}
+
+func TestTablePagerPinnedNoColumn(t *testing.T) {
+	cols := []string{"first_col", "second_col", "third_col", "fourth_col"}
+	rows := make([][]string, 40)
+	for i := range rows {
+		tag := string(rune('0'+i/10)) + string(rune('0'+i%10))
+		rows[i] = []string{
+			"r-" + tag,
+			strings.Repeat("b", 12),
+			strings.Repeat("c", 12),
+			"row-" + tag,
+		}
+	}
+	numberedCols, numberedRows := prependRowNumbers(cols, rows)
+	var buf bytes.Buffer
+	if err := renderTable(&buf, numberedCols, numberedRows, tableNaturalWidth(numberedCols, numberedRows)); err != nil {
+		t.Fatal(err)
+	}
+	m := newTablePagerModel(buf.String(), len(rows), len(cols))
+	m.pinFirstColumn()
+	m.Resize(34, 12)
+
+	// Scroll to bottom and far right: No column and row number 40 stay pinned on the left.
+	m.HandleKey(tuiKey{kind: keyRune, r: 'G'})
+	for range 12 {
+		m.HandleKey(tuiKey{kind: keyRight})
+	}
+	view := m.Render()
+	if !strings.Contains(view, "No") || !strings.Contains(view, "40") {
+		t.Fatalf("expected pinned No column and row number 40:\n%s", view)
+	}
+	if !strings.Contains(view, "fourth_col") || !strings.Contains(view, "row-39") {
+		t.Fatalf("expected scrolled fourth_col and row-39 alongside pinned No column:\n%s", view)
+	}
+	if strings.Contains(view, "first_col") {
+		t.Fatalf("did not expect first_col after horizontal scroll:\n%s", view)
+	}
+}
+
 func TestTablePagerSearchAndHorizontalJump(t *testing.T) {
 	cols := []string{"c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8"}
 	rows := [][]string{
