@@ -5,7 +5,7 @@ description: Agent 直接调用 dbh CLI 查询和操作数据库，管理连接�
 
 # 使用 dbh CLI
 
-Agent 通过终端工具直接运行本机 `dbh`，完成用户要求的数据库查询和操作，并读取实际结果；仅在用户要求示例或说明时只提供命令。支持 `sqlite`、`postgres`、`mysql`、`mssql`、`oracle`、`trino`、`dm`、`mongo`、`clickhouse`、`redis`、`elasticsearch`、`milvus`、`qdrant`、`neo4j`、`influxdb`、`tdengine` 和 `cassandra` 十七种驱动。
+Agent 通过终端工具直接运行本机 `dbh`，完成用户要求的数据库查询和操作，并读取实际结果；仅在用户要求示例或说明时只提供命令。支持 `sqlite`、`postgres`、`mysql`、`mssql`、`oracle`、`trino`、`dm`、`mongo`、`clickhouse`、`redis`、`elasticsearch`、`milvus`、`qdrant`、`neo4j`、`influxdb`、`tdengine`、`cassandra`、`etcd`、`bbolt` 和 `openobserve` 二十种驱动。
 
 ## 选择连接与数据库
 
@@ -124,6 +124,9 @@ dbh exec docker-mongo --db dbh_test --sql '{"find":"agent_demo","filter":{"_id":
 | `influxdb` | `http://HOST:8086/BUCKET?org=ORG&token=TOKEN` | Flux 查询与 `WRITE <line-protocol>` 写入；切库切换默认 Bucket |
 | `tdengine` | `http://USER:PASSWORD@HOST:6041/DB` | SQL over HTTP REST（`/rest/sql`）；切库切换默认数据库 |
 | `cassandra` | `cassandra://HOST:9042/KEYSPACE` | CQL；切库重新连接目标 Keyspace |
+| `etcd` | `etcd://HOST:2379` | v3 HTTP/JSON 键值命令（`GET`/`PUT`/`DEL`/`PREFIX`/`KEYS`/`STATUS`），一行一条；不支持切库 |
+| `bbolt` | `bbolt:///path/to/file.db?readonly=true` | 本地嵌入式 KV（`BUCKETS`/`KEYS`/`GET`/`PUT`/`DEL`），一行一条；不支持 `--proxy` 与切库 |
+| `openobserve` | `openobserve://USER:PASSWORD@HOST:5080/ORG` | SQL over HTTP REST（`/_search`）与 `INGEST <stream> <json>`；切库切换默认组织 |
 
 PostgreSQL/ClickHouse 切库成功后原会话设置、临时表和未提交事务不保留；失败时保留当前连接。切库不修改保存的 DSN。
 

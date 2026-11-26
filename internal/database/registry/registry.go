@@ -6,16 +6,19 @@ import (
 	"strings"
 
 	"github.com/benenen/dbh/internal/database"
+	"github.com/benenen/dbh/internal/database/bbolt"
 	"github.com/benenen/dbh/internal/database/cassandra"
 	"github.com/benenen/dbh/internal/database/clickhouse"
 	"github.com/benenen/dbh/internal/database/dm"
 	"github.com/benenen/dbh/internal/database/elasticsearch"
+	"github.com/benenen/dbh/internal/database/etcd"
 	"github.com/benenen/dbh/internal/database/influxdb"
 	"github.com/benenen/dbh/internal/database/milvus"
 	"github.com/benenen/dbh/internal/database/mongo"
 	"github.com/benenen/dbh/internal/database/mssql"
 	"github.com/benenen/dbh/internal/database/mysql"
 	"github.com/benenen/dbh/internal/database/neo4j"
+	"github.com/benenen/dbh/internal/database/openobserve"
 	"github.com/benenen/dbh/internal/database/oracle"
 	"github.com/benenen/dbh/internal/database/postgres"
 	"github.com/benenen/dbh/internal/database/qdrant"
@@ -43,6 +46,9 @@ var drivers = []string{
 	"influxdb",
 	"tdengine",
 	"cassandra",
+	"etcd",
+	"bbolt",
+	"openobserve",
 }
 
 // Drivers returns the supported driver names.
@@ -54,6 +60,8 @@ func Drivers() []string {
 
 func Lookup(name string) (database.Driver, error) {
 	switch name {
+	case "bbolt":
+		return bbolt.Driver{}, nil
 	case "cassandra":
 		return cassandra.Driver{}, nil
 	case "clickhouse":
@@ -62,6 +70,8 @@ func Lookup(name string) (database.Driver, error) {
 		return dm.Driver{}, nil
 	case "elasticsearch":
 		return elasticsearch.Driver{}, nil
+	case "etcd":
+		return etcd.Driver{}, nil
 	case "influxdb":
 		return influxdb.Driver{}, nil
 	case "milvus":
@@ -74,6 +84,8 @@ func Lookup(name string) (database.Driver, error) {
 		return mysql.Driver{}, nil
 	case "neo4j":
 		return neo4j.Driver{}, nil
+	case "openobserve":
+		return openobserve.Driver{}, nil
 	case "oracle":
 		return oracle.Driver{}, nil
 	case "postgres":

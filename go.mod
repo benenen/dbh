@@ -17,6 +17,7 @@ require (
 	github.com/sijms/go-ora/v2 v2.9.0
 	github.com/spf13/cobra v1.10.2
 	github.com/trinodb/trino-go-client v1.1.0
+	go.etcd.io/bbolt v1.5.0
 	go.mongodb.org/mongo-driver/v2 v2.6.0
 	golang.org/x/crypto v0.55.0
 	golang.org/x/net v0.58.0
@@ -57,7 +58,7 @@ require (
 	github.com/rogpeppe/go-internal v1.16.0 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
-	github.com/spf13/pflag v1.0.9 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
 	github.com/xdg-go/scram v1.2.0 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect

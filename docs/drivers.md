@@ -77,3 +77,15 @@ TDengine 通过 RESTful `/rest/sql` 执行 SQL，支持 Basic Auth、`?insecure=
 ## Cassandra / ScyllaDB（`cassandra`）
 
 Cassandra 使用纯 Go `gocql` 驱动执行 CQL，支持 `?consistency=...&timeout=...` 与 `--proxy` 代理链。`\database` 列出 Keyspace，`\use KEYSPACE` 切换 Keyspace，`\tables`、`\describe` 与 `\indexes` 读取 `system_schema`。
+
+## etcd（`etcd`）
+
+etcd 通过 v3 HTTP/JSON Gateway 执行键值命令（`GET`、`PUT`、`DEL`、`PREFIX`、`KEYS`、`STATUS`、`COMPACT`、`POST <path> [json]`），每行一条命令，支持 `user:pass` 认证、`?tls=true` 与 `--proxy` 代理链。`\tables` 列出最多 200 个 key，`\describe KEY` 查询指定 key。
+
+## bbolt（`bbolt`）
+
+bbolt 使用纯 Go `go.etcd.io/bbolt` 打开本地嵌入式 KV 文件（`bbolt:///path/to/file.db?readonly=true`），不支持 `--proxy`。支持 `BUCKETS`、`KEYS <bucket> [prefix]`、`GET <bucket> <key>`、`PUT <bucket> <key> <value>`、`DEL <bucket> <key>`、`CREATE BUCKET`、`DELETE BUCKET` 与 `STATS`，每行一条命令。`\tables` 列出所有顶层 Bucket，`\describe BUCKET` 列出该 Bucket 下的键。
+
+## OpenObserve（`openobserve`）
+
+OpenObserve 通过 HTTP REST API 执行 SQL 查询（`POST /api/{org}/_search`）、`SHOW STREAMS`、`SHOW SCHEMA <stream>` 与 `INGEST <stream> <json>` 写入，支持 Basic Auth、`?token=...&stream_type=logs|metrics|traces&tls=true` 与 `--proxy` 代理链。`\database` 列出组织，`\use ORG` 切换默认组织，`\tables` 列出流（Stream），`\describe STREAM` 查看流字段 Schema。

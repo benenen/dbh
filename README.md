@@ -1,6 +1,6 @@
 # dbh
 
-用 Go 编写的数据库 CLI，支持 SQLite、PostgreSQL、MySQL、SQL Server、Oracle、Trino/Presto、达梦（DM）、MongoDB、ClickHouse、Redis、Elasticsearch、Milvus、Qdrant、Neo4j、InfluxDB、TDengine 和 Cassandra/ScyllaDB。管理命名连接，执行 SQL、Cypher、Flux、CQL、MongoDB 原生 JSON、Elasticsearch/Milvus/Qdrant HTTP REST 或 redis-cli 命令，或进入支持实时补全与查询历史的交互终端。
+用 Go 编写的数据库 CLI，支持 SQLite、PostgreSQL、MySQL、SQL Server、Oracle、Trino/Presto、达梦（DM）、MongoDB、ClickHouse、Redis、Elasticsearch、Milvus、Qdrant、Neo4j、InfluxDB、TDengine、Cassandra/ScyllaDB、etcd、bbolt 和 OpenObserve。管理命名连接，执行 SQL、Cypher、Flux、CQL、MongoDB 原生 JSON、Elasticsearch/Milvus/Qdrant/OpenObserve HTTP REST、etcd/bbolt 键值命令或 redis-cli 命令，或进入支持实时补全与查询历史的交互终端。
 
 ## 安装
 

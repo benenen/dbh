@@ -9,7 +9,7 @@ CLI 实现在 `internal/dbh`，按文件职责拆分。CLI 参数解析与输入
 
 `internal/erd` 管理项目 `.dbh/` 中的 DBML 关系模型：全项目多 `.dbh/` 扫描与模型合并（`FindAllDirs` / `LoadAll`，含同名表冲突与跨项目表警告）、用本地 `internal/dbml` 解析 `<model>.dbml`（declared）与 `<model>.refs.dbml`（inferred，只含 `Ref` 及 `// when:`、`// evidence:` 注释指令）、校验关系两端、去重、表/字段/关系查询、邻接与最短路径、`diff` 对比、`text`/`dot`/`mermaid`/离线交互 `html`（含字段行内注释）渲染，以及通过 `internal/dbml/introspect` 读取 SQLite/PostgreSQL/MySQL/SQL Server/Oracle/达梦/Trino 结构（`init` 首次初始化、`resync` 更新已有模型、`pull` 输出或保存、`diff` 对比线上库）。查询类命令只读文件，不打开数据库会话；`internal/dbml/introspect` 不导入任何数据库驱动注册。
 
-`internal/database.Driver` 定义会话创建、输入词法规则、切库及数据库/表/列/索引读取接口。MySQL、PostgreSQL、SQLite、SQL Server、Oracle、Trino、达梦、MongoDB、ClickHouse、Redis、Elasticsearch、Milvus、Qdrant、Neo4j、InfluxDB、TDengine、Cassandra 分别实现在 `internal/database/` 下各自包中；驱动注册、专属元数据查询、关系解析和能力差异留在各自包内。`internal/database/registry` 统一选择实现，供配置校验与会话初始化使用。
+`internal/database.Driver` 定义会话创建、输入词法规则、切库及数据库/表/列/索引读取接口。MySQL、PostgreSQL、SQLite、SQL Server、Oracle、Trino、达梦、MongoDB、ClickHouse、Redis、Elasticsearch、Milvus、Qdrant、Neo4j、InfluxDB、TDengine、Cassandra、etcd、bbolt、OpenObserve 分别实现在 `internal/database/` 下各自包中；驱动注册、专属元数据查询、关系解析和能力差异留在各自包内。`internal/database/registry` 统一选择实现，供配置校验与会话初始化使用。
 
 ## 关键决策
 

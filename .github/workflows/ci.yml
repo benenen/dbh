@@ -94,6 +94,8 @@ jobs:
           - influxdb
           - tdengine
           - cassandra
+          - etcd
+          - openobserve
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -212,5 +214,17 @@ jobs:
               for i in $(seq 1 90); do docker exec db-cassandra cqlsh -e "SELECT release_version FROM system.local" >/dev/null 2>&1 && break; sleep 2; done
               export DBH_TEST_CASSANDRA_DSN="cassandra://127.0.0.1:9042"
               go test -tags=e2e -count=1 -timeout=10m -v -run 'TestCassandraE2E' ./tests
+              ;;
+            etcd)
+              docker run -d --name db-etcd -p 2379:2379 quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://127.0.0.1:2379
+              for i in $(seq 1 30); do curl -sf http://127.0.0.1:2379/health >/dev/null && break; sleep 1; done
+              export DBH_TEST_ETCD_DSN="etcd://127.0.0.1:2379"
+              go test -tags=e2e -count=1 -timeout=5m -v -run 'TestEtcdE2E' ./tests
+              ;;
+            openobserve)
+              docker run -d --name db-openobserve -p 5080:5080 -e ZO_ROOT_USER_EMAIL=root@example.com -e ZO_ROOT_USER_PASSWORD=Complexpass#123 public.ecr.aws/zinclabs/openobserve:latest
+              for i in $(seq 1 45); do curl -sf http://127.0.0.1:5080/healthz >/dev/null && break; sleep 2; done
+              export DBH_TEST_OPENOBSERVE_DSN="openobserve://root@example.com:Complexpass#123@127.0.0.1:5080/default"
+              go test -tags=e2e -count=1 -timeout=5m -v -run 'TestOpenObserveE2E' ./tests
               ;;
           esac
