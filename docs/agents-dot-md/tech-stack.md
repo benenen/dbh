@@ -3,7 +3,7 @@
 
 ## 技术选型
 
-语言要求和固定依赖版本以 `go.mod` 为准。命令框架为 Cobra，终端编辑器为 reeflective/readline。关系型数据库沿用 `database/sql`：SQLite 使用 modernc 驱动，PostgreSQL 使用 pgx，MySQL 使用 go-sql-driver/mysql，SQL Server 使用 go-mssqldb，Oracle 使用 go-ora/v2，Trino 使用 trino-go-client，达梦使用 gitee.com/chunanyong/dm，ClickHouse 使用官方 clickhouse-go/v2 驱动；MongoDB 使用官方 Go Driver v2 执行原生 JSON 命令；Redis 使用 go-redis v9 执行 redis-cli 风格命令；Elasticsearch 与 Milvus 使用标准库 `net/http` 执行 HTTP REST 命令。各实现通过 `internal/database` 的驱动与会话接口共用 CLI、输出和配置体系。关系模型使用仓库内置的 `internal/dbml`（词法与语法解析）和 `internal/dbml/introspect`（读取 SQLite/PostgreSQL/MySQL/SQL Server/Oracle/达梦/Trino 结构与生成 DBML），零外部 DBML 依赖且不导入数据库驱动注册。
+语言要求和固定依赖版本以 `go.mod` 为准。命令框架为 Cobra，终端编辑器为 reeflective/readline。关系型数据库沿用 `database/sql`：SQLite 使用 modernc 驱动，PostgreSQL 使用 pgx，MySQL 使用 go-sql-driver/mysql，SQL Server 使用 go-mssqldb，Oracle 使用 go-ora/v2，Trino 使用 trino-go-client，达梦使用 gitee.com/chunanyong/dm，ClickHouse 使用官方 clickhouse-go/v2 驱动；MongoDB 使用官方 Go Driver v2；Redis 使用 go-redis v9；Cassandra/ScyllaDB 使用纯 Go `gocql`；Elasticsearch、Milvus、Qdrant、Neo4j、InfluxDB 与 TDengine 使用标准库 `net/http`。各实现通过 `internal/database` 的驱动与会话接口共用 CLI、输出和配置体系。关系模型使用仓库内置的 `internal/dbml`（词法与语法解析）和 `internal/dbml/introspect`（读取 SQLite/PostgreSQL/MySQL/SQL Server/Oracle/达梦/Trino 结构与生成 DBML），零外部 DBML 依赖且不导入数据库驱动注册。
 
 readline 暂通过 `go.mod` 的 `replace` 使用 fork `github.com/BenLocal/readline` 的 tag `v1.3.0-dbh.1`（分支 `dbh-patches`，基于上游 v1.3.0），修复终端光标回报阻塞键盘读取的问题，并允许 dbh 跳过前缀过滤以显示包含匹配的候选；补丁范围见该分支的 `DBH_PATCH.md`。更新依赖时必须保留这些修改或确认上游已支持，并运行 PTY 回归测试。
 

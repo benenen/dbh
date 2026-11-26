@@ -5,7 +5,7 @@ description: Agent 直接调用 dbh CLI 查询和操作数据库，管理连接�
 
 # 使用 dbh CLI
 
-Agent 通过终端工具直接运行本机 `dbh`，完成用户要求的数据库查询和操作，并读取实际结果；仅在用户要求示例或说明时只提供命令。支持 `sqlite`、`postgres`、`mysql`、`mssql`、`oracle`、`trino`、`dm`、`mongo`、`clickhouse`、`redis`、`elasticsearch` 和 `milvus` 十二种驱动。
+Agent 通过终端工具直接运行本机 `dbh`，完成用户要求的数据库查询和操作，并读取实际结果；仅在用户要求示例或说明时只提供命令。支持 `sqlite`、`postgres`、`mysql`、`mssql`、`oracle`、`trino`、`dm`、`mongo`、`clickhouse`、`redis`、`elasticsearch`、`milvus`、`qdrant`、`neo4j`、`influxdb`、`tdengine` 和 `cassandra` 十七种驱动。
 
 ## 选择连接与数据库
 
@@ -119,6 +119,11 @@ dbh exec docker-mongo --db dbh_test --sql '{"find":"agent_demo","filter":{"_id":
 | `dm` | `dm://USER:PASSWORD@HOST:5236` | SQL；切库切换当前 Schema，支持通过本地转发桥走 `--proxy` |
 | `elasticsearch` | `http://USER:PASSWORD@HOST:9200/INDEX`（支持 `?api_key=...&insecure=true`） | HTTP REST + JSON（`GET /_cat/indices`、`POST _search {...}`）；切库切换默认索引 |
 | `milvus` | `http://USER:PASSWORD@HOST:19530/DB`（支持 `?token=...&insecure=true`） | HTTP REST v2 + JSON（`POST collections/list {}`、`POST entities/query {...}`）；切库切换默认 `dbName` |
+| `qdrant` | `http://HOST:6333/COLLECTION`（支持 `?api_key=...&insecure=true`） | HTTP REST + JSON（`GET /collections`、`POST points/scroll {...}`）；切库切换默认 Collection |
+| `neo4j` | `http://USER:PASSWORD@HOST:7474/DB` | Cypher over HTTP；切库切换目标数据库 |
+| `influxdb` | `http://HOST:8086/BUCKET?org=ORG&token=TOKEN` | Flux 查询与 `WRITE <line-protocol>` 写入；切库切换默认 Bucket |
+| `tdengine` | `http://USER:PASSWORD@HOST:6041/DB` | SQL over HTTP REST（`/rest/sql`）；切库切换默认数据库 |
+| `cassandra` | `cassandra://HOST:9042/KEYSPACE` | CQL；切库重新连接目标 Keyspace |
 
 PostgreSQL/ClickHouse 切库成功后原会话设置、临时表和未提交事务不保留；失败时保留当前连接。切库不修改保存的 DSN。
 

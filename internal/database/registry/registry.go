@@ -6,17 +6,22 @@ import (
 	"strings"
 
 	"github.com/benenen/dbh/internal/database"
+	"github.com/benenen/dbh/internal/database/cassandra"
 	"github.com/benenen/dbh/internal/database/clickhouse"
 	"github.com/benenen/dbh/internal/database/dm"
 	"github.com/benenen/dbh/internal/database/elasticsearch"
+	"github.com/benenen/dbh/internal/database/influxdb"
 	"github.com/benenen/dbh/internal/database/milvus"
 	"github.com/benenen/dbh/internal/database/mongo"
 	"github.com/benenen/dbh/internal/database/mssql"
 	"github.com/benenen/dbh/internal/database/mysql"
+	"github.com/benenen/dbh/internal/database/neo4j"
 	"github.com/benenen/dbh/internal/database/oracle"
 	"github.com/benenen/dbh/internal/database/postgres"
+	"github.com/benenen/dbh/internal/database/qdrant"
 	"github.com/benenen/dbh/internal/database/redis"
 	"github.com/benenen/dbh/internal/database/sqlite"
+	"github.com/benenen/dbh/internal/database/tdengine"
 	"github.com/benenen/dbh/internal/database/trino"
 )
 
@@ -33,6 +38,11 @@ var drivers = []string{
 	"redis",
 	"elasticsearch",
 	"milvus",
+	"qdrant",
+	"neo4j",
+	"influxdb",
+	"tdengine",
+	"cassandra",
 }
 
 // Drivers returns the supported driver names.
@@ -44,12 +54,16 @@ func Drivers() []string {
 
 func Lookup(name string) (database.Driver, error) {
 	switch name {
+	case "cassandra":
+		return cassandra.Driver{}, nil
 	case "clickhouse":
 		return clickhouse.Driver{}, nil
 	case "dm":
 		return dm.Driver{}, nil
 	case "elasticsearch":
 		return elasticsearch.Driver{}, nil
+	case "influxdb":
+		return influxdb.Driver{}, nil
 	case "milvus":
 		return milvus.Driver{}, nil
 	case "mongo":
@@ -58,14 +72,20 @@ func Lookup(name string) (database.Driver, error) {
 		return mssql.Driver{}, nil
 	case "mysql":
 		return mysql.Driver{}, nil
+	case "neo4j":
+		return neo4j.Driver{}, nil
 	case "oracle":
 		return oracle.Driver{}, nil
 	case "postgres":
 		return postgres.Driver{}, nil
+	case "qdrant":
+		return qdrant.Driver{}, nil
 	case "redis":
 		return redis.Driver{}, nil
 	case "sqlite":
 		return sqlite.Driver{}, nil
+	case "tdengine":
+		return tdengine.Driver{}, nil
 	case "trino":
 		return trino.Driver{}, nil
 	default:

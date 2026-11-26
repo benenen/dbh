@@ -57,3 +57,23 @@ Elasticsearch 使用 HTTP REST + JSON 命令（`GET|POST|PUT|DELETE|HEAD|PATCH <
 ## Milvus（`milvus`）
 
 Milvus 使用 RESTful API v2 + JSON 命令（`GET|POST|PUT|DELETE|PATCH <path> [JSON body]`），支持 `user:password`、`?token=...` Bearer 认证、`?insecure=true` 与 `--proxy` 代理链。不以 `/` 开头的相对路径会自动补全 `/v2/vectordb/` 前缀，并在请求体缺少 `dbName` 时注入当前数据库（默认 `default`，可用 `--db` 或 `\use DB` 切换）。`\database` 列出数据库，`\tables` 列出 Collection，`\describe COLLECTION` 展开字段定义，`\indexes COLLECTION` 列出向量/标量索引。
+
+## Qdrant（`qdrant`）
+
+Qdrant 使用 HTTP REST + JSON 命令（`GET|POST|PUT|DELETE|PATCH <path> [JSON body]`），支持 `?api_key=...`、`?insecure=true` 与 `--proxy` 代理链。相对路径会自动拼接当前默认 Collection（可用 `--db` 或 `\use COLLECTION` 切换）。`\tables` / `\database` 列出 Collection，`\describe COLLECTION` 与 `\indexes COLLECTION` 展示向量维度、距离度量与 payload 索引。
+
+## Neo4j（`neo4j`）
+
+Neo4j 通过 HTTP Transactional Cypher API（`/db/{database}/tx/commit`）执行 Cypher 语句，支持 Basic Auth、`?insecure=true` 与 `--proxy` 代理链。`\database` 列出数据库，`\use DB` 切换目标数据库，`\tables` 列出节点标签，`\describe LABEL` 采样节点属性键，`\indexes` 列出索引。
+
+## InfluxDB（`influxdb`）
+
+InfluxDB v2 使用 HTTP REST 执行 Flux 查询（默认）或 `WRITE <line-protocol>` 写入，支持 `?org=...&token=...&insecure=true` 与 `--proxy` 代理链。`\database` 列出 Bucket，`\use BUCKET` 切换默认 Bucket，`\tables` 与 `\describe` 列出 Measurement 及 Field。
+
+## TDengine（`tdengine`）
+
+TDengine 通过 RESTful `/rest/sql` 执行 SQL，支持 Basic Auth、`?insecure=true` 与 `--proxy` 代理链。`\database` 列出数据库，`\use DB` 切换默认数据库，`\tables` 列出超级表与普通表，`\describe` 查看表结构。
+
+## Cassandra / ScyllaDB（`cassandra`）
+
+Cassandra 使用纯 Go `gocql` 驱动执行 CQL，支持 `?consistency=...&timeout=...` 与 `--proxy` 代理链。`\database` 列出 Keyspace，`\use KEYSPACE` 切换 Keyspace，`\tables`、`\describe` 与 `\indexes` 读取 `system_schema`。
