@@ -11,6 +11,9 @@ import (
 
 // Describe prints column details and indexes using the current session.
 func (s *Session) Describe(ctx context.Context, table, format string, out io.Writer) error {
+	origPager := s.Pager
+	s.Pager = nil
+	defer func() { s.Pager = origPager }()
 	metadataCtx, cancel := context.WithTimeout(ctx, s.Timeout)
 	query, err := s.backend.ColumnDetails(metadataCtx, s.Conn, table)
 	cancel()

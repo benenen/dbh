@@ -86,6 +86,7 @@ type tablePagerModel struct {
 	cols           int
 	elapsed        time.Duration
 	hasElapsed     bool
+	truncated      bool
 	width          int
 	height         int
 	yOffset        int
@@ -312,6 +313,11 @@ func (m *tablePagerModel) HandleKey(k tuiKey) bool {
 		case keyCtrlU:
 			m.query = ""
 			m.recomputeMatches()
+		case keyCtrlW:
+			if m.query != "" {
+				m.query = string(deleteLastWordRunes([]rune(m.query)))
+				m.recomputeMatches()
+			}
 		case keyRune:
 			m.query += string(k.r)
 			m.recomputeMatches()
@@ -319,7 +325,15 @@ func (m *tablePagerModel) HandleKey(k tuiKey) bool {
 		return false
 	}
 	switch k.kind {
-	case keyEsc, keyCtrlC:
+	case keyCtrlC:
+		return true
+	case keyEsc:
+		if m.query != "" {
+			m.query = ""
+			m.matches = nil
+			m.matchIdx = 0
+			return false
+		}
 		return true
 	case keyUp:
 		m.yOffset--
@@ -371,6 +385,14 @@ func (m *tablePagerModel) HandleKey(k tuiKey) bool {
 			m.yOffset = 0
 		case 'G':
 			m.yOffset = m.maxYOffset()
+		case '0', '^':
+			m.xOffset = 0
+		case '$':
+			m.xOffset = m.maxXOffset()
+		case 'H':
+			m.xOffset -= max(4, (m.width-m.pinnedCols())/2)
+		case 'L':
+			m.xOffset += max(4, (m.width-m.pinnedCols())/2)
 		case ' ':
 			m.yOffset += max(1, m.bodyHeight()-1)
 		}
@@ -381,12 +403,17 @@ func (m *tablePagerModel) HandleKey(k tuiKey) bool {
 
 func (m *tablePagerModel) Render() string {
 	var b strings.Builder
+	var header string
 	if m.hasElapsed {
-		fmt.Fprintf(&b, "\x1b[1;36mdbh results (%d rows × %d cols) • Time: %s; %d rows returned\x1b[0m\n",
+		header = fmt.Sprintf("dbh results (%d rows × %d cols) • Time: %s; %d rows returned",
 			m.rows, m.cols, m.elapsed.Round(time.Microsecond), m.rows)
 	} else {
-		fmt.Fprintf(&b, "\x1b[1;36mdbh results (%d rows × %d cols)\x1b[0m\n", m.rows, m.cols)
+		header = fmt.Sprintf("dbh results (%d rows × %d cols)", m.rows, m.cols)
 	}
+	if m.truncated {
+		header += " • truncated"
+	}
+	fmt.Fprintf(&b, "\x1b[1;36m%s\x1b[0m\n", sliceColumns(header, 0, m.width))
 	vh := m.viewHeight()
 	pinned := m.pinnedLines()
 	bh := m.bodyHeight()
@@ -412,19 +439,23 @@ func (m *tablePagerModel) Render() string {
 				status = fmt.Sprintf(" (%d/%d)", m.matchIdx+1, len(m.matches))
 			}
 		}
-		fmt.Fprintf(&b, "/%s%s\x1b[2m • Enter confirm • Esc cancel\x1b[0m", m.query, status)
+		prompt := "/" + m.query + status
+		hint := sliceColumns(" • Enter confirm • Esc cancel", 0, max(0, m.width-uniseg.StringWidth(prompt)))
+		fmt.Fprintf(&b, "%s\x1b[2m%s\x1b[0m", sliceColumns(prompt, 0, m.width), hint)
 		return b.String()
 	}
 	pct := formatScrollPercent(m.yOffset, m.maxYOffset())
+	var footer string
 	if m.query != "" {
 		status := "(no matches)"
 		if len(m.matches) > 0 {
 			status = fmt.Sprintf("(%d/%d)", m.matchIdx+1, len(m.matches))
 		}
-		fmt.Fprintf(&b, "\x1b[2m%s • col +%d • /%s %s • n/N next/prev • / search • q/esc back\x1b[0m", pct, m.xOffset, m.query, status)
-		return b.String()
+		footer = fmt.Sprintf("%s • col +%d • /%s %s • n/N next/prev • Esc clear • q back", pct, m.xOffset, m.query, status)
+	} else {
+		footer = fmt.Sprintf("%s • col +%d • ↑↓←→/hjkl scroll • 0/$ cols • / search • g/G top/bottom • q/esc back", pct, m.xOffset)
 	}
-	fmt.Fprintf(&b, "\x1b[2m%s • col +%d • ↑↓←→/hjkl scroll • / search • g/G top/bottom • q/esc back\x1b[0m", pct, m.xOffset)
+	fmt.Fprintf(&b, "\x1b[2m%s\x1b[0m", sliceColumns(footer, 0, m.width))
 	return b.String()
 }
 
@@ -454,7 +485,7 @@ func prependRowNumbers(columns []string, rows [][]string) ([]string, [][]string)
 
 // runTablePager opens an interactive scrollable viewport for wide or tall table
 // results, preserving horizontal width without forced column wrapping.
-func runTablePager(columns []string, rows [][]string, elapsed time.Duration) error {
+func runTablePager(columns []string, rows [][]string, elapsed time.Duration, truncated bool) error {
 	numberedCols, numberedRows := prependRowNumbers(columns, rows)
 	var buf bytes.Buffer
 	width := max(tableNaturalWidth(numberedCols, numberedRows), 80)
@@ -465,5 +496,6 @@ func runTablePager(columns []string, rows [][]string, elapsed time.Duration) err
 	m.pinFirstColumn()
 	m.elapsed = elapsed
 	m.hasElapsed = true
+	m.truncated = truncated
 	return runAltScreenTUI(m)
 }

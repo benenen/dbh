@@ -31,7 +31,7 @@ type Session struct {
 	Expanded        bool
 	CurrentDatabase string
 	BeforeOutput    func()
-	Pager           func(columns []string, rows [][]string, elapsed time.Duration) (bool, error)
+	Pager           func(columns []string, rows [][]string, elapsed time.Duration, truncated bool) (bool, error)
 	backend         database.Driver
 	dsn             string
 	proxies         []string
@@ -364,7 +364,7 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 				if s.Pager != nil && !s.Expanded && !streamed {
 					var pagerErr error
 					elapsed := time.Since(started).Round(time.Microsecond)
-					paged, pagerErr = s.Pager(cols, tableRows, elapsed)
+					paged, pagerErr = s.Pager(cols, tableRows, elapsed, truncated)
 					if pagerErr != nil {
 						return pagerErr
 					}

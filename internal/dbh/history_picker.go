@@ -209,6 +209,11 @@ func (m *historyPickerModel) HandleKey(k tuiKey) bool {
 			m.query = nil
 			m.applyFilter()
 		}
+	case keyCtrlW:
+		if len(m.query) > 0 {
+			m.query = deleteLastWordRunes(m.query)
+			m.applyFilter()
+		}
 	case keyRune:
 		m.query = append(m.query, k.r)
 		m.applyFilter()
@@ -266,7 +271,8 @@ func (m *historyPickerModel) Render() string {
 		b.WriteByte('\n')
 	}
 
-	b.WriteString("\x1b[2m↑↓/Ctrl-P/N move • Enter select • Esc/Ctrl-C cancel\x1b[0m")
+	footer := sliceColumns("↑↓/Ctrl-P/N move • Ctrl-W word • Enter select • Esc/Ctrl-C cancel", 0, m.width)
+	b.WriteString("\x1b[2m" + footer + "\x1b[0m")
 	return b.String()
 }
 

@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/rivo/uniseg"
@@ -21,6 +23,7 @@ const (
 	keyCtrlN
 	keyCtrlP
 	keyCtrlU
+	keyCtrlW
 	keyBackspace
 	keyUp
 	keyDown
@@ -57,7 +60,10 @@ func runAltScreenTUI(m tuiModel) error {
 	_, _ = io.WriteString(os.Stdout, "\x1b[?1049h\x1b[?25l")
 	defer func() { _, _ = io.WriteString(os.Stdout, "\x1b[?25h\x1b[?1049l") }()
 
+	var mu sync.Mutex
 	draw := func() {
+		mu.Lock()
+		defer mu.Unlock()
 		w, h, err := term.GetSize(outFd)
 		if err != nil || w <= 0 || h <= 0 {
 			w, h = 80, 24
@@ -68,6 +74,23 @@ func runAltScreenTUI(m tuiModel) error {
 	}
 
 	draw()
+	resizeCh, stopResize := notifyResize()
+	defer stopResize()
+	done := make(chan struct{})
+	defer close(done)
+	if resizeCh != nil {
+		go func() {
+			for {
+				select {
+				case <-done:
+					return
+				case <-resizeCh:
+					draw()
+				}
+			}
+		}()
+	}
+
 	buf := make([]byte, 64)
 	for {
 		n, err := os.Stdin.Read(buf)
@@ -78,10 +101,17 @@ func runAltScreenTUI(m tuiModel) error {
 			return err
 		}
 		keys := parseTUIKeys(buf[:n])
+		mu.Lock()
+		quit := false
 		for _, k := range keys {
 			if m.HandleKey(k) {
-				return nil
+				quit = true
+				break
 			}
+		}
+		mu.Unlock()
+		if quit {
+			return nil
 		}
 		draw()
 	}
@@ -107,52 +137,36 @@ func parseTUIKeys(b []byte) []tuiKey {
 		case 0x15:
 			keys = append(keys, tuiKey{kind: keyCtrlU})
 			i++
+		case 0x17:
+			keys = append(keys, tuiKey{kind: keyCtrlW})
+			i++
 		case 0x7f, 0x08:
 			keys = append(keys, tuiKey{kind: keyBackspace})
 			i++
 		case 0x1b:
-			if i+2 < len(b) && (b[i+1] == '[' || b[i+1] == 'O') {
-				switch b[i+2] {
-				case 'A':
-					keys = append(keys, tuiKey{kind: keyUp})
-					i += 3
-					continue
-				case 'B':
-					keys = append(keys, tuiKey{kind: keyDown})
-					i += 3
-					continue
-				case 'C':
-					keys = append(keys, tuiKey{kind: keyRight})
-					i += 3
-					continue
-				case 'D':
-					keys = append(keys, tuiKey{kind: keyLeft})
-					i += 3
-					continue
-				case 'H':
-					keys = append(keys, tuiKey{kind: keyHome})
-					i += 3
-					continue
-				case 'F':
-					keys = append(keys, tuiKey{kind: keyEnd})
-					i += 3
-					continue
-				case '5', '6', '1', '4':
-					if i+3 < len(b) && b[i+3] == '~' {
-						switch b[i+2] {
-						case '5':
-							keys = append(keys, tuiKey{kind: keyPgUp})
-						case '6':
-							keys = append(keys, tuiKey{kind: keyPgDown})
-						case '1':
-							keys = append(keys, tuiKey{kind: keyHome})
-						case '4':
-							keys = append(keys, tuiKey{kind: keyEnd})
-						}
-						i += 4
-						continue
-					}
+			if i+1 < len(b) && b[i+1] == '[' {
+				j := i + 2
+				for j < len(b) && b[j] >= 0x30 && b[j] <= 0x3f {
+					j++
 				}
+				for j < len(b) && b[j] >= 0x20 && b[j] <= 0x2f {
+					j++
+				}
+				if j < len(b) && b[j] >= 0x40 && b[j] <= 0x7e {
+					params := string(b[i+2 : j])
+					if k, ok := parseCSIKey(params, b[j]); ok {
+						keys = append(keys, k)
+					}
+					i = j + 1
+					continue
+				}
+			}
+			if i+2 < len(b) && b[i+1] == 'O' {
+				if k, ok := parseCSIKey("", b[i+2]); ok {
+					keys = append(keys, k)
+				}
+				i += 3
+				continue
 			}
 			keys = append(keys, tuiKey{kind: keyEsc})
 			i++
@@ -165,6 +179,47 @@ func parseTUIKeys(b []byte) []tuiKey {
 		}
 	}
 	return keys
+}
+
+func parseCSIKey(params string, final byte) (tuiKey, bool) {
+	switch final {
+	case 'A':
+		return tuiKey{kind: keyUp}, true
+	case 'B':
+		return tuiKey{kind: keyDown}, true
+	case 'C':
+		return tuiKey{kind: keyRight}, true
+	case 'D':
+		return tuiKey{kind: keyLeft}, true
+	case 'H':
+		return tuiKey{kind: keyHome}, true
+	case 'F':
+		return tuiKey{kind: keyEnd}, true
+	case '~':
+		code, _, _ := strings.Cut(params, ";")
+		switch code {
+		case "1", "7":
+			return tuiKey{kind: keyHome}, true
+		case "4", "8":
+			return tuiKey{kind: keyEnd}, true
+		case "5":
+			return tuiKey{kind: keyPgUp}, true
+		case "6":
+			return tuiKey{kind: keyPgDown}, true
+		}
+	}
+	return tuiKey{}, false
+}
+
+func deleteLastWordRunes(r []rune) []rune {
+	i := len(r)
+	for i > 0 && unicode.IsSpace(r[i-1]) {
+		i--
+	}
+	for i > 0 && !unicode.IsSpace(r[i-1]) {
+		i--
+	}
+	return r[:i]
 }
 
 // sliceColumns extracts a horizontal display-width window [offset, offset+width)

@@ -166,7 +166,7 @@ func TestSessionMaxPagerRowsAndCanceledContext(t *testing.T) {
 	pagerCalls := 0
 	s.MaxPagerRows = 3
 	s.BatchSize = 2
-	s.Pager = func(_ []string, _ [][]string, _ time.Duration) (bool, error) {
+	s.Pager = func(_ []string, _ [][]string, _ time.Duration, _ bool) (bool, error) {
 		pagerCalls++
 		return true, nil
 	}
@@ -277,6 +277,74 @@ func TestTablePagerPinnedNoColumn(t *testing.T) {
 	}
 	if strings.Contains(view, "first_col") {
 		t.Fatalf("did not expect first_col after horizontal scroll:\n%s", view)
+	}
+}
+
+func TestParseTUIKeysAndWordDeletion(t *testing.T) {
+	// Modified CSI arrow (\x1b[1;5C) must parse as keyRight, not keyEsc + garbage.
+	keys := parseTUIKeys([]byte("\x1b[1;5C\x1b[<64;10;5M\x17"))
+	if len(keys) != 2 || keys[0].kind != keyRight || keys[1].kind != keyCtrlW {
+		t.Fatalf("unexpected keys: %+v", keys)
+	}
+
+	// History picker Ctrl-W deletes last word.
+	hp := newHistoryPickerModel([]string{"SELECT * FROM users;", "SELECT * FROM orders;"}, "SELECT users")
+	hp.HandleKey(tuiKey{kind: keyCtrlW})
+	if string(hp.query) != "SELECT " {
+		t.Fatalf("expected 'SELECT ' after Ctrl-W, got %q", string(hp.query))
+	}
+}
+
+func TestTablePagerSearchEscClearAndNarrowClipping(t *testing.T) {
+	cols := []string{"first_col", "second_col", "third_col"}
+	rows := [][]string{{"alpha", "beta", "gamma"}}
+	numberedCols, numberedRows := prependRowNumbers(cols, rows)
+	var buf bytes.Buffer
+	if err := renderTable(&buf, numberedCols, numberedRows, tableNaturalWidth(numberedCols, numberedRows)); err != nil {
+		t.Fatal(err)
+	}
+	m := newTablePagerModel(buf.String(), len(rows), len(cols))
+	m.pinFirstColumn()
+	m.truncated = true
+	m.Resize(48, 10)
+
+	// Header must include truncated indicator when width allows.
+	view := m.Render()
+	if !strings.Contains(view, "truncated") {
+		t.Fatalf("expected truncated indicator in header:\n%s", view)
+	}
+	m.Resize(36, 10)
+	narrowView := m.Render()
+	lines := strings.Split(narrowView, "\n")
+	if len(lines) < 2 || strings.Contains(lines[0], "truncated") {
+		t.Fatalf("expected narrow header to be clipped at width 36:\n%s", narrowView)
+	}
+
+	// Search + Ctrl-W + Enter + Esc clears search first before quitting on second Esc.
+	m.HandleKey(tuiKey{kind: keyRune, r: '/'})
+	for _, r := range "alpha beta" {
+		m.HandleKey(tuiKey{kind: keyRune, r: r})
+	}
+	m.HandleKey(tuiKey{kind: keyCtrlW})
+	if m.query != "alpha " {
+		t.Fatalf("expected query 'alpha ' after Ctrl-W, got %q", m.query)
+	}
+	m.HandleKey(tuiKey{kind: keyEnter})
+	if quit := m.HandleKey(tuiKey{kind: keyEsc}); quit || m.query != "" {
+		t.Fatalf("first Esc should clear search without quitting (quit=%v, query=%q)", quit, m.query)
+	}
+	if quit := m.HandleKey(tuiKey{kind: keyEsc}); !quit {
+		t.Fatal("second Esc with empty query should quit pager")
+	}
+
+	// 0 and $ horizontal jumps.
+	m.HandleKey(tuiKey{kind: keyRune, r: '$'})
+	if m.xOffset != m.maxXOffset() {
+		t.Fatalf("expected xOffset=%d after $, got %d", m.maxXOffset(), m.xOffset)
+	}
+	m.HandleKey(tuiKey{kind: keyRune, r: '0'})
+	if m.xOffset != 0 {
+		t.Fatalf("expected xOffset=0 after 0, got %d", m.xOffset)
 	}
 }
 

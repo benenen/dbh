@@ -429,11 +429,11 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 			s.Pager = nil
 			return
 		}
-		s.Pager = func(columns []string, rows [][]string, elapsed time.Duration) (bool, error) {
+		s.Pager = func(columns []string, rows [][]string, elapsed time.Duration, truncated bool) (bool, error) {
 			if !shouldUsePager(pagerMode, out, columns, rows) {
 				return false, nil
 			}
-			if err := runTablePager(columns, rows, elapsed); err != nil {
+			if err := runTablePager(columns, rows, elapsed, truncated); err != nil {
 				return false, err
 			}
 			return true, nil
@@ -621,17 +621,45 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 					_, _ = fmt.Fprintln(errOut, `Usage: \use DATABASE`)
 					break
 				}
-				if err := s.UseDatabase(ctx, name); err != nil {
-					_, _ = fmt.Fprintln(errOut, err)
+				stopSpinner := startSpinner(errOut, "Switching database")
+				useErr, interrupted := runInterruptible(ctx, func(qCtx context.Context) error {
+					if err := s.UseDatabase(qCtx, name); err != nil {
+						return err
+					}
+					return nil
+				})
+				stopSpinner()
+				if interrupted {
+					_, _ = fmt.Fprintln(errOut, "Canceled.")
+					break
+				}
+				if useErr != nil {
+					_, _ = fmt.Fprintln(errOut, useErr)
 					break
 				}
 				_, _ = fmt.Fprintln(out, "Database changed to", name)
-				if err := c.refresh(ctx, s); err != nil {
-					_, _ = fmt.Fprintln(errOut, "Schema completion unavailable:", err)
+				stopRefresh := startSpinner(errOut, "Refreshing schema")
+				refErr, refInterrupted := runInterruptible(ctx, func(qCtx context.Context) error {
+					return c.refresh(qCtx, s)
+				})
+				stopRefresh()
+				if refInterrupted {
+					_, _ = fmt.Fprintln(errOut, "Schema refresh canceled.")
+				} else if refErr != nil {
+					_, _ = fmt.Fprintln(errOut, "Schema completion unavailable:", refErr)
 				}
 			case `\refresh`:
-				if err := c.refresh(ctx, s); err != nil {
-					_, _ = fmt.Fprintln(errOut, err)
+				stopSpinner := startSpinner(errOut, "Refreshing schema")
+				refErr, interrupted := runInterruptible(ctx, func(qCtx context.Context) error {
+					return c.refresh(qCtx, s)
+				})
+				stopSpinner()
+				if interrupted {
+					_, _ = fmt.Fprintln(errOut, "Canceled.")
+					break
+				}
+				if refErr != nil {
+					_, _ = fmt.Fprintln(errOut, refErr)
 				}
 				c.refreshSnippets(store)
 			case `\database`, `\tables`:
@@ -644,14 +672,23 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 					pattern = fields[1]
 				}
 				var names []string
-				var err error
-				if fields[0] == `\database` {
-					names, err = s.Databases(ctx)
-				} else {
-					names, err = s.Tables(ctx)
+				stopSpinner := startSpinner(errOut, "Loading metadata")
+				metaErr, interrupted := runInterruptible(ctx, func(qCtx context.Context) error {
+					var err error
+					if fields[0] == `\database` {
+						names, err = s.Databases(qCtx)
+					} else {
+						names, err = s.Tables(qCtx)
+					}
+					return err
+				})
+				stopSpinner()
+				if interrupted {
+					_, _ = fmt.Fprintln(errOut, "Canceled.")
+					break
 				}
-				if err != nil {
-					_, _ = fmt.Fprintln(errOut, err)
+				if metaErr != nil {
+					_, _ = fmt.Fprintln(errOut, metaErr)
 				} else {
 					for _, n := range filterList(names, pattern) {
 						_, _ = fmt.Fprintln(out, n)
@@ -663,14 +700,20 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 					_, _ = fmt.Fprintf(errOut, "Usage: %s TABLE\n", fields[0])
 					break
 				}
-				var err error
-				if fields[0] == `\describe` {
-					err = s.Describe(ctx, table, format, out)
-				} else {
-					err = s.Indexes(ctx, table, format, out)
-				}
-				if err != nil {
-					_, _ = fmt.Fprintln(errOut, err)
+				stopSpinner := startSpinner(errOut, "Loading metadata")
+				s.BeforeOutput = stopSpinner
+				metaErr, interrupted := runInterruptible(ctx, func(qCtx context.Context) error {
+					if fields[0] == `\describe` {
+						return s.Describe(qCtx, table, format, out)
+					}
+					return s.Indexes(qCtx, table, format, out)
+				})
+				stopSpinner()
+				s.BeforeOutput = nil
+				if interrupted {
+					_, _ = fmt.Fprintln(errOut, "Canceled.")
+				} else if metaErr != nil {
+					_, _ = fmt.Fprintln(errOut, metaErr)
 				}
 			case `\history`:
 				pattern := strings.TrimSpace(line[len(fields[0]):])
