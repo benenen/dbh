@@ -68,3 +68,40 @@ func TestTerminalLargeResultSetPager(t *testing.T) {
 
 	term.exit("\\q\r")
 }
+
+func TestTerminalWideSmallResultOpensPager(t *testing.T) {
+	f := newFixture(t)
+	f.sql(`CREATE TABLE wide_items(
+		col_01 TEXT, col_02 TEXT, col_03 TEXT, col_04 TEXT, col_05 TEXT,
+		col_06 TEXT, col_07 TEXT, col_08 TEXT, col_09 TEXT, col_10 TEXT
+	);
+	INSERT INTO wide_items VALUES
+		('alpha-1', 'beta-1', 'gamma-1', 'delta-1', 'epsilon-1', 'zeta-1', 'eta-1', 'theta-1', 'iota-1', 'kappa-1'),
+		('alpha-2', 'beta-2', 'gamma-2', 'delta-2', 'epsilon-2', 'zeta-2', 'eta-2', 'theta-2', 'iota-2', 'kappa-2');`, "--no-history")
+
+	term := f.terminal("--no-history")
+	if err := pty.Setsize(term.master, &pty.Winsize{Rows: 20, Cols: 80}); err != nil {
+		t.Fatal(err)
+	}
+	term.exchange("\\format table\r", "demo/main> ")
+
+	// Default \pager auto opens the horizontal pager even for 2 wide rows.
+	pagerView := term.exchange("SELECT * FROM wide_items LIMIT 2;\r", "dbh results (2 rows")
+	contains(t, pagerView, "Time:")
+	contains(t, pagerView, "2 rows returned")
+	contains(t, pagerView, "alpha-1")
+	searchView := term.exchange("/kappa-2\r", "(1/1)")
+	contains(t, searchView, "kappa-2")
+	afterQuit := term.exchange("q", "demo/main> ")
+	contains(t, afterQuit, "(2 rows)")
+
+	// \pager off prints the horizontal table directly without vertical cards.
+	term.exchange("\\pager off\r", "demo/main> ")
+	direct := term.exchange("SELECT * FROM wide_items LIMIT 2;\r", "(2 rows)")
+	excludes(t, direct, "dbh results (2 rows")
+	excludes(t, direct, "Row 1:")
+	contains(t, direct, "alph")
+	contains(t, direct, "a-1")
+
+	term.exit("\\q\r")
+}

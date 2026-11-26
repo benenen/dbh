@@ -3,6 +3,8 @@ package dbh
 import (
 	"reflect"
 	"testing"
+
+	"github.com/benenen/dbh/internal/database"
 )
 
 func TestCompletionRanking(t *testing.T) {
@@ -165,5 +167,75 @@ func TestCompletionQuotesSpecialIdentifiers(t *testing.T) {
 	got, _ := c.candidates([]rune("SELECT * FROM ord"), len("SELECT * FROM ord"))
 	if !reflect.DeepEqual(got, []string{`"order items"`, `"order"`}) {
 		t.Fatalf("unsafe identifiers: %q", got)
+	}
+}
+
+func TestCompletionPathsAndSnippets(t *testing.T) {
+	httpCompleter := &completer{
+		words:  []string{"GET", "POST", "/collections", "points/scroll", "_cat/indices"},
+		syntax: database.Syntax{HTTPCommands: true},
+	}
+	if got, prefix := httpCompleter.candidates([]rune("GET /col"), len("GET /col")); !reflect.DeepEqual(got, []string{"/collections"}) || prefix != "/col" {
+		t.Fatalf("http path completion: got=%v prefix=%q", got, prefix)
+	}
+	if got, prefix := httpCompleter.candidates([]rune("POST points/"), len("POST points/")); !reflect.DeepEqual(got, []string{"points/scroll"}) || prefix != "points/" {
+		t.Fatalf("http subpath completion: got=%v prefix=%q", got, prefix)
+	}
+
+	lineCompleter := &completer{
+		words:    []string{"GET", "PUT", "/app/name"},
+		snippets: []string{"daily_report", "user_by_id"},
+		syntax:   database.Syntax{LineCommands: true},
+	}
+	if got, prefix := lineCompleter.candidates([]rune("GET /app/"), len("GET /app/")); !reflect.DeepEqual(got, []string{"/app/name"}) || prefix != "/app/" {
+		t.Fatalf("line path completion: got=%v prefix=%q", got, prefix)
+	}
+	if got, prefix := lineCompleter.candidates([]rune(`\run user`), len(`\run user`)); !reflect.DeepEqual(got, []string{"user_by_id"}) || prefix != "user" {
+		t.Fatalf("snippet completion: got=%v prefix=%q", got, prefix)
+	}
+	if got, prefix := lineCompleter.candidates([]rune(`\limit 5`), len(`\limit 5`)); !reflect.DeepEqual(got, []string{"500", "5000"}) || prefix != "5" {
+		t.Fatalf("limit completion: got=%v prefix=%q", got, prefix)
+	}
+}
+
+func TestMatchFilterAndListFiltering(t *testing.T) {
+	items := []string{
+		"resource_asset_current",
+		"resource_asset_history",
+		"users",
+		"dbo.order[1]",
+		"用户表",
+	}
+	if got := filterList(items, ""); !reflect.DeepEqual(got, items) {
+		t.Fatalf("empty filter = %v, want %v", got, items)
+	}
+	if got := filterList(items, "ASSET"); !reflect.DeepEqual(got, []string{"resource_asset_current", "resource_asset_history"}) {
+		t.Fatalf("substring filter = %v", got)
+	}
+	if got := filterList(items, "resource_*_current"); !reflect.DeepEqual(got, []string{"resource_asset_current"}) {
+		t.Fatalf("wildcard * filter = %v", got)
+	}
+	if got := filterList(items, "user?"); !reflect.DeepEqual(got, []string{"users"}) {
+		t.Fatalf("wildcard ? filter = %v", got)
+	}
+	if !matchFilter("dbo.order[1]", "*order[1]") {
+		t.Fatal("expected wildcard match with brackets and dots")
+	}
+	if !matchFilter("SELECT *\nFROM users;", "*from*users*") {
+		t.Fatal("expected wildcard match across newlines")
+	}
+	if !matchFilter("用户表", "用户") {
+		t.Fatal("expected Unicode substring match")
+	}
+
+	c := completer{
+		databases: []string{"analytics", "app_db"},
+		tables:    []string{"resource_asset_current", "users"},
+	}
+	if got, prefix := c.candidates([]rune(`\tables res`), len(`\tables res`)); prefix != "res" || !reflect.DeepEqual(got, []string{"resource_asset_current"}) {
+		t.Fatalf("\\tables candidates = (%v, %q)", got, prefix)
+	}
+	if got, prefix := c.candidates([]rune(`\database app`), len(`\database app`)); prefix != "app" || !reflect.DeepEqual(got, []string{"app_db"}) {
+		t.Fatalf("\\database candidates = (%v, %q)", got, prefix)
 	}
 }

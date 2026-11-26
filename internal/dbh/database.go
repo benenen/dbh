@@ -19,6 +19,7 @@ type Session struct {
 	Driver          string
 	Timeout         time.Duration
 	MaxRows         int
+	MaxPagerRows    int
 	MaxCellWidth    int
 	MaxCellWidthSet bool
 	BatchSize       int
@@ -30,7 +31,7 @@ type Session struct {
 	Expanded        bool
 	CurrentDatabase string
 	BeforeOutput    func()
-	Pager           func(columns []string, rows [][]string) (bool, error)
+	Pager           func(columns []string, rows [][]string, elapsed time.Duration) (bool, error)
 	backend         database.Driver
 	dsn             string
 	proxies         []string
@@ -162,6 +163,8 @@ func (s *Session) UseDatabase(ctx context.Context, name string) error {
 
 func (s *Session) executeArgs(ctx context.Context, query, format string, out io.Writer, args ...any) (err error) {
 	started := time.Now()
+	var queryElapsed time.Duration
+	elapsedCaptured := false
 	total := 0
 	hasColumns := false
 	var affected int64
@@ -180,7 +183,11 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 		} else if hasColumns {
 			detail = fmt.Sprintf("; %d rows returned", total)
 		}
-		_, err = fmt.Fprintf(w, "Time: %s%s\n", time.Since(started).Round(time.Microsecond), detail)
+		elapsed := queryElapsed
+		if !elapsedCaptured {
+			elapsed = time.Since(started).Round(time.Microsecond)
+		}
+		_, err = fmt.Fprintf(w, "Time: %s%s\n", elapsed, detail)
 	}()
 	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
@@ -264,12 +271,20 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 		}
 		count := 0
 		truncated := false
+		streamed := false
+		maxPagerRows := s.MaxPagerRows
+		if maxPagerRows <= 0 {
+			maxPagerRows = 5000
+		}
 		batchSize := s.BatchSize
 		if batchSize <= 0 {
 			batchSize = 500
 		}
 		maxCell := s.effectiveMaxCellWidth(format)
 		for rows.Next() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if s.MaxRows > 0 && count >= s.MaxRows {
 				truncated = true
 				break
@@ -296,10 +311,23 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 			switch format {
 			case "table":
 				tableRows = append(tableRows, fields)
-				if s.Pager == nil && len(tableRows) == batchSize {
+				canPage := s.Pager != nil && !s.Expanded && !streamed
+				if (!canPage && len(tableRows) >= batchSize) || (canPage && len(tableRows) > maxPagerRows) {
+					if canPage {
+						streamed = true
+						if s.Notice != nil {
+							_, _ = fmt.Fprintf(s.Notice, "Result exceeds pager buffer (%d rows); streaming output directly.\n", maxPagerRows)
+						}
+					}
 					beforeOutput()
-					if err := renderTable(out, cols, tableRows, tableWidth(out)); err != nil {
-						return err
+					var renderErr error
+					if s.Expanded {
+						renderErr = renderExpandedTable(out, cols, tableRows, tableWidth(out))
+					} else {
+						renderErr = renderTable(out, cols, tableRows, tableWidth(out))
+					}
+					if renderErr != nil {
+						return renderErr
 					}
 					tableRows = nil
 				}
@@ -333,11 +361,16 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 			beforeOutput()
 			if len(cols) > 0 {
 				paged := false
-				if s.Pager != nil {
+				if s.Pager != nil && !s.Expanded && !streamed {
 					var pagerErr error
-					paged, pagerErr = s.Pager(cols, tableRows)
+					elapsed := time.Since(started).Round(time.Microsecond)
+					paged, pagerErr = s.Pager(cols, tableRows, elapsed)
 					if pagerErr != nil {
 						return pagerErr
+					}
+					if paged {
+						queryElapsed = elapsed
+						elapsedCaptured = true
 					}
 				}
 				if !paged && (len(tableRows) > 0 || count == 0) {
@@ -372,7 +405,7 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 			if w == nil {
 				w = out
 			}
-			_, err := fmt.Fprintf(w, "Result truncated after %d rows (--max-rows).\n", count)
+			_, err := fmt.Fprintf(w, `Result truncated after %d rows (--max-rows / \limit).`+"\n", count)
 			return err
 		}
 		if !rows.NextResultSet() {

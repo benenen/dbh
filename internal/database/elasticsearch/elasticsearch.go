@@ -97,6 +97,7 @@ func (Driver) Syntax() database.Syntax {
 	return database.Syntax{
 		HTTPCommands:     true,
 		BackslashEscapes: true,
+		HelpText:         "Elasticsearch accepts HTTP REST commands (e.g. GET /_cat/indices, POST /idx/_search {...}).\nPress Enter when complete; use ; between commands in batch input.\n",
 		CompletionWords:  strings.Fields("GET POST PUT DELETE HEAD PATCH _search _doc _mapping _settings _cat/indices _cat/health _cat/nodes _count _sql _refresh _analyze"),
 	}
 }

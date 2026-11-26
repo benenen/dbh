@@ -79,6 +79,11 @@ func splitSQL(input, driver string) (statements []string, remainder string, err 
 			i++
 			continue
 		}
+		if i+1 < len(input) && input[i:i+2] == "//" && syntax.SlashComments {
+			line = true
+			i++
+			continue
+		}
 		if c == '#' && syntax.HashComments {
 			line = true
 			continue
@@ -176,7 +181,7 @@ func stripComments(s, driver string) string {
 func stripCommentsSyntax(s string, syntax database.Syntax) string {
 	s = strings.TrimSpace(s)
 	for {
-		if (strings.HasPrefix(s, "--") && (!syntax.DashCommentNeedsSpace || len(s) == 2 || unicode.IsSpace(rune(s[2])))) || (syntax.HashComments && strings.HasPrefix(s, "#")) {
+		if (strings.HasPrefix(s, "--") && (!syntax.DashCommentNeedsSpace || len(s) == 2 || unicode.IsSpace(rune(s[2])))) || (syntax.HashComments && strings.HasPrefix(s, "#")) || (syntax.SlashComments && strings.HasPrefix(s, "//")) {
 			if i := strings.IndexByte(s, '\n'); i >= 0 {
 				s = strings.TrimSpace(s[i+1:])
 				continue
@@ -265,7 +270,7 @@ func parseDatabaseName(input string, syntax database.Syntax) (string, error) {
 		}
 		name, rest = input[:end], input[end:]
 		for _, char := range name {
-			if !unicode.IsLetter(char) && !unicode.IsDigit(char) && !strings.ContainsRune("_$-", char) {
+			if !unicode.IsLetter(char) && !unicode.IsDigit(char) && !strings.ContainsRune("_$-.", char) {
 				return "", fmt.Errorf("invalid database name; use a quoted identifier")
 			}
 		}

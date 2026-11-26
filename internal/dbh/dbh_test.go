@@ -275,6 +275,7 @@ func TestAcceptSQLInput(t *testing.T) {
 		{"GET /app/name", "etcd", true},
 		{"BUCKETS", "bbolt", true},
 		{"SELECT * FROM logs LIMIT 5;", "openobserve", true},
+		{"// comment with ;\nMATCH (n) RETURN n;", "neo4j", true},
 		{"SELECT [a;b] FROM t;", "mssql", true},
 		{"SELECT 1;", "oracle", true},
 		{"SELECT 1;", "trino", true},
@@ -285,6 +286,13 @@ func TestAcceptSQLInput(t *testing.T) {
 				t.Fatalf("accept=%v, want %v", got, tt.accept)
 			}
 		})
+	}
+
+	for _, name := range []string{"memory.default", ".kibana"} {
+		got, err := parseDatabaseName(name, database.Syntax{})
+		if err != nil || got != name {
+			t.Fatalf("parseDatabaseName(%q) = %q, %v", name, got, err)
+		}
 	}
 }
 

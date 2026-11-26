@@ -57,6 +57,7 @@ func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (databas
 }
 func (Driver) Syntax() database.Syntax {
 	return database.Syntax{JSONCommands: true, BackslashEscapes: true,
+		HelpText:        "MongoDB accepts native JSON command documents. Press Enter when complete.\nUse ; between commands in batch input.\n",
 		CompletionWords: strings.Fields("find filter insert documents update updates delete deletes aggregate pipeline count distinct listCollections listIndexes create drop ping")}
 }
 func (Driver) SwitchDatabase(_ context.Context, conn database.Connection, _ string, name string, _ database.Dial) (database.Connection, error) {

@@ -2,7 +2,10 @@
 
 package e2e
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestTerminalContextCompletionAndQuotedMetadata(t *testing.T) {
 	f := newFixture(t)
@@ -38,4 +41,32 @@ func TestTerminalHistoryRetention(t *testing.T) {
 	excludes(t, output, "SELECT 2 AS value;")
 	term.exit("\\q\r")
 	equal(t, f.history(), []string{"SELECT 1 AS value;", "SELECT 3 AS value;"})
+}
+
+func TestTerminalListCommandSearch(t *testing.T) {
+	f := newFixture(t)
+	f.sql(`CREATE TABLE resource_asset_current(id INTEGER); CREATE TABLE resource_asset_history(id INTEGER); CREATE TABLE users(id INTEGER);`, "--no-history")
+
+	term := f.terminal()
+	term.exchange("SELECT * FROM resource_asset_current;\r", "Time:")
+	term.exchange("SELECT * FROM users;\r", "Time:")
+
+	out := term.exchange("\\tables asset\r", "resource_asset_history")
+	_, afterExec, _ := strings.Cut(out, "\x1b[?2004l")
+	contains(t, afterExec, "resource_asset_current")
+	contains(t, afterExec, "resource_asset_history")
+	excludes(t, afterExec, "users")
+
+	out = term.exchange("\\tables resource_*_current\r", "resource_asset_current\r\n")
+	_, afterExec, _ = strings.Cut(out, "\x1b[?2004l")
+	contains(t, afterExec, "resource_asset_current")
+	excludes(t, afterExec, "resource_asset_history")
+
+	term.exchange("\\tables a b\r", "Usage: \\tables [PATTERN]")
+
+	hist := term.exchange("\\history users\r", "2  SELECT * FROM users;")
+	_, afterExec, _ = strings.Cut(hist, "\x1b[?2004l")
+	excludes(t, afterExec, "resource_asset_current")
+
+	term.exit("\\q\r")
 }

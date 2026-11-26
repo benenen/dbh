@@ -39,22 +39,21 @@ func renderTable(out io.Writer, columns []string, rows [][]string, width int) er
 		minimumWidths[i] = min(2, widths[i])
 		minimum += minimumWidths[i] + 3
 	}
-	if minimum > width && len(columns) > 2 {
-		return renderExpandedTable(out, columns, rows, width)
-	}
-	for {
-		total := 1
-		largest := -1
-		for i, w := range widths {
-			total += w + 3
-			if w > minimumWidths[i] && (largest == -1 || w > widths[largest]) {
-				largest = i
+	if minimum <= width {
+		for {
+			total := 1
+			largest := -1
+			for i, w := range widths {
+				total += w + 3
+				if w > minimumWidths[i] && (largest == -1 || w > widths[largest]) {
+					largest = i
+				}
 			}
+			if total <= width || largest < 0 {
+				break
+			}
+			widths[largest]--
 		}
-		if total <= width || largest < 0 {
-			break
-		}
-		widths[largest]--
 	}
 	rule := func(left, middle, right string) error {
 		parts := make([]string, len(widths))

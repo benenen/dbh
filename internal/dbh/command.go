@@ -451,6 +451,9 @@ func NewCommand() *cobra.Command {
 				}
 				return nil
 			}
+			if !cmd.Flags().Changed("max-rows") {
+				session.MaxRows = defaultShellMaxRows
+			}
 			return shell(cmd.Context(), session, p, s, format, noHistory, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		}}
 		connect.Flags().StringVar(&databaseName, "db", "", "Server database to use (defaults to the saved connection database)")

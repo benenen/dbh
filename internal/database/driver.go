@@ -53,6 +53,7 @@ type Syntax struct {
 	HashComments            bool
 	ExecutableComments      bool
 	EscapeStringPrefix      bool
+	SlashComments           bool
 	BracketIdentifiers      bool
 	DollarQuotes            bool
 	JSONCommands            bool
@@ -60,6 +61,7 @@ type Syntax struct {
 	LineCommands            bool // a newline outside quotes ends each command, not a semicolon
 	FoldUnquotedIdentifiers bool
 	CompletionWords         []string
+	HelpText                string
 }
 
 // Query keeps metadata values separate from the command text.

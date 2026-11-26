@@ -36,17 +36,27 @@ func TestTableWrapsUnicodeWithinTerminalWidth(t *testing.T) {
 		t.Fatalf("records are not distinct:\n%s", &out)
 	}
 }
-func TestTableWideResultsUseRecordTables(t *testing.T) {
+func TestTableWideResultsStayHorizontal(t *testing.T) {
+	cols := []string{"a", "b", "c", "d", "e", "f", "g"}
+	rows := [][]string{{"1", "2", "3", "4", "5", "6", "7"}}
+
 	var out bytes.Buffer
-	if err := renderTable(&out, []string{"a", "b", "c", "d", "e", "f", "g"}, [][]string{{"1", "2", "3", "4", "5", "6", "7"}}, 22); err != nil {
+	if err := renderTable(&out, cols, rows, 22); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "Row 1:") || !strings.Contains(out.String(), "Column") {
-		t.Fatalf("missing record layout: %s", &out)
+	got := out.String()
+	if strings.Contains(got, "Row 1:") || strings.Contains(got, "Column") {
+		t.Fatalf("unexpected vertical card layout:\n%s", got)
 	}
-	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-		if uniseg.StringWidth(line) > 22 {
-			t.Fatalf("line too wide: %q", line)
-		}
+	if !strings.Contains(got, "│ a │ b │ c │ d │ e │ f │ g │") || !strings.Contains(got, "│ 1 │ 2 │ 3 │ 4 │ 5 │ 6 │ 7 │") {
+		t.Fatalf("expected horizontal table layout, got:\n%s", got)
+	}
+
+	var exp bytes.Buffer
+	if err := renderExpandedTable(&exp, cols, rows, 22); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(exp.String(), "Row 1:") || !strings.Contains(exp.String(), "Column") {
+		t.Fatalf("expected expanded vertical layout, got:\n%s", exp.String())
 	}
 }

@@ -88,6 +88,8 @@ func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (databas
 func (Driver) Syntax() database.Syntax {
 	return database.Syntax{
 		BackslashEscapes: true,
+		SlashComments:    true,
+		HelpText:         "Neo4j accepts Cypher statements ending with ;. Press Enter when complete.\n",
 		CompletionWords: strings.Fields(
 			"MATCH OPTIONAL MATCH WHERE RETURN ORDER BY LIMIT SKIP CREATE MERGE DELETE DETACH DELETE SET REMOVE UNWIND CALL YIELD SHOW DATABASES SHOW INDEXES",
 		),

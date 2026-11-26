@@ -56,7 +56,8 @@ func isWriteStatement(query string, syntax database.Syntax) bool {
 		case "SET", "SETEX", "SETNX", "MSET", "DEL", "UNLINK", "FLUSHDB", "FLUSHALL",
 			"HSET", "HDEL", "LPUSH", "RPUSH", "LPOP", "RPOP", "LSET", "LTRIM",
 			"SADD", "SREM", "SPOP", "ZADD", "ZREM", "INCR", "DECR", "INCRBY", "DECRBY",
-			"EXPIRE", "PEXPIRE", "PERSIST", "RENAME", "COPY", "XADD", "APPEND", "MULTI", "EXEC":
+			"EXPIRE", "PEXPIRE", "PERSIST", "RENAME", "COPY", "XADD", "APPEND", "MULTI", "EXEC",
+			"PUT", "COMPACT", "CREATE", "DELETE", "POST":
 			return true
 		}
 		return false
@@ -72,23 +73,53 @@ func isWriteStatement(query string, syntax database.Syntax) bool {
 		case "PUT", "DELETE", "PATCH":
 			return true
 		case "POST":
-			if strings.Contains(path, "_search") || strings.Contains(path, "_count") ||
-				strings.Contains(path, "_sql") || strings.Contains(path, "_analyze") ||
-				strings.Contains(path, "_msearch") || strings.Contains(path, "_explain") {
+			if isHTTPReadPath(path) {
 				return false
 			}
 			return true
 		}
 		return false
 	}
+	if syntax.SlashComments {
+		for _, t := range contextTokens(query, syntax) {
+			if t.depth != 0 || t.quoted {
+				continue
+			}
+			switch strings.ToUpper(t.text) {
+			case "CREATE", "MERGE", "DELETE", "DETACH", "SET", "REMOVE":
+				return true
+			}
+		}
+		return false
+	}
 	verb := leadingSQLKeyword(query, syntax)
 	switch verb {
 	case "INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE",
-		"REPLACE", "MERGE", "GRANT", "REVOKE", "VACUUM", "ATTACH", "DETACH", "RENAME":
+		"REPLACE", "MERGE", "GRANT", "REVOKE", "VACUUM", "ATTACH", "DETACH", "RENAME",
+		"WRITE", "INGEST":
 		return true
 	default:
 		return false
 	}
+}
+
+func isHTTPReadPath(path string) bool {
+	for _, marker := range []string{
+		"_search", "_count", "_sql", "_analyze", "_msearch", "_explain",
+		"collections/list", "collections/describe", "collections/has",
+		"collections/get_load_state", "collections/get_stats",
+		"entities/query", "entities/search", "entities/get",
+		"indexes/list", "indexes/describe",
+		"partitions/list", "partitions/has",
+		"databases/list", "databases/describe",
+		"points/scroll", "points/query", "points/search",
+		"points/count", "points/recommend", "points/discover",
+	} {
+		if strings.Contains(path, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func dangerousWriteReason(query string, syntax database.Syntax) (string, bool) {
@@ -98,6 +129,10 @@ func dangerousWriteReason(query string, syntax database.Syntax) (string, bool) {
 			switch strings.ToUpper(fields[0]) {
 			case "FLUSHDB", "FLUSHALL":
 				return strings.ToUpper(fields[0]) + " is blocked on production connections", true
+			case "DELETE":
+				if len(fields) >= 2 && strings.EqualFold(fields[1], "BUCKET") {
+					return "DELETE BUCKET is blocked on production connections", true
+				}
 			}
 		}
 		return "", false
@@ -118,6 +153,24 @@ func dangerousWriteReason(query string, syntax database.Syntax) (string, bool) {
 		fields := strings.Fields(query)
 		if len(fields) >= 2 && strings.EqualFold(fields[0], "DELETE") {
 			return "DELETE is blocked on production connections", true
+		}
+		return "", false
+	}
+	if syntax.SlashComments {
+		hasDelete, hasWhere := false, false
+		for _, t := range contextTokens(query, syntax) {
+			if t.depth != 0 || t.quoted {
+				continue
+			}
+			switch strings.ToUpper(t.text) {
+			case "DELETE":
+				hasDelete = true
+			case "WHERE":
+				hasWhere = true
+			}
+		}
+		if hasDelete && !hasWhere {
+			return "DELETE without WHERE is blocked on production connections", true
 		}
 		return "", false
 	}

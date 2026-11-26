@@ -92,6 +92,7 @@ func (Driver) Syntax() database.Syntax {
 	return database.Syntax{
 		HTTPCommands:     true,
 		BackslashEscapes: true,
+		HelpText:         "Milvus accepts HTTP REST v2 commands (e.g. POST collections/list {}, POST entities/query {...}).\nPress Enter when complete; use ; between commands in batch input.\n",
 		CompletionWords: strings.Fields(
 			"GET POST PUT DELETE PATCH " +
 				"databases/list databases/create databases/drop " +

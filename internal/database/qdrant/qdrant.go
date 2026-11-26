@@ -87,6 +87,7 @@ func (Driver) Syntax() database.Syntax {
 	return database.Syntax{
 		HTTPCommands:     true,
 		BackslashEscapes: true,
+		HelpText:         "Qdrant accepts HTTP REST commands (e.g. GET /collections, POST points/scroll {...}).\nPress Enter when complete; use ; between commands in batch input.\n",
 		CompletionWords: strings.Fields(
 			"GET POST PUT DELETE PATCH /collections points/scroll points/query points/search points/count points/delete index",
 		),

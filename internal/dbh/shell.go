@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/benenen/dbh/internal/database"
 	"github.com/benenen/dbh/internal/database/registry"
@@ -32,9 +34,23 @@ func saveHistory(s Store, name, q string) error {
 }
 
 type completer struct {
-	words, databases, tables []string
-	columns                  map[string][]string
-	syntax                   database.Syntax
+	words, databases, tables, snippets []string
+	columns                            map[string][]string
+	syntax                             database.Syntax
+}
+
+func (c *completer) refreshSnippets(store Store) {
+	snippets, err := store.loadSnippets()
+	if err != nil {
+		c.snippets = nil
+		return
+	}
+	names := make([]string, 0, len(snippets))
+	for name := range snippets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	c.snippets = names
 }
 
 func (c *completer) candidates(line []rune, pos int) ([]string, string) {
@@ -45,7 +61,7 @@ func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 		// List all valid values as soon as the command argument starts.
 		names := c.tables
 		switch command {
-		case `\use`:
+		case `\use`, `\database`:
 			names = c.databases
 		case `\format`:
 			names = []string{"table", "csv", "json", "tsv"}
@@ -53,6 +69,10 @@ func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 			names = []string{"auto", "on", "off"}
 		case `\truncate`:
 			names = []string{"off", "0", "80", "200", "500"}
+		case `\limit`:
+			names = []string{"off", "0", "100", "500", "1000", "5000"}
+		case `\run`:
+			names = c.snippets
 		}
 		return matching(names, name), name
 	}
@@ -63,7 +83,7 @@ func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 		return nil, ""
 	}
 	start := pos
-	for start > 0 && (isIdentifier(line[start-1]) || line[start-1] == '\\') {
+	for start > 0 && (isIdentifier(line[start-1]) || line[start-1] == '\\' || ((c.syntax.HTTPCommands || c.syntax.LineCommands) && (line[start-1] == '/' || line[start-1] == '-'))) {
 		start--
 	}
 	prefix := string(line[start:pos])
@@ -124,12 +144,67 @@ func matching(words []string, text string) []string {
 	return append(results, contains...)
 }
 
+func matchFilter(value, pattern string) bool {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return true
+	}
+	lowerValue := strings.ToLower(value)
+	lowerPattern := strings.ToLower(pattern)
+	if strings.ContainsAny(lowerPattern, "*?") {
+		return wildcardMatch(lowerValue, lowerPattern)
+	}
+	return strings.Contains(lowerValue, lowerPattern)
+}
+
+// wildcardMatch matches s against pattern where '*' matches zero or more runes
+// (including '/', '.', and newlines) and '?' matches any single rune.
+func wildcardMatch(s, pattern string) bool {
+	sr := []rune(s)
+	pr := []rune(pattern)
+	si, pi := 0, 0
+	star, match := -1, 0
+	for si < len(sr) {
+		if pi < len(pr) && (pr[pi] == '?' || pr[pi] == sr[si]) {
+			si++
+			pi++
+		} else if pi < len(pr) && pr[pi] == '*' {
+			star = pi
+			match = si
+			pi++
+		} else if star != -1 {
+			pi = star + 1
+			match++
+			si = match
+		} else {
+			return false
+		}
+	}
+	for pi < len(pr) && pr[pi] == '*' {
+		pi++
+	}
+	return pi == len(pr)
+}
+
+func filterList(items []string, pattern string) []string {
+	if strings.TrimSpace(pattern) == "" {
+		return items
+	}
+	var out []string
+	for _, item := range items {
+		if matchFilter(item, pattern) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 // commandArgument returns the first argument of a supported shell command on
 // the current line.
 func commandArgument(line []rune) (command, name string, ok bool) {
 	text := string(line)
 	text = strings.TrimLeft(text[strings.LastIndex(text, "\n")+1:], " \t")
-	for _, command := range []string{`\use`, `\describe`, `\indexes`, `\format`, `\pager`, `\truncate`} {
+	for _, command := range []string{`\use`, `\database`, `\tables`, `\describe`, `\indexes`, `\format`, `\pager`, `\truncate`, `\limit`, `\run`} {
 		rest, found := strings.CutPrefix(text, command)
 		if !found || rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
 			continue
@@ -202,7 +277,7 @@ func (c *completer) refresh(ctx context.Context, s *Session) error {
 	if native := s.backend.Syntax().CompletionWords; len(native) > 0 {
 		words = append([]string{}, native...)
 	}
-	words = append(words, `\help`, `\q`, `\database`, `\use`, `\tables`, `\describe`, `\indexes`, `\history`, `\refresh`, `\clear`, `\format`, `\pager`, `\truncate`, `\x`, `\run`)
+	words = append(words, `\help`, `\q`, `\database`, `\use`, `\tables`, `\describe`, `\indexes`, `\history`, `\refresh`, `\clear`, `\format`, `\pager`, `\truncate`, `\limit`, `\x`, `\run`)
 	// SQLite has no database list; \use then offers no candidates.
 	c.databases, _ = s.Databases(ctx)
 	tables, err := s.Tables(ctx)
@@ -259,20 +334,23 @@ Up/Down recall SQL; Ctrl-R searches history; Right accepts a history suggestion.
 Ctrl-C clears input; Ctrl-D exits.
 \help               Show help
 \q                  Exit
-\database           List databases (MySQL/PostgreSQL/MongoDB/ClickHouse/Redis)
+\database [PATTERN] List databases, schemas, buckets, or keyspaces
 \use DATABASE       Switch database (also accepts USE DATABASE;)
-\tables             List tables/views
+\tables [PATTERN]   List tables/views
 \describe TABLE     Show column details and indexes
 \indexes TABLE      List indexes
-\history            Show SQL history
+\history [PATTERN]  Show SQL history
 \refresh            Refresh schema completion (use after DDL)
 \clear              Clear pending query
 \format table|csv|json|tsv  Change output format
 \pager auto|on|off  Scroll wide/tall table results in an interactive pager
 \truncate [N|off]   Limit cell display width (table defaults to 200)
+\limit [N|off]      Limit rows returned per query (defaults to 1000; 0/off for unlimited)
 \x                  Toggle expanded vertical table display
 \run SNIPPET        Execute a saved snippet
 `
+
+const defaultShellMaxRows = 1000
 
 func acceptSQLInput(line, driver string) bool {
 	trimmed := strings.TrimSpace(line)
@@ -325,6 +403,7 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 	if err := c.refresh(ctx, s); err != nil {
 		_, _ = fmt.Fprintln(errOut, "Schema completion unavailable:", err)
 	}
+	c.refreshSnippets(store)
 	entries := []string{}
 	if !noHistory {
 		if err := store.prepare(); err != nil {
@@ -345,15 +424,22 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 	rl.Config.Vars["history-autosuggest"] = !noHistory
 	rl.Config.Vars["cursor-position-probe"] = false
 	pagerMode := "auto"
-	s.Pager = func(columns []string, rows [][]string) (bool, error) {
-		if !shouldUsePager(pagerMode, out, columns, rows) {
-			return false, nil
+	updatePager := func() {
+		if pagerMode == "off" {
+			s.Pager = nil
+			return
 		}
-		if err := runTablePager(columns, rows); err != nil {
-			return false, err
+		s.Pager = func(columns []string, rows [][]string, elapsed time.Duration) (bool, error) {
+			if !shouldUsePager(pagerMode, out, columns, rows) {
+				return false, nil
+			}
+			if err := runTablePager(columns, rows, elapsed); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
-		return true, nil
 	}
+	updatePager()
 	pendingSearchLine := ""
 	rl.Keymap.Register(map[string]func(){
 		"dbh-newline": func() {
@@ -483,6 +569,9 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 		return c.complete(line, pos)
 	}
 	_, _ = fmt.Fprintln(out, "Connected to", p.Name, "("+p.Driver+"). Type \\help for help.")
+	if s.MaxRows > 0 {
+		_, _ = fmt.Fprintf(out, "Row limit: %d (use \\limit off for unlimited).\n", s.MaxRows)
+	}
 	for {
 		line, err := rl.Readline()
 		if errors.Is(err, errFuzzyHistory) {
@@ -521,12 +610,8 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 				return nil
 			case `\help`:
 				help := shellHelp
-				if s.backend.Syntax().LineCommands {
-					help = "Redis accepts redis-cli style commands, one per line. Press Enter to execute.\nQuote arguments that contain spaces. \\tables lists up to 1000 keys.\n" + shellHelp[strings.Index(shellHelp, `\help`):]
-				} else if s.backend.Syntax().JSONCommands {
-					help = "MongoDB accepts native JSON command documents. Press Enter when complete.\nUse ; between commands in batch input.\n" + shellHelp[strings.Index(shellHelp, `\help`):]
-				} else if s.backend.Syntax().HTTPCommands {
-					help = "Elasticsearch accepts HTTP REST commands (e.g. GET /_cat/indices, POST /idx/_search {...}).\nPress Enter when complete; use ; between commands in batch input.\n" + shellHelp[strings.Index(shellHelp, `\help`):]
+				if s.backend.Syntax().HelpText != "" {
+					help = s.backend.Syntax().HelpText + shellHelp[strings.Index(shellHelp, `\help`):]
 				}
 				_, _ = fmt.Fprint(out, help)
 			case `\clear`:
@@ -548,14 +633,19 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 				if err := c.refresh(ctx, s); err != nil {
 					_, _ = fmt.Fprintln(errOut, err)
 				}
+				c.refreshSnippets(store)
 			case `\database`, `\tables`:
+				if len(fields) > 2 {
+					_, _ = fmt.Fprintf(errOut, "Usage: %s [PATTERN]\n", fields[0])
+					break
+				}
+				pattern := ""
+				if len(fields) == 2 {
+					pattern = fields[1]
+				}
 				var names []string
 				var err error
 				if fields[0] == `\database` {
-					if len(fields) != 1 {
-						_, _ = fmt.Fprintln(errOut, `Usage: \database`)
-						break
-					}
 					names, err = s.Databases(ctx)
 				} else {
 					names, err = s.Tables(ctx)
@@ -563,7 +653,7 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 				if err != nil {
 					_, _ = fmt.Fprintln(errOut, err)
 				} else {
-					for _, n := range names {
+					for _, n := range filterList(names, pattern) {
 						_, _ = fmt.Fprintln(out, n)
 					}
 				}
@@ -583,8 +673,11 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 					_, _ = fmt.Fprintln(errOut, err)
 				}
 			case `\history`:
+				pattern := strings.TrimSpace(line[len(fields[0]):])
 				for i, q := range history.entries {
-					_, _ = fmt.Fprintf(out, "%d  %s\n", i+1, q)
+					if matchFilter(q, pattern) {
+						_, _ = fmt.Fprintf(out, "%d  %s\n", i+1, q)
+					}
 				}
 			case `\format`:
 				if len(fields) != 2 || !validFormat(fields[1]) {
@@ -599,6 +692,7 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 					_, _ = fmt.Fprintln(errOut, `Usage: \pager auto|on|off`)
 				} else {
 					pagerMode = fields[1]
+					updatePager()
 				}
 			case `\truncate`:
 				if len(fields) == 1 {
@@ -618,6 +712,22 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 				} else {
 					s.MaxCellWidth = n
 					s.MaxCellWidthSet = true
+				}
+			case `\limit`:
+				if len(fields) == 1 {
+					if s.MaxRows <= 0 {
+						_, _ = fmt.Fprintln(out, "Limit: off")
+					} else {
+						_, _ = fmt.Fprintf(out, "Limit: %d\n", s.MaxRows)
+					}
+				} else if len(fields) != 2 {
+					_, _ = fmt.Fprintln(errOut, `Usage: \limit [N|off]`)
+				} else if fields[1] == "off" || fields[1] == "0" {
+					s.MaxRows = 0
+				} else if n, convErr := strconv.Atoi(fields[1]); convErr != nil || n < 0 {
+					_, _ = fmt.Fprintln(errOut, `Usage: \limit [N|off]`)
+				} else {
+					s.MaxRows = n
 				}
 			case `\x`:
 				s.Expanded = !s.Expanded
@@ -641,8 +751,23 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 					_, _ = fmt.Fprintf(errOut, "snippet %q does not exist\n", fields[1])
 					break
 				}
-				if execErr := s.Run(ctx, sn.Query, format, out); execErr != nil {
-					_, _ = fmt.Fprintln(errOut, "SQL error:", execErr)
+				stopSpinner := startSpinner(errOut, "Running query")
+				s.BeforeOutput = stopSpinner
+				execErr, interrupted := runInterruptible(ctx, func(qCtx context.Context) error {
+					return s.Run(qCtx, sn.Query, format, out)
+				})
+				stopSpinner()
+				s.BeforeOutput = nil
+				if interrupted {
+					_, _ = fmt.Fprintln(errOut, "Query canceled.")
+					break
+				}
+				if execErr != nil {
+					label := "SQL error:"
+					if syntax := s.backend.Syntax(); syntax.JSONCommands || syntax.LineCommands || syntax.HTTPCommands {
+						label = "Command error:"
+					}
+					_, _ = fmt.Fprintln(errOut, label, execErr)
 				}
 			default:
 				_, _ = fmt.Fprintln(errOut, "Unknown command. Type \\help.")
@@ -671,9 +796,16 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 			}
 			stopSpinner := startSpinner(errOut, "Running query")
 			s.BeforeOutput = stopSpinner
-			execErr := s.Execute(ctx, q, format, out)
+			prevDB := s.CurrentDatabase
+			execErr, interrupted := runInterruptible(ctx, func(qCtx context.Context) error {
+				return s.Execute(qCtx, q, format, out)
+			})
 			stopSpinner()
 			s.BeforeOutput = nil
+			if interrupted {
+				_, _ = fmt.Fprintln(errOut, "Query canceled.")
+				break
+			}
 			if execErr != nil {
 				label := "SQL error:"
 				if syntax := s.backend.Syntax(); syntax.JSONCommands || syntax.LineCommands || syntax.HTTPCommands {
@@ -682,11 +814,21 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 				_, _ = fmt.Fprintln(errOut, label, execErr)
 				break
 			}
-			if _, use, _ := parseUseDatabase(q, s.backend.Syntax()); use {
+			if _, use, _ := parseUseDatabase(q, s.backend.Syntax()); use || s.CurrentDatabase != prevDB {
 				if err := c.refresh(ctx, s); err != nil {
 					_, _ = fmt.Fprintln(errOut, "Schema completion unavailable:", err)
 				}
 			}
 		}
 	}
+}
+
+func runInterruptible(ctx context.Context, fn func(context.Context) error) (error, bool) {
+	qCtx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	defer stop()
+	err := fn(qCtx)
+	if qCtx.Err() != nil && ctx.Err() == nil {
+		return err, true
+	}
+	return err, false
 }

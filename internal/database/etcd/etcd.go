@@ -66,7 +66,9 @@ func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (databas
 
 func (Driver) Syntax() database.Syntax {
 	return database.Syntax{
-		LineCommands: true,
+		LineCommands:     true,
+		BackslashEscapes: true,
+		HelpText:         "etcd accepts key-value commands (GET, PUT, DEL, PREFIX, KEYS, STATUS, COMPACT, POST), one per line.\nPress Enter to execute. Quote arguments containing spaces.\n",
 		CompletionWords: []string{
 			"GET", "PUT", "DEL", "DELETE", "PREFIX", "KEYS", "STATUS", "COMPACT", "POST",
 		},
@@ -78,7 +80,7 @@ func (Driver) SwitchDatabase(_ context.Context, _ database.Connection, _, _ stri
 }
 
 func (Driver) Databases(_ context.Context, _ database.Connection) ([]string, error) {
-	return []string{"default"}, nil
+	return nil, fmt.Errorf("database listing is not supported for etcd")
 }
 
 func (Driver) Tables(ctx context.Context, c database.Connection) ([]string, error) {
@@ -113,9 +115,9 @@ func (Driver) Columns(_ context.Context, _ database.Connection, _ string) ([]str
 
 func (Driver) ColumnDetails(_ context.Context, _ database.Connection, table string) (database.Query, error) {
 	if strings.TrimSpace(table) == "" {
-		return database.Query{Text: "KEYS"}, nil
+		return database.Query{Text: "KEYS", Heading: "Keys:"}, nil
 	}
-	return database.Query{Text: "GET " + quoteToken(table)}, nil
+	return database.Query{Text: "GET " + quoteToken(table), Heading: "Key:"}, nil
 }
 
 func (Driver) Indexes(_ context.Context, _ database.Connection, _ string) (database.Query, error) {
@@ -526,10 +528,19 @@ func splitTokens(input string) ([]string, error) {
 	var cur strings.Builder
 	inToken := false
 	var quote rune
+	escaped := false
 
-	for i, r := range input {
-		_ = i
+	for _, r := range input {
 		if quote != 0 {
+			if escaped {
+				cur.WriteRune(r)
+				escaped = false
+				continue
+			}
+			if r == '\\' {
+				escaped = true
+				continue
+			}
 			if r == quote {
 				quote = 0
 				continue

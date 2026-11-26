@@ -45,9 +45,11 @@ func (Driver) Open(_ context.Context, dsn string, dial database.Dial) (database.
 
 func (Driver) Syntax() database.Syntax {
 	return database.Syntax{
-		LineCommands: true,
+		LineCommands:     true,
+		BackslashEscapes: true,
+		HelpText:         "bbolt accepts key-value commands (BUCKETS, KEYS, GET, PUT, DEL, CREATE BUCKET, DELETE BUCKET, STATS), one per line.\nPress Enter to execute. Quote arguments containing spaces.\n",
 		CompletionWords: []string{
-			"BUCKETS", "KEYS", "GET", "PUT", "DEL", "DELETE", "CREATE BUCKET", "DELETE BUCKET", "STATS",
+			"BUCKETS", "KEYS", "GET", "PUT", "DEL", "DELETE", "CREATE", "BUCKET", "STATS",
 		},
 	}
 }
@@ -56,12 +58,8 @@ func (Driver) SwitchDatabase(_ context.Context, _ database.Connection, _, _ stri
 	return nil, fmt.Errorf("bbolt does not support switching databases")
 }
 
-func (Driver) Databases(_ context.Context, c database.Connection) ([]string, error) {
-	bc, ok := c.(*conn)
-	if !ok {
-		return nil, fmt.Errorf("unexpected bbolt connection type %T", c)
-	}
-	return []string{filepath.Base(bc.path)}, nil
+func (Driver) Databases(_ context.Context, _ database.Connection) ([]string, error) {
+	return nil, fmt.Errorf("database listing is not supported for bbolt")
 }
 
 func (Driver) CurrentDatabase(_ context.Context, c database.Connection) (string, error) {
@@ -93,9 +91,9 @@ func (Driver) Columns(_ context.Context, _ database.Connection, _ string) ([]str
 
 func (Driver) ColumnDetails(_ context.Context, _ database.Connection, table string) (database.Query, error) {
 	if strings.TrimSpace(table) == "" {
-		return database.Query{Text: "BUCKETS"}, nil
+		return database.Query{Text: "BUCKETS", Heading: "Buckets:"}, nil
 	}
-	return database.Query{Text: "KEYS " + quoteToken(table)}, nil
+	return database.Query{Text: "KEYS " + quoteToken(table), Heading: "Keys:"}, nil
 }
 
 func (Driver) Indexes(_ context.Context, _ database.Connection, _ string) (database.Query, error) {
@@ -354,9 +352,19 @@ func splitTokens(input string) ([]string, error) {
 	var cur strings.Builder
 	inToken := false
 	var quote rune
+	escaped := false
 
 	for _, r := range input {
 		if quote != 0 {
+			if escaped {
+				cur.WriteRune(r)
+				escaped = false
+				continue
+			}
+			if r == '\\' {
+				escaped = true
+				continue
+			}
 			if r == quote {
 				quote = 0
 				continue

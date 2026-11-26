@@ -104,6 +104,7 @@ func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (databas
 func (Driver) Syntax() database.Syntax {
 	return database.Syntax{
 		BackslashEscapes: true,
+		HelpText:         "InfluxDB accepts Flux queries or WRITE <line-protocol> statements ending with ;.\n",
 		CompletionWords: strings.Fields(
 			`from range filter map group count mean sum sort limit yield schema.measurements schema.measurementFieldKeys schema.measurementTagKeys WRITE`,
 		),

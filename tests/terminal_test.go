@@ -314,7 +314,7 @@ func TestTerminalDatabaseLists(t *testing.T) {
 			output := term.exchange("\\database\r", systemDB)
 			contains(t, output, current.Name+"\r\n")
 			excludes(t, output, "Unknown command")
-			term.exchange("\\database extra\r", "Usage: \\database")
+			term.exchange("\\database extra args\r", "Usage: \\database [PATTERN]")
 			output = term.exchange("\\help\r", "List databases")
 			contains(t, output, "\\database")
 			term.exit("\\q\r")

@@ -46,6 +46,54 @@ func TestSafetyWriteAndDangerousDetection(t *testing.T) {
 	if !isWriteStatement(`DELETE /users`, database.Syntax{HTTPCommands: true}) {
 		t.Fatal("ES DELETE should be write")
 	}
+
+	// etcd / bbolt line commands
+	if !isWriteStatement("PUT /app/k v", database.Syntax{LineCommands: true}) {
+		t.Fatal("etcd PUT should be write")
+	}
+	if !isWriteStatement("CREATE BUCKET users", database.Syntax{LineCommands: true}) {
+		t.Fatal("bbolt CREATE BUCKET should be write")
+	}
+	if _, dangerous := dangerousWriteReason("DELETE BUCKET users", database.Syntax{LineCommands: true}); !dangerous {
+		t.Fatal("bbolt DELETE BUCKET should be dangerous on prod")
+	}
+
+	// Milvus / Qdrant read-only POST endpoints
+	if isWriteStatement(`POST collections/list {}`, database.Syntax{HTTPCommands: true}) {
+		t.Fatal("Milvus collections/list should not be write")
+	}
+	if isWriteStatement(`POST entities/query {"collectionName":"c"}`, database.Syntax{HTTPCommands: true}) {
+		t.Fatal("Milvus entities/query should not be write")
+	}
+	if isWriteStatement(`POST points/scroll {"limit":10}`, database.Syntax{HTTPCommands: true}) {
+		t.Fatal("Qdrant points/scroll should not be write")
+	}
+	if !isWriteStatement(`POST points/delete {"points":[1]}`, database.Syntax{HTTPCommands: true}) {
+		t.Fatal("Qdrant points/delete should be write")
+	}
+
+	// InfluxDB / OpenObserve writes
+	if !isWriteStatement(`WRITE cpu,host=a value=1;`, sqlSyn) {
+		t.Fatal("InfluxDB WRITE should be write")
+	}
+	if !isWriteStatement(`INGEST app_logs {"msg":"hi"};`, sqlSyn) {
+		t.Fatal("OpenObserve INGEST should be write")
+	}
+
+	// Neo4j Cypher
+	cypherSyn := database.Syntax{SlashComments: true}
+	if isWriteStatement(`MATCH (n) RETURN n;`, cypherSyn) {
+		t.Fatal("Cypher MATCH RETURN should not be write")
+	}
+	if !isWriteStatement(`MATCH (n) DELETE n;`, cypherSyn) {
+		t.Fatal("Cypher MATCH DELETE should be write")
+	}
+	if _, dangerous := dangerousWriteReason(`MATCH (n) DELETE n;`, cypherSyn); !dangerous {
+		t.Fatal("Cypher DELETE without WHERE should be dangerous on prod")
+	}
+	if _, dangerous := dangerousWriteReason(`MATCH (n) WHERE n.id = 1 DELETE n;`, cypherSyn); dangerous {
+		t.Fatal("Cypher DELETE with WHERE should not be dangerous")
+	}
 }
 
 func TestSessionReadOnlyAndProdGuards(t *testing.T) {

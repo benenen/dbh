@@ -219,6 +219,7 @@ func open(ctx context.Context, dsn string, db int, dial database.Dial) (database
 
 func (Driver) Syntax() database.Syntax {
 	return database.Syntax{LineCommands: true, BackslashEscapes: true,
+		HelpText: "Redis accepts redis-cli style commands, one per line. Press Enter to execute.\nQuote arguments that contain spaces. \\tables lists up to 1000 keys.\n",
 		CompletionWords: strings.Fields(`APPEND AUTH BITCOUNT BLPOP BRPOP CLIENT CONFIG COPY DBSIZE DECR DECRBY DEL DISCARD
 EVAL EVALSHA EXEC EXISTS EXPIRE EXPIREAT FLUSHDB GET GETDEL GETEX GETRANGE GETSET HDEL HEXISTS HGET HGETALL
 HINCRBY HKEYS HLEN HMGET HSCAN HSET HSETNX HVALS INCR INCRBY INCRBYFLOAT INFO KEYS LINDEX LINSERT LLEN LMOVE

@@ -85,7 +85,7 @@ func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (databas
 }
 
 func (Driver) Syntax() database.Syntax {
-	return database.Syntax{BackslashEscapes: true}
+	return database.Syntax{BackslashEscapes: true, BacktickEscapes: true}
 }
 
 func (Driver) SwitchDatabase(ctx context.Context, conn database.Connection, _ string, name string, _ database.Dial) (database.Connection, error) {

@@ -59,9 +59,10 @@ func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (databas
 
 func (Driver) Syntax() database.Syntax {
 	return database.Syntax{
+		HelpText: "OpenObserve accepts SQL queries, SHOW STREAMS, SHOW SCHEMA <stream>, or INGEST <stream> <json> ending with ;.\n",
 		CompletionWords: []string{
-			"SELECT", "FROM", "WHERE", "GROUP BY", "ORDER BY", "LIMIT",
-			"SHOW STREAMS", "SHOW SCHEMA", "INGEST",
+			"SELECT", "FROM", "WHERE", "GROUP", "BY", "ORDER", "LIMIT",
+			"SHOW", "STREAMS", "SCHEMA", "INGEST",
 		},
 	}
 }
