@@ -14,6 +14,7 @@ func TestTerminalDriversInteractive(t *testing.T) {
 		driver       string
 		envVar       string
 		setup        []string
+		cleanup      []string
 		query        string
 		want         string
 		helpWant     string
@@ -83,7 +84,7 @@ func TestTerminalDriversInteractive(t *testing.T) {
 			driver:   "elasticsearch",
 			envVar:   "DBH_TEST_ELASTICSEARCH_DSN",
 			query:    "GET /",
-			want:     "You Know, for Search",
+			want:     "docker-cluster",
 			helpWant: "Elasticsearch accepts",
 		},
 		{
@@ -96,8 +97,10 @@ func TestTerminalDriversInteractive(t *testing.T) {
 		{
 			driver:   "milvus",
 			envVar:   "DBH_TEST_MILVUS_DSN",
-			query:    "POST databases/list {}",
-			want:     "default",
+			setup:    []string{`POST collections/create {"collectionName":"dbh_term_items","dimension":4}`},
+			cleanup:  []string{`POST collections/drop {"collectionName":"dbh_term_items"}`},
+			query:    "POST collections/list {}",
+			want:     "dbh_term_items",
 			helpWant: "Milvus accepts",
 		},
 		{
@@ -117,7 +120,7 @@ func TestTerminalDriversInteractive(t *testing.T) {
 		{
 			driver:   "influxdb",
 			envVar:   "DBH_TEST_INFLUXDB_DSN",
-			query:    "buckets();",
+			query:    `buckets() |> filter(fn: (r) => r.name == "dbh_test");`,
 			want:     "dbh_test",
 			helpWant: "InfluxDB accepts",
 		},
@@ -167,6 +170,13 @@ func TestTerminalDriversInteractive(t *testing.T) {
 			f := newFixture(t)
 			connName := "term-" + tc.driver
 			f.run("new", connName, "--driver", tc.driver, "--dsn", dsn)
+			if len(tc.cleanup) > 0 {
+				t.Cleanup(func() {
+					for _, stmt := range tc.cleanup {
+						f.run("exec", connName, stmt, "--no-history")
+					}
+				})
+			}
 
 			term := f.openTerminal(connName, "--no-history")
 			contains(t, term.transcript, "Row limit: 1000")

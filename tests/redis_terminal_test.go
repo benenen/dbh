@@ -24,7 +24,7 @@ func TestRedisTerminalCommands(t *testing.T) {
 	term.exchange("HGETA", "HGETALL")
 	term.exchange("\x03", "redis/0> ")
 	// Enter runs a complete line without a semicolon; an open quote continues it.
-	term.exchange("SET "+key+":q \"a\r", "...> ")
+	term.exchange("SET "+key+":q \"a\r", `"> `)
 	term.exchange("b\"\r", `{"value":"OK"}`)
 	term.exchange("GET "+key+":q\r", `{"value":"a\nb"}`)
 	term.exchange("DEL "+key+":q\r", `{"value":1}`)

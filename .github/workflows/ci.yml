@@ -224,7 +224,7 @@ jobs:
             openobserve)
               docker run -d --name db-openobserve -p 5080:5080 -e ZO_ROOT_USER_EMAIL=root@example.com -e ZO_ROOT_USER_PASSWORD=Complexpass#123 public.ecr.aws/zinclabs/openobserve:latest
               for i in $(seq 1 45); do curl -sf http://127.0.0.1:5080/healthz >/dev/null && break; sleep 2; done
-              export DBH_TEST_OPENOBSERVE_DSN="openobserve://root@example.com:Complexpass#123@127.0.0.1:5080/default"
+              export DBH_TEST_OPENOBSERVE_DSN="openobserve://root%40example.com:Complexpass%23123@127.0.0.1:5080/default"
               go test -tags=e2e -count=1 -timeout=5m -v -run 'TestOpenObserveE2E|TestTerminalDriversInteractive/openobserve' ./tests
               ;;
           esac
