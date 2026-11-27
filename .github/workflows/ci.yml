@@ -117,7 +117,7 @@ jobs:
               docker exec db-pg psql -h 127.0.0.1 -U dbh -d dbh_test -c "CREATE DATABASE dbh_alt;"
               export DBH_TEST_POSTGRES_DSN="postgres://dbh:dbh@127.0.0.1:15432/dbh_test?sslmode=disable"
               export DBH_TEST_POSTGRES_ALT_DATABASE="dbh_alt"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestExecDatabaseSelection/postgres|TestTerminalDatabase|TestERDDatabases/postgres' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestExecDatabaseSelection/postgres|TestTerminalDatabase|TestTerminalDriversInteractive/postgres|TestERDDatabases/postgres' ./tests
               ;;
             mysql)
               docker run -d --name db-mysql -e MYSQL_ROOT_PASSWORD=dbh -e MYSQL_DATABASE=dbh_test -p 13306:3306 mysql:8.0
@@ -125,19 +125,19 @@ jobs:
               docker exec db-mysql mysql -uroot -pdbh -e "CREATE DATABASE IF NOT EXISTS dbh_alt;"
               export DBH_TEST_MYSQL_DSN="root:dbh@tcp(127.0.0.1:13306)/dbh_test?parseTime=true&multiStatements=true"
               export DBH_TEST_MYSQL_ALT_DATABASE="dbh_alt"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestExecDatabaseSelection/mysql|TestComment|TestTerminalDatabase|TestERDDatabases/mysql' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestExecDatabaseSelection/mysql|TestComment|TestTerminalDatabase|TestTerminalDriversInteractive/mysql|TestERDDatabases/mysql' ./tests
               ;;
             mongo)
               docker run -d --name db-mongo -p 27017:27017 mongo:7
               for i in $(seq 1 30); do docker exec db-mongo mongosh --quiet --eval "db.runCommand({ping:1}).ok" | grep -q 1 && break; sleep 1; done
               export DBH_TEST_MONGO_DSN="mongodb://127.0.0.1:27017/dbh_test"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestMongo|TestExecDatabaseSelection/mongo' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestMongo|TestExecDatabaseSelection/mongo|TestTerminalDriversInteractive/mongo' ./tests
               ;;
             redis)
               docker run -d --name db-redis -p 16379:6379 redis:7-alpine
               for i in $(seq 1 30); do docker exec db-redis redis-cli ping | grep -q PONG && break; sleep 1; done
               export DBH_TEST_REDIS_DSN="redis://127.0.0.1:16379/0"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestRedis' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestRedis|TestTerminalDriversInteractive/redis' ./tests
               ;;
             clickhouse)
               docker run -d --name db-ch -e CLICKHOUSE_DB=dbh_test -e CLICKHOUSE_USER=default -e CLICKHOUSE_PASSWORD=dbh -p 19000:9000 -p 18123:8123 clickhouse/clickhouse-server:24.8
@@ -145,7 +145,7 @@ jobs:
               curl -sf -X POST "http://default:dbh@127.0.0.1:18123/" --data "CREATE DATABASE IF NOT EXISTS dbh_alt"
               export DBH_TEST_CLICKHOUSE_DSN="clickhouse://default:dbh@127.0.0.1:19000/dbh_test"
               export DBH_TEST_CLICKHOUSE_ALT_DATABASE="dbh_alt"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestClickHouse|TestComment' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestClickHouse|TestComment|TestTerminalDriversInteractive/clickhouse' ./tests
               ;;
             mssql)
               docker run -d --name db-mssql -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD="DbhTest!2026" -e MSSQL_PID=Express -p 11433:1433 mcr.microsoft.com/mssql/server:2022-latest
@@ -156,19 +156,19 @@ jobs:
               for i in $(seq 1 45); do /tmp/dbh-ci --config-dir "$TMP_CFG" exec mssql "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
               /tmp/dbh-ci --config-dir "$TMP_CFG" exec mssql "CREATE DATABASE dbh_test;"
               export DBH_TEST_MSSQL_ALT_DATABASE="dbh_test"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestMSSQLE2E|TestERDDatabases/mssql' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestMSSQLE2E|TestTerminalDriversInteractive/mssql|TestERDDatabases/mssql' ./tests
               ;;
             trino)
               docker run -d --name db-trino -p 18080:8080 trinodb/trino:451
               for i in $(seq 1 60); do curl -sf http://127.0.0.1:18080/v1/info | grep -q '"starting":false' && break; sleep 2; done
               export DBH_TEST_TRINO_DSN="http://test@127.0.0.1:18080?catalog=memory&schema=default"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestTrinoE2E|TestERDDatabases/trino' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestTrinoE2E|TestTerminalDriversInteractive/trino|TestERDDatabases/trino' ./tests
               ;;
             elasticsearch)
               docker run -d --name db-es -e discovery.type=single-node -e xpack.security.enabled=false -e "ES_JAVA_OPTS=-Xms512m -Xmx512m" -p 19200:9200 docker.elastic.co/elasticsearch/elasticsearch:8.15.0
               for i in $(seq 1 60); do curl -sf http://127.0.0.1:19200 >/dev/null 2>&1 && break; sleep 2; done
               export DBH_TEST_ELASTICSEARCH_DSN="http://127.0.0.1:19200"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestElasticsearchE2E' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestElasticsearchE2E|TestTerminalDriversInteractive/elasticsearch' ./tests
               ;;
             oracle)
               docker run -d --name db-oracle -e ORACLE_PASSWORD=DbhTest2026 -p 11521:1521 gvenzl/oracle-free:23-slim-faststart
@@ -177,54 +177,54 @@ jobs:
               TMP_CFG=$(mktemp -d)
               /tmp/dbh-ci --config-dir "$TMP_CFG" new ora --driver oracle --dsn-env DBH_TEST_ORACLE_DSN
               for i in $(seq 1 90); do /tmp/dbh-ci --config-dir "$TMP_CFG" exec ora "SELECT 1 FROM DUAL" >/dev/null 2>&1 && break; sleep 2; done
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestOracleE2E|TestERDDatabases/oracle' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestOracleE2E|TestTerminalDriversInteractive/oracle|TestERDDatabases/oracle' ./tests
               ;;
             milvus)
               docker run -d --name db-milvus -e ETCD_USE_EMBED=true -e ETCD_DATA_DIR=/var/lib/milvus/etcd -e COMMON_STORAGETYPE=local -p 19530:19530 -p 19091:9091 milvusdb/milvus:v2.4.15 milvus run standalone
               for i in $(seq 1 90); do curl -sf http://127.0.0.1:19091/healthz | grep -q OK && break; sleep 2; done
               export DBH_TEST_MILVUS_DSN="http://127.0.0.1:19530/default"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestMilvusE2E' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestMilvusE2E|TestTerminalDriversInteractive/milvus' ./tests
               ;;
             qdrant)
               docker run -d --name db-qdrant -p 6333:6333 qdrant/qdrant:v1.12.5
               for i in $(seq 1 30); do curl -sf http://127.0.0.1:6333/collections >/dev/null 2>&1 && break; sleep 1; done
               export DBH_TEST_QDRANT_DSN="http://127.0.0.1:6333"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestQdrantE2E' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestQdrantE2E|TestTerminalDriversInteractive/qdrant' ./tests
               ;;
             neo4j)
               docker run -d --name db-neo4j -e NEO4J_AUTH=neo4j/DbhTest2026 -p 7474:7474 -p 7687:7687 neo4j:5-community
               for i in $(seq 1 60); do curl -sf -u neo4j:DbhTest2026 -H "Content-Type: application/json" -d '{"statements":[{"statement":"RETURN 1"}]}' http://127.0.0.1:7474/db/neo4j/tx/commit | grep -q '"errors":\[\]' && break; sleep 2; done
               export DBH_TEST_NEO4J_DSN="http://neo4j:DbhTest2026@127.0.0.1:7474/neo4j"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestNeo4jE2E' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestNeo4jE2E|TestTerminalDriversInteractive/neo4j' ./tests
               ;;
             influxdb)
               docker run -d --name db-influxdb -e DOCKER_INFLUXDB_INIT_MODE=setup -e DOCKER_INFLUXDB_INIT_USERNAME=admin -e DOCKER_INFLUXDB_INIT_PASSWORD=DbhTest2026 -e DOCKER_INFLUXDB_INIT_ORG=acme -e DOCKER_INFLUXDB_INIT_BUCKET=dbh_test -e DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=dbh-test-token -p 8086:8086 influxdb:2.7-alpine
               for i in $(seq 1 45); do curl -sf http://127.0.0.1:8086/health | grep -q '"status":"pass"' && break; sleep 2; done
               export DBH_TEST_INFLUXDB_DSN="http://127.0.0.1:8086/dbh_test?org=acme&token=dbh-test-token"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestInfluxDBE2E' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestInfluxDBE2E|TestTerminalDriversInteractive/influxdb' ./tests
               ;;
             tdengine)
               docker run -d --name db-tdengine -p 6041:6041 tdengine/tdengine:latest
               for i in $(seq 1 60); do curl -sf -u root:taosdata -d "SELECT SERVER_VERSION()" http://127.0.0.1:6041/rest/sql | grep -q '"code":0' && break; sleep 2; done
               export DBH_TEST_TDENGINE_DSN="http://root:taosdata@127.0.0.1:6041"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestTDengineE2E' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestTDengineE2E|TestTerminalDriversInteractive/tdengine' ./tests
               ;;
             cassandra)
               docker run -d --name db-cassandra -e MAX_HEAP_SIZE=512M -e HEAP_NEWSIZE=128M -p 9042:9042 cassandra:4.1
               for i in $(seq 1 90); do docker exec db-cassandra cqlsh -e "SELECT release_version FROM system.local" >/dev/null 2>&1 && break; sleep 2; done
               export DBH_TEST_CASSANDRA_DSN="cassandra://127.0.0.1:9042"
-              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestCassandraE2E' ./tests
+              go test -tags=e2e -count=1 -timeout=10m -v -run 'TestCassandraE2E|TestTerminalDriversInteractive/cassandra' ./tests
               ;;
             etcd)
               docker run -d --name db-etcd -p 2379:2379 quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://127.0.0.1:2379
               for i in $(seq 1 30); do curl -sf http://127.0.0.1:2379/health >/dev/null && break; sleep 1; done
               export DBH_TEST_ETCD_DSN="etcd://127.0.0.1:2379"
-              go test -tags=e2e -count=1 -timeout=5m -v -run 'TestEtcdE2E' ./tests
+              go test -tags=e2e -count=1 -timeout=5m -v -run 'TestEtcdE2E|TestTerminalDriversInteractive/etcd' ./tests
               ;;
             openobserve)
               docker run -d --name db-openobserve -p 5080:5080 -e ZO_ROOT_USER_EMAIL=root@example.com -e ZO_ROOT_USER_PASSWORD=Complexpass#123 public.ecr.aws/zinclabs/openobserve:latest
               for i in $(seq 1 45); do curl -sf http://127.0.0.1:5080/healthz >/dev/null && break; sleep 2; done
               export DBH_TEST_OPENOBSERVE_DSN="openobserve://root@example.com:Complexpass#123@127.0.0.1:5080/default"
-              go test -tags=e2e -count=1 -timeout=5m -v -run 'TestOpenObserveE2E' ./tests
+              go test -tags=e2e -count=1 -timeout=5m -v -run 'TestOpenObserveE2E|TestTerminalDriversInteractive/openobserve' ./tests
               ;;
           esac

@@ -81,8 +81,8 @@ func (f *fixture) openTerminal(name string, args ...string) *terminal {
 	screen := newScreen(f.t, 0)
 	screen.feed(term.transcript)
 	term.prompt = strings.TrimSpace(screen.line(screen.y)) + " "
-	if !strings.HasPrefix(term.prompt, name+"/") {
-		f.t.Fatalf("missing current database in prompt: %q", term.prompt)
+	if !strings.HasPrefix(term.prompt, name+"/") && !strings.HasPrefix(term.prompt, name+">") {
+		f.t.Fatalf("missing connection name in prompt: %q", term.prompt)
 	}
 	return term
 }
