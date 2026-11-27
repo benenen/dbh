@@ -382,10 +382,11 @@ func (c *conn) ingest(ctx context.Context, stream, payload string) (database.Row
 
 func (c *conn) searchSQL(ctx context.Context, sqlText string) (database.Rows, error) {
 	now := time.Now().Add(24 * time.Hour).UnixMicro()
+	// Newer OpenObserve rejects start_time 0 as an invalid time range; 1µs still covers all data.
 	reqPayload := map[string]any{
 		"query": map[string]any{
 			"sql":        sqlText,
-			"start_time": 0,
+			"start_time": 1,
 			"end_time":   now,
 			"from":       0,
 			"size":       100,
