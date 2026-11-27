@@ -135,3 +135,28 @@ func TestMilvusDriver(t *testing.T) {
 		t.Fatalf("expected milvus error, got %v", err)
 	}
 }
+
+func TestMilvusDatabasesFallsBackWithoutListEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/vectordb/collections/list":
+			_, _ = io.WriteString(w, `{"code":0,"data":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	d := Driver{}
+	conn, err := d.Open(ctx, srv.URL+"/analytics", (&net.Dialer{}).DialContext)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	dbs, err := d.Databases(ctx, conn)
+	if err != nil || len(dbs) != 1 || dbs[0] != "analytics" {
+		t.Fatalf("Databases = %v, %v", dbs, err)
+	}
+}

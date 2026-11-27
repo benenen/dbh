@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -130,6 +131,11 @@ func (Driver) Databases(ctx context.Context, conn database.Connection) ([]string
 		return nil, err
 	}
 	data, err := c.callV2(ctx, http.MethodPost, "/v2/vectordb/databases/list", map[string]any{})
+	var statusErr *httpStatusError
+	if errors.As(err, &statusErr) && statusErr.status == http.StatusNotFound {
+		// Milvus before 2.5 has no databases/list REST endpoint; report the connected database.
+		return []string{c.dbName}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -572,19 +578,26 @@ func decodeSortedStringList(data json.RawMessage, kind string) ([]string, error)
 	return names, nil
 }
 
+type httpStatusError struct {
+	status int
+	msg    string
+}
+
+func (e *httpStatusError) Error() string { return e.msg }
+
 func formatHTTPError(status int, body []byte) error {
 	var errResp struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 	}
 	if json.Unmarshal(body, &errResp) == nil && errResp.Message != "" {
-		return fmt.Errorf("milvus returned status %d (%d): %s", status, errResp.Code, errResp.Message)
+		return &httpStatusError{status, fmt.Sprintf("milvus returned status %d (%d): %s", status, errResp.Code, errResp.Message)}
 	}
 	msg := strings.TrimSpace(string(body))
 	if msg != "" {
-		return fmt.Errorf("milvus returned status %d: %s", status, msg)
+		return &httpStatusError{status, fmt.Sprintf("milvus returned status %d: %s", status, msg)}
 	}
-	return fmt.Errorf("milvus returned status %d", status)
+	return &httpStatusError{status, fmt.Sprintf("milvus returned status %d", status)}
 }
 
 func validateName(name string) error {
