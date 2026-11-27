@@ -30,16 +30,16 @@ func TestInfluxDBE2E(t *testing.T) {
 func TestInfluxDBMockE2E(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		switch {
-		case r.URL.Path == "/health":
+		switch r.URL.Path {
+		case "/health":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"status":"pass"}`)
-		case r.URL.Path == "/api/v2/buckets":
+		case "/api/v2/buckets":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"buckets":[{"name":"dbh_test"}]}`)
-		case r.URL.Path == "/api/v2/write":
+		case "/api/v2/write":
 			w.WriteHeader(http.StatusNoContent)
-		case r.URL.Path == "/api/v2/query":
+		case "/api/v2/query":
 			w.Header().Set("Content-Type", "text/csv")
 			if strings.Contains(string(body), "schema.measurements") {
 				_, _ = io.WriteString(w, ",result,table,_value\n,_result,0,cpu\n")
