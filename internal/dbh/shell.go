@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -71,6 +72,8 @@ func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 			names = []string{"off", "0", "80", "200", "500"}
 		case `\limit`:
 			names = []string{"off", "0", "100", "500", "1000", "5000"}
+		case `\timeout`:
+			names = []string{"5s", "15s", "30s", "1m", "5m"}
 		case `\run`:
 			names = c.snippets
 		}
@@ -204,7 +207,7 @@ func filterList(items []string, pattern string) []string {
 func commandArgument(line []rune) (command, name string, ok bool) {
 	text := string(line)
 	text = strings.TrimLeft(text[strings.LastIndex(text, "\n")+1:], " \t")
-	for _, command := range []string{`\use`, `\database`, `\tables`, `\describe`, `\indexes`, `\format`, `\pager`, `\truncate`, `\limit`, `\run`} {
+	for _, command := range []string{`\use`, `\database`, `\tables`, `\describe`, `\indexes`, `\format`, `\pager`, `\truncate`, `\limit`, `\timeout`, `\run`} {
 		rest, found := strings.CutPrefix(text, command)
 		if !found || rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
 			continue
@@ -277,7 +280,7 @@ func (c *completer) refresh(ctx context.Context, s *Session) error {
 	if native := s.backend.Syntax().CompletionWords; len(native) > 0 {
 		words = append([]string{}, native...)
 	}
-	words = append(words, `\help`, `\q`, `\database`, `\use`, `\tables`, `\describe`, `\indexes`, `\history`, `\refresh`, `\clear`, `\format`, `\pager`, `\truncate`, `\limit`, `\x`, `\run`)
+	words = append(words, `\help`, `\q`, `\database`, `\use`, `\tables`, `\describe`, `\indexes`, `\history`, `\refresh`, `\clear`, `\format`, `\pager`, `\truncate`, `\limit`, `\timeout`, `\reconnect`, `\o`, `\out`, `\i`, `\source`, `\e`, `\edit`, `\watch`, `\explain`, `\x`, `\run`)
 	// SQLite has no database list; \use then offers no candidates.
 	c.databases, _ = s.Databases(ctx)
 	tables, err := s.Tables(ctx)
@@ -346,6 +349,13 @@ Ctrl-C clears input; Ctrl-D exits.
 \pager auto|on|off  Scroll wide/tall table results in an interactive pager
 \truncate [N|off]   Limit cell display width (table defaults to 200)
 \limit [N|off]      Limit rows returned per query (defaults to 1000; 0/off for unlimited)
+\timeout [DUR]      Show or set query timeout (e.g. 30s, 5m)
+\reconnect          Reconnect the current session and restore database
+\o [FILE]           Redirect query output to FILE (no arg restores stdout)
+\i FILE             Execute SQL/commands from FILE in current session
+\e                  Edit pending or last query in $EDITOR
+\watch [SEC]        Repeat last query every SEC seconds (default 2s; Ctrl-C stops)
+\explain [analyze] SQL  Show query execution plan
 \x                  Toggle expanded vertical table display
 \run SNIPPET        Execute a saved snippet
 `
@@ -423,6 +433,20 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 	rl.Config.Vars["completion-ignore-case"] = true
 	rl.Config.Vars["history-autosuggest"] = !noHistory
 	rl.Config.Vars["cursor-position-probe"] = false
+	var lastQuery string
+	var outFile *os.File
+	var outFilePath string
+	defer func() {
+		if outFile != nil {
+			_ = outFile.Close()
+		}
+	}()
+	activeOut := func() io.Writer {
+		if outFile != nil {
+			return outFile
+		}
+		return out
+	}
 	pagerMode := "auto"
 	updatePager := func() {
 		if pagerMode == "off" {
@@ -554,10 +578,11 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 		return label + "> "
 	})
 	rl.Prompt.Secondary(func() string {
+		promptText := secondaryPrompt(string(*rl.Line()), s.Driver)
 		if color {
-			return "\x1b[90m...> \x1b[0m"
+			return "\x1b[90m" + promptText + "\x1b[0m"
 		}
-		return "...> "
+		return promptText
 	})
 	rl.Completer = func(line []rune, pos int) readline.Completions {
 		if pos < 0 || pos > len(line) {
@@ -575,9 +600,23 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 	for {
 		line, err := rl.Readline()
 		if errors.Is(err, errFuzzyHistory) {
-			selected, ok, pickErr := pickHistory(history.entries, pendingSearchLine)
+			selected, ok, deleted, pickErr := pickHistory(history.entries, pendingSearchLine)
 			if pickErr != nil {
 				_, _ = fmt.Fprintln(errOut, "History search:", pickErr)
+			}
+			if len(deleted) > 0 {
+				delSet := make(map[string]bool, len(deleted))
+				for _, d := range deleted {
+					delSet[d] = true
+				}
+				history.entries = removeHistoryEntries(history.entries, delSet)
+				if !noHistory {
+					if histErr := updateHistory(store, p.Name, func(entries []string) []string {
+						return removeHistoryEntries(entries, delSet)
+					}); histErr != nil {
+						_, _ = fmt.Fprintln(errOut, "History:", histErr)
+					}
+				}
 			}
 			restore := pendingSearchLine
 			if ok {
@@ -797,7 +836,10 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 				stopSpinner := startSpinner(errOut, "Running query")
 				s.BeforeOutput = stopSpinner
 				execErr, interrupted := runInterruptible(ctx, func(qCtx context.Context) error {
-					return s.Run(qCtx, sn.Query, format, out)
+					if execErr := s.Run(qCtx, sn.Query, format, activeOut()); execErr != nil {
+						return execErr
+					}
+					return nil
 				})
 				stopSpinner()
 				s.BeforeOutput = nil
@@ -811,6 +853,164 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 						label = "Command error:"
 					}
 					_, _ = fmt.Fprintln(errOut, label, execErr)
+				}
+			case `\reconnect`:
+				stopSpinner := startSpinner(errOut, "Reconnecting")
+				recErr, interrupted := runInterruptible(ctx, func(qCtx context.Context) error {
+					return s.Reconnect(qCtx, p)
+				})
+				stopSpinner()
+				if interrupted {
+					_, _ = fmt.Fprintln(errOut, "Canceled.")
+					break
+				}
+				if recErr != nil {
+					_, _ = fmt.Fprintln(errOut, recErr)
+					break
+				}
+				_, _ = fmt.Fprintln(out, "Reconnected to", p.Name)
+				if err := c.refresh(ctx, s); err != nil {
+					_, _ = fmt.Fprintln(errOut, "Schema completion unavailable:", err)
+				}
+			case `\timeout`:
+				if len(fields) == 1 {
+					_, _ = fmt.Fprintln(out, "Timeout:", s.Timeout)
+				} else if len(fields) != 2 {
+					_, _ = fmt.Fprintln(errOut, `Usage: \timeout [DURATION]`)
+				} else if d, dErr := time.ParseDuration(fields[1]); dErr != nil || d <= 0 {
+					_, _ = fmt.Fprintln(errOut, `Usage: \timeout [DURATION] (e.g. 30s, 5m)`)
+				} else {
+					s.Timeout = d
+					_, _ = fmt.Fprintln(out, "Timeout:", s.Timeout)
+				}
+			case `\o`, `\out`:
+				if len(fields) == 1 {
+					if outFile != nil {
+						_ = outFile.Close()
+						outFile = nil
+						_, _ = fmt.Fprintln(out, "Output restored to terminal (closed", outFilePath+")")
+						outFilePath = ""
+					} else {
+						_, _ = fmt.Fprintln(out, "Output: terminal")
+					}
+				} else {
+					targetPath := strings.TrimSpace(line[len(fields[0]):])
+					f, openErr := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+					if openErr != nil {
+						_, _ = fmt.Fprintln(errOut, openErr)
+						break
+					}
+					if outFile != nil {
+						_ = outFile.Close()
+					}
+					outFile = f
+					outFilePath = targetPath
+					_, _ = fmt.Fprintln(out, "Output redirected to", outFilePath)
+				}
+			case `\i`, `\source`:
+				srcPath := strings.TrimSpace(line[len(fields[0]):])
+				if srcPath == "" {
+					_, _ = fmt.Fprintf(errOut, "Usage: %s FILE\n", fields[0])
+					break
+				}
+				raw, readErr := os.ReadFile(srcPath)
+				if readErr != nil {
+					_, _ = fmt.Fprintln(errOut, readErr)
+					break
+				}
+				stmts, rem, splitErr := splitSQL(string(raw), s.Driver)
+				if splitErr != nil {
+					_, _ = fmt.Fprintln(errOut, splitErr)
+					break
+				}
+				if strings.TrimSpace(rem) != "" {
+					stmts = append(stmts, rem)
+				}
+				for _, stmt := range stmts {
+					stopSpinner := startSpinner(errOut, "Running query")
+					s.BeforeOutput = stopSpinner
+					execErr, interrupted := runInterruptible(ctx, func(qCtx context.Context) error {
+						return s.Execute(qCtx, stmt, format, activeOut())
+					})
+					stopSpinner()
+					s.BeforeOutput = nil
+					if interrupted {
+						_, _ = fmt.Fprintln(errOut, "Query canceled.")
+						break
+					}
+					if execErr != nil {
+						_, _ = fmt.Fprintln(errOut, "SQL error:", execErr)
+						break
+					}
+				}
+			case `\e`, `\edit`:
+				seed := strings.TrimSpace(resume)
+				if seed == "" {
+					seed = lastQuery
+				}
+				edited, edErr := openExternalEditor(seed)
+				if edErr != nil {
+					_, _ = fmt.Fprintln(errOut, "Editor:", edErr)
+					break
+				}
+				resume = edited
+			case `\watch`:
+				if strings.TrimSpace(lastQuery) == "" {
+					_, _ = fmt.Fprintln(errOut, "No previous query to watch.")
+					break
+				}
+				interval := 2 * time.Second
+				if len(fields) == 2 {
+					if d, dErr := time.ParseDuration(fields[1]); dErr == nil && d > 0 {
+						interval = d
+					} else if sec, sErr := strconv.ParseFloat(fields[1], 64); sErr == nil && sec > 0 {
+						interval = time.Duration(sec * float64(time.Second))
+					} else {
+						_, _ = fmt.Fprintln(errOut, `Usage: \watch [SECONDS|DURATION]`)
+						break
+					}
+				} else if len(fields) > 2 {
+					_, _ = fmt.Fprintln(errOut, `Usage: \watch [SECONDS|DURATION]`)
+					break
+				}
+				runWatch(ctx, s, lastQuery, format, interval, activeOut(), errOut)
+			case `\explain`:
+				rest := strings.TrimSpace(line[len(fields[0]):])
+				analyze := false
+				if len(fields) >= 2 && strings.EqualFold(fields[1], "analyze") {
+					analyze = true
+					rest = strings.TrimSpace(rest[len(fields[1]):])
+				}
+				rest = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rest), ";"))
+				if rest == "" {
+					_, _ = fmt.Fprintln(errOut, `Usage: \explain [analyze] QUERY`)
+					break
+				}
+				if analyze && s.ReadOnly && !s.AllowWrite && isWriteStatement(rest, s.backend.Syntax()) {
+					_, _ = fmt.Fprintln(errOut, "EXPLAIN ANALYZE on a write statement is blocked on read-only connections")
+					break
+				}
+				explainQueries, expErr := buildExplainQueries(s.Driver, rest, analyze)
+				if expErr != nil {
+					_, _ = fmt.Fprintln(errOut, expErr)
+					break
+				}
+				for _, eq := range explainQueries {
+					stopSpinner := startSpinner(errOut, "Running explain")
+					s.BeforeOutput = stopSpinner
+					execErr, interrupted := runInterruptible(ctx, func(qCtx context.Context) error {
+						return s.Execute(qCtx, eq, format, activeOut())
+					})
+					stopSpinner()
+					s.BeforeOutput = nil
+					if interrupted {
+						_, _ = fmt.Fprintln(errOut, "Query canceled.")
+						break
+					}
+					if execErr != nil {
+						_, _ = fmt.Fprintln(errOut, "SQL error:", execErr)
+						break
+					}
 				}
 			default:
 				_, _ = fmt.Fprintln(errOut, "Unknown command. Type \\help.")
@@ -840,8 +1040,9 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 			stopSpinner := startSpinner(errOut, "Running query")
 			s.BeforeOutput = stopSpinner
 			prevDB := s.CurrentDatabase
+			lastQuery = q
 			execErr, interrupted := runInterruptible(ctx, func(qCtx context.Context) error {
-				return s.Execute(qCtx, q, format, out)
+				return s.Execute(qCtx, q, format, activeOut())
 			})
 			stopSpinner()
 			s.BeforeOutput = nil
@@ -874,4 +1075,81 @@ func runInterruptible(ctx context.Context, fn func(context.Context) error) (erro
 		return err, true
 	}
 	return err, false
+}
+
+func removeHistoryEntries(entries []string, delSet map[string]bool) []string {
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !delSet[e] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func openExternalEditor(seed string) (string, error) {
+	editor := strings.TrimSpace(os.Getenv("VISUAL"))
+	if editor == "" {
+		editor = strings.TrimSpace(os.Getenv("EDITOR"))
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+	tmp, err := os.CreateTemp("", "dbh-edit-*.sql")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if seed != "" {
+		if _, err := tmp.WriteString(seed + "\n"); err != nil {
+			_ = tmp.Close()
+			return "", err
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	parts := strings.Fields(editor)
+	cmd := exec.Command(parts[0], append(parts[1:], tmpPath)...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	edited, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(edited)), nil
+}
+
+func runWatch(ctx context.Context, s *Session, query, format string, interval time.Duration, out, errOut io.Writer) {
+	watchCtx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	defer stop()
+	origPager := s.Pager
+	s.Pager = nil
+	defer func() { s.Pager = origPager }()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		_, _ = fmt.Fprintf(out, "\x1b[H\x1b[2JEvery %s: %s (%s) — press Ctrl-C to stop\n\n",
+			interval, summarizeHistoryLine(query, 60), time.Now().Format("15:04:05"))
+		if err := s.Execute(watchCtx, query, format, out); err != nil {
+			if watchCtx.Err() != nil {
+				_, _ = fmt.Fprintln(errOut, "\nWatch stopped.")
+				return
+			}
+			_, _ = fmt.Fprintln(errOut, "Error:", err)
+		}
+		select {
+		case <-watchCtx.Done():
+			_, _ = fmt.Fprintln(errOut, "\nWatch stopped.")
+			return
+		case <-ticker.C:
+		}
+	}
 }

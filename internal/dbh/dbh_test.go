@@ -579,3 +579,32 @@ func TestEnvEnumValidation(t *testing.T) {
 		t.Fatalf("expected enum error for --env prd, got: %v", err)
 	}
 }
+
+func TestSecondaryPromptAndReconnect(t *testing.T) {
+	cases := []struct {
+		input, driver, want string
+	}{
+		{"SELECT 'abc", "sqlite", "'> "},
+		{`SELECT "abc`, "sqlite", `"> `},
+		{"SELECT `abc", "mysql", "`> "},
+		{"SELECT /* abc", "sqlite", "/*> "},
+		{"SELECT $$abc", "postgres", "$$> "},
+		{"SELECT 1", "sqlite", "...> "},
+	}
+	for _, tc := range cases {
+		if got := secondaryPrompt(tc.input, tc.driver); got != tc.want {
+			t.Fatalf("secondaryPrompt(%q, %q) = %q, want %q", tc.input, tc.driver, got, tc.want)
+		}
+	}
+
+	ctx := context.Background()
+	p := Profile{Name: "mem", Driver: "sqlite", DSN: ":memory:"}
+	s, err := openSession(ctx, p, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Reconnect(ctx, p); err != nil {
+		t.Fatalf("Reconnect failed: %v", err)
+	}
+}

@@ -24,6 +24,11 @@ const (
 	keyCtrlP
 	keyCtrlU
 	keyCtrlW
+	keyCtrlD
+	keyTab
+	keyShiftTab
+	keyMouseUp
+	keyMouseDown
 	keyBackspace
 	keyUp
 	keyDown
@@ -57,8 +62,8 @@ func runAltScreenTUI(m tuiModel) error {
 	}
 	defer func() { _ = term.Restore(inFd, oldState) }()
 
-	_, _ = io.WriteString(os.Stdout, "\x1b[?1049h\x1b[?25l")
-	defer func() { _, _ = io.WriteString(os.Stdout, "\x1b[?25h\x1b[?1049l") }()
+	_, _ = io.WriteString(os.Stdout, "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h")
+	defer func() { _, _ = io.WriteString(os.Stdout, "\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l") }()
 
 	var mu sync.Mutex
 	draw := func() {
@@ -124,6 +129,12 @@ func parseTUIKeys(b []byte) []tuiKey {
 		switch c {
 		case 0x03:
 			keys = append(keys, tuiKey{kind: keyCtrlC})
+			i++
+		case 0x04:
+			keys = append(keys, tuiKey{kind: keyCtrlD})
+			i++
+		case 0x09:
+			keys = append(keys, tuiKey{kind: keyTab})
 			i++
 		case 0x0d, 0x0a:
 			keys = append(keys, tuiKey{kind: keyEnter})
@@ -195,6 +206,15 @@ func parseCSIKey(params string, final byte) (tuiKey, bool) {
 		return tuiKey{kind: keyHome}, true
 	case 'F':
 		return tuiKey{kind: keyEnd}, true
+	case 'Z':
+		return tuiKey{kind: keyShiftTab}, true
+	case 'M':
+		if strings.HasPrefix(params, "<64;") {
+			return tuiKey{kind: keyMouseUp}, true
+		}
+		if strings.HasPrefix(params, "<65;") {
+			return tuiKey{kind: keyMouseDown}, true
+		}
 	case '~':
 		code, _, _ := strings.Cut(params, ";")
 		switch code {

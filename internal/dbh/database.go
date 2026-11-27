@@ -110,8 +110,35 @@ func (s *Session) closeProxy() {
 }
 
 func (s *Session) Close() {
-	_ = s.Conn.Close()
+	if s.Conn != nil {
+		_ = s.Conn.Close()
+	}
 	s.closeProxy()
+}
+
+// Reconnect closes the current connection/proxy and opens a fresh one,
+// restoring the active database if one was selected.
+func (s *Session) Reconnect(ctx context.Context, p Profile) error {
+	prevDB := s.CurrentDatabase
+	s.Close()
+	s.Conn = nil
+	s.proxy = nil
+
+	fresh, err := openSession(ctx, p, s.Timeout)
+	if err != nil {
+		return err
+	}
+	s.Conn = fresh.Conn
+	s.proxy = fresh.proxy
+	s.dsn = fresh.dsn
+	s.proxies = fresh.proxies
+	s.CurrentDatabase = fresh.CurrentDatabase
+	if prevDB != "" && prevDB != s.CurrentDatabase {
+		if err := s.UseDatabase(ctx, prevDB); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Session) Execute(ctx context.Context, query, format string, out io.Writer) error {

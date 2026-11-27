@@ -2,9 +2,13 @@ package dbh
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -95,6 +99,20 @@ type tablePagerModel struct {
 	query          string
 	matches        []pagerMatch
 	matchIdx       int
+	rawCols        []string
+	rawRows        [][]string
+	filteredIdx    []int
+	rowStartLines  []int
+	colOffsets     []int
+	detailOpen     bool
+	detailRow      int
+	detailYOffset  int
+	filtering      bool
+	filterQuery    string
+	saving         bool
+	savePath       string
+	statusMsg      string
+	copyFn         func(string) error
 }
 
 func newTablePagerModel(content string, rows, cols int) *tablePagerModel {
@@ -116,7 +134,237 @@ func newTablePagerModel(content string, rows, cols int) *tablePagerModel {
 		cols:        cols,
 		width:       80,
 		height:      24,
+		copyFn: func(seq string) error {
+			_, err := io.WriteString(os.Stdout, seq)
+			return err
+		},
 	}
+}
+
+func (m *tablePagerModel) setSourceData(cols []string, rows [][]string) {
+	m.rawCols = cols
+	m.rawRows = rows
+	m.filteredIdx = make([]int, len(rows))
+	for i := range rows {
+		m.filteredIdx[i] = i
+	}
+	m.computeOffsets()
+}
+
+func (m *tablePagerModel) computeOffsets() {
+	m.colOffsets = nil
+	if len(m.lines) > 0 {
+		line := m.lines[0]
+		skipFirst := m.pinnedColWidth > 0
+		searchStart := 0
+		for {
+			idx := strings.Index(line[searchStart:], "┬")
+			if idx < 0 {
+				break
+			}
+			absEnd := searchStart + idx + len("┬")
+			if skipFirst {
+				skipFirst = false
+			} else {
+				off := uniseg.StringWidth(line[:absEnd]) - m.pinnedColWidth
+				if off > 0 {
+					m.colOffsets = append(m.colOffsets, off)
+				}
+			}
+			searchStart = absEnd
+		}
+	}
+	m.rowStartLines = nil
+	if m.headerLines > 0 && m.headerLines < len(m.lines) {
+		m.rowStartLines = append(m.rowStartLines, m.headerLines)
+		for i := m.headerLines + 1; i < len(m.lines); i++ {
+			if strings.HasPrefix(m.lines[i], "├") && i+1 < len(m.lines) {
+				m.rowStartLines = append(m.rowStartLines, i+1)
+			}
+		}
+	}
+}
+
+func (m *tablePagerModel) topVisibleRow() int {
+	if len(m.rowStartLines) == 0 || len(m.filteredIdx) == 0 {
+		return 0
+	}
+	target := m.pinnedLines() + m.yOffset
+	row := 0
+	for i, lineIdx := range m.rowStartLines {
+		if lineIdx <= target {
+			row = i
+		} else {
+			break
+		}
+	}
+	if row >= len(m.filteredIdx) {
+		row = len(m.filteredIdx) - 1
+	}
+	return row
+}
+
+func (m *tablePagerModel) nextColOffset() int {
+	for _, off := range m.colOffsets {
+		if off > m.xOffset {
+			return min(off, m.maxXOffset())
+		}
+	}
+	return m.maxXOffset()
+}
+
+func (m *tablePagerModel) prevColOffset() int {
+	for i := len(m.colOffsets) - 1; i >= 0; i-- {
+		if m.colOffsets[i] < m.xOffset {
+			return m.colOffsets[i]
+		}
+	}
+	return 0
+}
+
+func (m *tablePagerModel) rebuildFilteredTable() {
+	q := strings.ToLower(strings.TrimSpace(m.filterQuery))
+	m.filteredIdx = m.filteredIdx[:0]
+	for i, row := range m.rawRows {
+		if q == "" {
+			m.filteredIdx = append(m.filteredIdx, i)
+			continue
+		}
+		matched := false
+		for _, cell := range row {
+			if strings.Contains(strings.ToLower(cell), q) {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			m.filteredIdx = append(m.filteredIdx, i)
+		}
+	}
+	numberedCols := make([]string, len(m.rawCols)+1)
+	numberedCols[0] = "No"
+	copy(numberedCols[1:], m.rawCols)
+	numberedRows := make([][]string, len(m.filteredIdx))
+	for i, origIdx := range m.filteredIdx {
+		r := make([]string, len(m.rawRows[origIdx])+1)
+		r[0] = strconv.Itoa(origIdx + 1)
+		copy(r[1:], m.rawRows[origIdx])
+		numberedRows[i] = r
+	}
+	var buf bytes.Buffer
+	width := max(tableNaturalWidth(numberedCols, numberedRows), 80)
+	_ = renderTable(&buf, numberedCols, numberedRows, width)
+	trimmed := strings.TrimSuffix(buf.String(), "\n")
+	m.lines = strings.Split(trimmed, "\n")
+	m.maxWidth = 0
+	m.headerLines = 0
+	for i, l := range m.lines {
+		m.maxWidth = max(m.maxWidth, uniseg.StringWidth(l))
+		if m.headerLines == 0 && strings.HasPrefix(l, "├") && i+1 < len(m.lines) {
+			m.headerLines = i + 1
+		}
+	}
+	m.rows = len(m.filteredIdx)
+	m.pinFirstColumn()
+	m.computeOffsets()
+	m.yOffset = 0
+	m.xOffset = 0
+	m.recomputeMatches()
+	m.clamp()
+}
+
+func (m *tablePagerModel) saveVisible(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("file path is required")
+	}
+	var buf bytes.Buffer
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".tsv":
+		_, _ = fmt.Fprintln(&buf, tsvLine(m.rawCols))
+		for _, idx := range m.filteredIdx {
+			_, _ = fmt.Fprintln(&buf, tsvLine(m.rawRows[idx]))
+		}
+	case ".json":
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		for _, idx := range m.filteredIdx {
+			row := m.rawRows[idx]
+			obj := make(map[string]string, len(m.rawCols))
+			for c, col := range m.rawCols {
+				if c < len(row) {
+					obj[col] = row[c]
+				}
+			}
+			if err := enc.Encode(obj); err != nil {
+				return err
+			}
+		}
+	default:
+		w := csv.NewWriter(&buf)
+		if err := w.Write(m.rawCols); err != nil {
+			return err
+		}
+		for _, idx := range m.filteredIdx {
+			if err := w.Write(m.rawRows[idx]); err != nil {
+				return err
+			}
+		}
+		w.Flush()
+		if err := w.Error(); err != nil {
+			return err
+		}
+	}
+	return writeAtomicFile(path, buf.Bytes())
+}
+
+func (m *tablePagerModel) copyRow(visibleIdx int) {
+	if visibleIdx < 0 || visibleIdx >= len(m.filteredIdx) {
+		return
+	}
+	origIdx := m.filteredIdx[visibleIdx]
+	text := strings.Join(m.rawRows[origIdx], "\t")
+	seq := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(text)) + "\x07"
+	if m.copyFn != nil {
+		if err := m.copyFn(seq); err != nil {
+			m.statusMsg = "Copy failed: " + err.Error()
+			return
+		}
+	}
+	m.statusMsg = fmt.Sprintf("Copied row %d", origIdx+1)
+}
+
+func (m *tablePagerModel) detailLines() []string {
+	if len(m.filteredIdx) == 0 || m.detailRow < 0 || m.detailRow >= len(m.filteredIdx) {
+		return nil
+	}
+	row := m.rawRows[m.filteredIdx[m.detailRow]]
+	colW := 0
+	for _, col := range m.rawCols {
+		colW = max(colW, uniseg.StringWidth(col))
+	}
+	colW = min(colW, max(12, m.width/3))
+	valW := max(12, m.width-colW-4)
+	var lines []string
+	for i, col := range m.rawCols {
+		val := ""
+		if i < len(row) {
+			val = row[i]
+		}
+		wrapped := wrapCell(val, valW)
+		if len(wrapped) == 0 {
+			wrapped = []string{""}
+		}
+		label := sliceColumns(col, 0, colW)
+		pad := strings.Repeat(" ", max(0, colW-uniseg.StringWidth(label)))
+		lines = append(lines, label+pad+" │ "+wrapped[0])
+		blank := strings.Repeat(" ", colW) + " │ "
+		for _, extra := range wrapped[1:] {
+			lines = append(lines, blank+extra)
+		}
+	}
+	return lines
 }
 
 func (m *tablePagerModel) Resize(width, height int) {
@@ -293,6 +541,71 @@ func (m *tablePagerModel) highlightVisibleLine(visible string, lineIdx, startCol
 }
 
 func (m *tablePagerModel) HandleKey(k tuiKey) bool {
+	if !m.searching && !m.filtering && !m.saving {
+		m.statusMsg = ""
+	}
+	if m.detailOpen {
+		return m.handleDetailKey(k)
+	}
+	if m.filtering {
+		switch k.kind {
+		case keyCtrlC:
+			return true
+		case keyEsc:
+			m.filtering = false
+			m.filterQuery = ""
+			m.rebuildFilteredTable()
+		case keyEnter:
+			m.filtering = false
+			m.rebuildFilteredTable()
+		case keyBackspace:
+			if m.filterQuery != "" {
+				_, size := utf8.DecodeLastRuneInString(m.filterQuery)
+				m.filterQuery = m.filterQuery[:len(m.filterQuery)-size]
+			}
+		case keyCtrlU:
+			m.filterQuery = ""
+		case keyCtrlW:
+			if m.filterQuery != "" {
+				m.filterQuery = string(deleteLastWordRunes([]rune(m.filterQuery)))
+			}
+		case keyRune:
+			m.filterQuery += string(k.r)
+		}
+		return false
+	}
+	if m.saving {
+		switch k.kind {
+		case keyCtrlC:
+			return true
+		case keyEsc:
+			m.saving = false
+			m.savePath = ""
+		case keyEnter:
+			path := m.savePath
+			m.saving = false
+			m.savePath = ""
+			if err := m.saveVisible(path); err != nil {
+				m.statusMsg = "Save failed: " + err.Error()
+			} else {
+				m.statusMsg = fmt.Sprintf("Saved %d rows to %s", len(m.filteredIdx), path)
+			}
+		case keyBackspace:
+			if m.savePath != "" {
+				_, size := utf8.DecodeLastRuneInString(m.savePath)
+				m.savePath = m.savePath[:len(m.savePath)-size]
+			}
+		case keyCtrlU:
+			m.savePath = ""
+		case keyCtrlW:
+			if m.savePath != "" {
+				m.savePath = string(deleteLastWordRunes([]rune(m.savePath)))
+			}
+		case keyRune:
+			m.savePath += string(k.r)
+		}
+		return false
+	}
 	if m.searching {
 		switch k.kind {
 		case keyCtrlC:
@@ -334,7 +647,27 @@ func (m *tablePagerModel) HandleKey(k tuiKey) bool {
 			m.matchIdx = 0
 			return false
 		}
+		if m.filterQuery != "" {
+			m.filterQuery = ""
+			m.rebuildFilteredTable()
+			return false
+		}
 		return true
+	case keyEnter:
+		if len(m.filteredIdx) > 0 && len(m.rawCols) > 0 {
+			m.detailRow = m.topVisibleRow()
+			m.detailYOffset = 0
+			m.detailOpen = true
+		}
+		return false
+	case keyTab:
+		m.xOffset = m.nextColOffset()
+	case keyShiftTab:
+		m.xOffset = m.prevColOffset()
+	case keyMouseUp:
+		m.yOffset -= 3
+	case keyMouseDown:
+		m.yOffset += 3
 	case keyUp:
 		m.yOffset--
 	case keyDown:
@@ -355,6 +688,26 @@ func (m *tablePagerModel) HandleKey(k tuiKey) bool {
 		switch k.r {
 		case 'q', 'Q':
 			return true
+		case 'v':
+			if len(m.filteredIdx) > 0 && len(m.rawCols) > 0 {
+				m.detailRow = m.topVisibleRow()
+				m.detailYOffset = 0
+				m.detailOpen = true
+			}
+			return false
+		case '&':
+			m.filtering = true
+			return false
+		case 's':
+			m.saving = true
+			return false
+		case 'y':
+			m.copyRow(m.topVisibleRow())
+			return false
+		case 'w':
+			m.xOffset = m.nextColOffset()
+		case 'b':
+			m.xOffset = m.prevColOffset()
 		case '/':
 			m.searching = true
 			m.query = ""
@@ -401,7 +754,91 @@ func (m *tablePagerModel) HandleKey(k tuiKey) bool {
 	return false
 }
 
+func (m *tablePagerModel) handleDetailKey(k tuiKey) bool {
+	lines := m.detailLines()
+	maxOff := max(0, len(lines)-m.viewHeight())
+	switch k.kind {
+	case keyCtrlC:
+		return true
+	case keyEsc, keyEnter:
+		m.detailOpen = false
+		return false
+	case keyUp, keyMouseUp:
+		m.detailYOffset = max(0, m.detailYOffset-1)
+	case keyDown, keyMouseDown:
+		m.detailYOffset = min(maxOff, m.detailYOffset+1)
+	case keyPgUp:
+		m.detailYOffset = max(0, m.detailYOffset-max(1, m.viewHeight()-1))
+	case keyPgDown:
+		m.detailYOffset = min(maxOff, m.detailYOffset+max(1, m.viewHeight()-1))
+	case keyLeft:
+		if m.detailRow > 0 {
+			m.detailRow--
+			m.detailYOffset = 0
+		}
+	case keyRight:
+		if m.detailRow < len(m.filteredIdx)-1 {
+			m.detailRow++
+			m.detailYOffset = 0
+		}
+	case keyRune:
+		switch k.r {
+		case 'q', 'Q', 'v':
+			m.detailOpen = false
+			return false
+		case 'k':
+			m.detailYOffset = max(0, m.detailYOffset-1)
+		case 'j':
+			m.detailYOffset = min(maxOff, m.detailYOffset+1)
+		case 'h':
+			if m.detailRow > 0 {
+				m.detailRow--
+				m.detailYOffset = 0
+			}
+		case 'l':
+			if m.detailRow < len(m.filteredIdx)-1 {
+				m.detailRow++
+				m.detailYOffset = 0
+			}
+		case 'y':
+			m.copyRow(m.detailRow)
+		}
+	}
+	return false
+}
+
+func (m *tablePagerModel) renderDetail() string {
+	var b strings.Builder
+	origNo := m.detailRow + 1
+	if m.detailRow >= 0 && m.detailRow < len(m.filteredIdx) {
+		origNo = m.filteredIdx[m.detailRow] + 1
+	}
+	header := fmt.Sprintf("Row %d (%d/%d) • %d cols", origNo, m.detailRow+1, len(m.filteredIdx), len(m.rawCols))
+	fmt.Fprintf(&b, "\x1b[1;36m%s\x1b[0m\n", sliceColumns(header, 0, m.width))
+	lines := m.detailLines()
+	vh := m.viewHeight()
+	maxOff := max(0, len(lines)-vh)
+	off := min(max(0, m.detailYOffset), maxOff)
+	end := min(len(lines), off+vh)
+	for i := off; i < end; i++ {
+		b.WriteString(sliceColumns(lines[i], 0, m.width))
+		b.WriteByte('\n')
+	}
+	for i := end - off; i < vh; i++ {
+		b.WriteByte('\n')
+	}
+	footer := "↑↓/jk scroll • ←→/hl prev/next row • y copy • Esc/Enter/q back"
+	if m.statusMsg != "" {
+		footer = m.statusMsg + " • " + footer
+	}
+	fmt.Fprintf(&b, "\x1b[2m%s\x1b[0m", sliceColumns(footer, 0, m.width))
+	return b.String()
+}
+
 func (m *tablePagerModel) Render() string {
+	if m.detailOpen {
+		return m.renderDetail()
+	}
 	var b strings.Builder
 	var header string
 	if m.hasElapsed {
@@ -409,6 +846,9 @@ func (m *tablePagerModel) Render() string {
 			m.rows, m.cols, m.elapsed.Round(time.Microsecond), m.rows)
 	} else {
 		header = fmt.Sprintf("dbh results (%d rows × %d cols)", m.rows, m.cols)
+	}
+	if m.filterQuery != "" {
+		header += fmt.Sprintf(" • filter:%q", m.filterQuery)
 	}
 	if m.truncated {
 		header += " • truncated"
@@ -430,6 +870,18 @@ func (m *tablePagerModel) Render() string {
 	for i := pinned + (end - start); i < vh; i++ {
 		b.WriteByte('\n')
 	}
+	if m.filtering {
+		prompt := "&" + m.filterQuery
+		hint := sliceColumns(" • Enter filter • Esc clear", 0, max(0, m.width-uniseg.StringWidth(prompt)))
+		fmt.Fprintf(&b, "%s\x1b[2m%s\x1b[0m", sliceColumns(prompt, 0, m.width), hint)
+		return b.String()
+	}
+	if m.saving {
+		prompt := "Save (.csv/.tsv/.json): " + m.savePath
+		hint := sliceColumns(" • Enter save • Esc cancel", 0, max(0, m.width-uniseg.StringWidth(prompt)))
+		fmt.Fprintf(&b, "%s\x1b[2m%s\x1b[0m", sliceColumns(prompt, 0, m.width), hint)
+		return b.String()
+	}
 	if m.searching {
 		status := ""
 		if m.query != "" {
@@ -446,14 +898,16 @@ func (m *tablePagerModel) Render() string {
 	}
 	pct := formatScrollPercent(m.yOffset, m.maxYOffset())
 	var footer string
-	if m.query != "" {
+	if m.statusMsg != "" {
+		footer = fmt.Sprintf("%s • %s", pct, m.statusMsg)
+	} else if m.query != "" {
 		status := "(no matches)"
 		if len(m.matches) > 0 {
 			status = fmt.Sprintf("(%d/%d)", m.matchIdx+1, len(m.matches))
 		}
 		footer = fmt.Sprintf("%s • col +%d • /%s %s • n/N next/prev • Esc clear • q back", pct, m.xOffset, m.query, status)
 	} else {
-		footer = fmt.Sprintf("%s • col +%d • ↑↓←→/hjkl scroll • 0/$ cols • / search • g/G top/bottom • q/esc back", pct, m.xOffset)
+		footer = fmt.Sprintf("%s • col +%d • ↑↓←→ scroll • Tab/0/$ cols • Enter detail • / search • & filter • s save • y copy • q back", pct, m.xOffset)
 	}
 	fmt.Fprintf(&b, "\x1b[2m%s\x1b[0m", sliceColumns(footer, 0, m.width))
 	return b.String()
@@ -494,6 +948,7 @@ func runTablePager(columns []string, rows [][]string, elapsed time.Duration, tru
 	}
 	m := newTablePagerModel(buf.String(), len(rows), len(columns))
 	m.pinFirstColumn()
+	m.setSourceData(columns, rows)
 	m.elapsed = elapsed
 	m.hasElapsed = true
 	m.truncated = truncated

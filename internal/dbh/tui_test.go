@@ -281,9 +281,9 @@ func TestTablePagerPinnedNoColumn(t *testing.T) {
 }
 
 func TestParseTUIKeysAndWordDeletion(t *testing.T) {
-	// Modified CSI arrow (\x1b[1;5C) must parse as keyRight, not keyEsc + garbage.
-	keys := parseTUIKeys([]byte("\x1b[1;5C\x1b[<64;10;5M\x17"))
-	if len(keys) != 2 || keys[0].kind != keyRight || keys[1].kind != keyCtrlW {
+	// Modified CSI arrow (\x1b[1;5C) -> keyRight, SGR wheel -> keyMouseUp, unknown CSI (\x1b[15~) ignored.
+	keys := parseTUIKeys([]byte("\x1b[1;5C\x1b[<64;10;5M\x1b[15~\x17"))
+	if len(keys) != 3 || keys[0].kind != keyRight || keys[1].kind != keyMouseUp || keys[2].kind != keyCtrlW {
 		t.Fatalf("unexpected keys: %+v", keys)
 	}
 
@@ -345,6 +345,104 @@ func TestTablePagerSearchEscClearAndNarrowClipping(t *testing.T) {
 	m.HandleKey(tuiKey{kind: keyRune, r: '0'})
 	if m.xOffset != 0 {
 		t.Fatalf("expected xOffset=0 after 0, got %d", m.xOffset)
+	}
+}
+
+func TestParseTUIKeysMouseTabAndHistoryDelete(t *testing.T) {
+	keys := parseTUIKeys([]byte("\t\x1b[Z\x04\x1b[<64;10;5M\x1b[<65;10;5M"))
+	if len(keys) != 5 ||
+		keys[0].kind != keyTab ||
+		keys[1].kind != keyShiftTab ||
+		keys[2].kind != keyCtrlD ||
+		keys[3].kind != keyMouseUp ||
+		keys[4].kind != keyMouseDown {
+		t.Fatalf("unexpected keys: %+v", keys)
+	}
+
+	hp := newHistoryPickerModel([]string{"SELECT 1;", "SELECT 2;"}, "")
+	hp.HandleKey(tuiKey{kind: keyCtrlD})
+	if len(hp.all) != 1 || hp.all[0] != "SELECT 1;" || len(hp.deleted) != 1 || hp.deleted[0] != "SELECT 2;" {
+		t.Fatalf("unexpected history delete state: all=%v deleted=%v", hp.all, hp.deleted)
+	}
+}
+
+func TestTablePagerDetailFilterSaveCopyAndColJump(t *testing.T) {
+	cols := []string{"name", "role", "note"}
+	rows := [][]string{
+		{"alice", "admin", "first note"},
+		{"bob", "viewer", "second note"},
+	}
+	numberedCols, numberedRows := prependRowNumbers(cols, rows)
+	var buf bytes.Buffer
+	if err := renderTable(&buf, numberedCols, numberedRows, tableNaturalWidth(numberedCols, numberedRows)); err != nil {
+		t.Fatal(err)
+	}
+	m := newTablePagerModel(buf.String(), len(rows), len(cols))
+	m.pinFirstColumn()
+	m.setSourceData(cols, rows)
+	var copied string
+	m.copyFn = func(seq string) error {
+		copied = seq
+		return nil
+	}
+	m.Resize(30, 12)
+
+	// Tab / Shift-Tab column jumps.
+	m.HandleKey(tuiKey{kind: keyTab})
+	if m.xOffset == 0 {
+		t.Fatal("expected Tab to jump to next column offset")
+	}
+	m.HandleKey(tuiKey{kind: keyShiftTab})
+	if m.xOffset != 0 {
+		t.Fatalf("expected Shift-Tab to jump back to 0, got %d", m.xOffset)
+	}
+
+	// Copy row (y).
+	m.HandleKey(tuiKey{kind: keyRune, r: 'y'})
+	if !strings.HasPrefix(copied, "\x1b]52;c;") || !strings.Contains(m.statusMsg, "Copied row 1") {
+		t.Fatalf("unexpected copy state: copied=%q status=%q", copied, m.statusMsg)
+	}
+
+	// Detail view (Enter -> Right -> Esc).
+	m.HandleKey(tuiKey{kind: keyEnter})
+	if !m.detailOpen {
+		t.Fatal("expected detail view to open on Enter")
+	}
+	detailView := m.Render()
+	if !strings.Contains(detailView, "Row 1 (1/2)") || !strings.Contains(detailView, "alice") {
+		t.Fatalf("unexpected detail view:\n%s", detailView)
+	}
+	m.HandleKey(tuiKey{kind: keyRight})
+	if !strings.Contains(m.Render(), "bob") {
+		t.Fatal("expected next row bob in detail view")
+	}
+	m.HandleKey(tuiKey{kind: keyEsc})
+	if m.detailOpen {
+		t.Fatal("expected Esc to close detail view")
+	}
+
+	// Filter (&bob + Enter).
+	m.HandleKey(tuiKey{kind: keyRune, r: '&'})
+	for _, r := range "bob" {
+		m.HandleKey(tuiKey{kind: keyRune, r: r})
+	}
+	m.HandleKey(tuiKey{kind: keyEnter})
+	if m.rows != 1 || len(m.filteredIdx) != 1 || m.filteredIdx[0] != 1 {
+		t.Fatalf("expected filtered row bob (index 1), got rows=%d idx=%v", m.rows, m.filteredIdx)
+	}
+
+	// Save filtered rows to TSV/JSON/CSV.
+	dir := t.TempDir()
+	for _, ext := range []string{".csv", ".tsv", ".json"} {
+		outPath := dir + "/out" + ext
+		m.HandleKey(tuiKey{kind: keyRune, r: 's'})
+		for _, r := range outPath {
+			m.HandleKey(tuiKey{kind: keyRune, r: r})
+		}
+		m.HandleKey(tuiKey{kind: keyEnter})
+		if !strings.Contains(m.statusMsg, "Saved 1 rows") {
+			t.Fatalf("expected save confirmation for %s, got %q", ext, m.statusMsg)
+		}
 	}
 }
 

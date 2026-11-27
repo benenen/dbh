@@ -118,6 +118,7 @@ type historyPickerModel struct {
 	height    int
 	selected  string
 	confirmed bool
+	deleted   []string
 }
 
 func newHistoryPickerModel(entries []string, initialQuery string) *historyPickerModel {
@@ -214,6 +215,25 @@ func (m *historyPickerModel) HandleKey(k tuiKey) bool {
 			m.query = deleteLastWordRunes(m.query)
 			m.applyFilter()
 		}
+	case keyCtrlD:
+		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+			target := m.filtered[m.cursor]
+			m.deleted = append(m.deleted, target)
+			kept := make([]string, 0, len(m.all)-1)
+			removed := false
+			for i := len(m.all) - 1; i >= 0; i-- {
+				if !removed && m.all[i] == target {
+					removed = true
+					continue
+				}
+				kept = append(kept, m.all[i])
+			}
+			for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
+				kept[i], kept[j] = kept[j], kept[i]
+			}
+			m.all = kept
+			m.applyFilter()
+		}
 	case keyRune:
 		m.query = append(m.query, k.r)
 		m.applyFilter()
@@ -271,20 +291,20 @@ func (m *historyPickerModel) Render() string {
 		b.WriteByte('\n')
 	}
 
-	footer := sliceColumns("↑↓/Ctrl-P/N move • Ctrl-W word • Enter select • Esc/Ctrl-C cancel", 0, m.width)
+	footer := sliceColumns("↑↓/Ctrl-P/N move • Ctrl-W word • Ctrl-D del • Enter select • Esc cancel", 0, m.width)
 	b.WriteString("\x1b[2m" + footer + "\x1b[0m")
 	return b.String()
 }
 
 // pickHistory launches an interactive fuzzy history picker with multi-line SQL
-// preview and returns the selected statement.
-func pickHistory(entries []string, initialQuery string) (string, bool, error) {
+// preview and returns the selected statement plus any deleted entries.
+func pickHistory(entries []string, initialQuery string) (string, bool, []string, error) {
 	m := newHistoryPickerModel(entries, initialQuery)
 	if err := runAltScreenTUI(m); err != nil {
-		return "", false, err
+		return "", false, m.deleted, err
 	}
 	if !m.confirmed {
-		return "", false, nil
+		return "", false, m.deleted, nil
 	}
-	return m.selected, true, nil
+	return m.selected, true, m.deleted, nil
 }

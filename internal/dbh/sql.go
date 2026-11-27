@@ -130,6 +130,131 @@ func splitSQL(input, driver string) (statements []string, remainder string, err 
 	return
 }
 
+func secondaryPrompt(input, driver string) string {
+	backend, err := registry.Lookup(driver)
+	if err != nil {
+		return "...> "
+	}
+	syntax := backend.Syntax()
+	if syntax.LineCommands {
+		_, _, err := splitLines(input)
+		if err != nil {
+			return `"> `
+		}
+		return "...> "
+	}
+	quote := byte(0)
+	dollar := ""
+	block := 0
+	line := false
+	for i := 0; i < len(input); i++ {
+		c := input[i]
+		if line {
+			if c == '\n' {
+				line = false
+			}
+			continue
+		}
+		if block > 0 {
+			if syntax.NestedComments && i+1 < len(input) && input[i:i+2] == "/*" {
+				block++
+				i++
+			} else if i+1 < len(input) && input[i:i+2] == "*/" {
+				block--
+				i++
+			}
+			continue
+		}
+		if dollar != "" {
+			if strings.HasPrefix(input[i:], dollar) {
+				i += len(dollar) - 1
+				dollar = ""
+			}
+			continue
+		}
+		if quote != 0 {
+			if c == '\\' && syntax.BackslashEscapes && quote != ']' && (quote != '`' || syntax.BacktickEscapes) {
+				i++
+				continue
+			}
+			if c == '\\' && quote == 'e' {
+				i++
+				continue
+			}
+			end := quote
+			if quote == 'e' {
+				end = '\''
+			}
+			if c == end {
+				if i+1 < len(input) && input[i+1] == end {
+					i++
+				} else {
+					quote = 0
+				}
+			}
+			continue
+		}
+		if i+1 < len(input) && input[i:i+2] == "--" && (!syntax.DashCommentNeedsSpace || i+2 == len(input) || unicode.IsSpace(rune(input[i+2]))) {
+			line = true
+			i++
+			continue
+		}
+		if i+1 < len(input) && input[i:i+2] == "//" && syntax.SlashComments {
+			line = true
+			i++
+			continue
+		}
+		if c == '#' && syntax.HashComments {
+			line = true
+			continue
+		}
+		if i+1 < len(input) && input[i:i+2] == "/*" {
+			block = 1
+			i++
+			continue
+		}
+		if c == '\'' || c == '"' || c == '`' {
+			quote = c
+			if c == '\'' && syntax.EscapeStringPrefix && i > 0 && (input[i-1] == 'E' || input[i-1] == 'e') && (i == 1 || !isIdentifier(rune(input[i-2]))) {
+				quote = 'e'
+			}
+			continue
+		}
+		if c == '[' && syntax.BracketIdentifiers {
+			quote = ']'
+			continue
+		}
+		if c == '$' && syntax.DollarQuotes && (i == 0 || (!isIdentifier(rune(input[i-1])) && input[i-1] != '$')) {
+			j := i + 1
+			for j < len(input) && (unicode.IsLetter(rune(input[j])) || input[j] == '_' || (j > i+1 && unicode.IsDigit(rune(input[j])))) {
+				j++
+			}
+			if j < len(input) && input[j] == '$' {
+				dollar = input[i : j+1]
+				i = j
+				continue
+			}
+		}
+	}
+	if block > 0 {
+		return "/*> "
+	}
+	if dollar != "" {
+		return "$$> "
+	}
+	switch quote {
+	case '\'', 'e':
+		return "'> "
+	case '"':
+		return `"> `
+	case '`':
+		return "`> "
+	case ']':
+		return "]> "
+	}
+	return "...> "
+}
+
 // splitLines ends each command at a newline outside quotes; the last line is the remainder.
 func splitLines(input string) (statements []string, remainder string, err error) {
 	start := 0
