@@ -85,4 +85,7 @@ func TestOpenObserveE2E(t *testing.T) {
 
 	out = f.run("exec", "live-o2", `SELECT level, msg FROM dbh_e2e LIMIT 5`, "--format", "tsv")
 	contains(t, out, "hello_o2")
+
+	contains(t, f.run("tables", "live-o2"), "dbh_e2e")
+	contains(t, f.run("describe", "live-o2", "dbh_e2e", "--format", "tsv"), "level")
 }
