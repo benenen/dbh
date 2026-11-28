@@ -16,6 +16,7 @@ Agent 通过终端工具直接运行本机 `dbh`，完成用户要求的数据�
 - 省略 `--db` 使用连接 DSN 的默认库；SQLite 用 DSN 指定文件，不支持 `--db`。
 - 指定配置目录时，对这一任务的所有命令使用相同的 `--config-dir PATH`（或 `DBH_CONFIG_DIR`），避免操作不同配置。
 - 依据用户给出的目标选择连接；多个连接都符合且目标无法确定时，询问缺失的连接名或数据库名。
+- **临时直连（Ad-hoc）**：`connect`、`exec`、`tables`、`describe`、`indexes`、`databases`、`ddl` 和 `check` 支持直接传入 URL、SQLite/bbolt 文件路径或 `--dsn`（可配 `--driver`、`--proxy`、`--read-only`），不保存配置也不持久化历史。
 
 连接不足时，用用户提供的 DSN 创建连接。自动化用已有环境变量，人工终端可隐藏输入；真实 DSN 和密码保留在本地配置，不写进技能或仓库。
 
@@ -62,19 +63,23 @@ printf 'SELECT 1 AS value;' | dbh exec local-sqlite --format json
 dbh export app --table users --format csv --gzip -o users.csv.gz
 dbh export app --sql 'SELECT id, email FROM users' --format tsv --max-rows 100
 dbh import app --table users_staging -f users.csv.gz --batch-size 500
+dbh copy src dst --table users --batch-size 500
 dbh explain app 'SELECT * FROM users WHERE id = 1' --format tsv
 dbh snippet set user_by_id 'SELECT id, email FROM users WHERE id = ?' --description 'lookup user'
 dbh snippet run user_by_id app --param 42 --format tsv
+dbh snippet run recent_users app --var days=7 --format tsv
 ```
 
 - `export NAME [QUERY]` 支持 `--table` / `--sql` / 位置参数，导出 `csv`、`tsv`、`json`（NDJSON）或 `sql`（`INSERT`），支持 `--gzip` 与 `--max-rows`。
 - `import NAME --table TABLE` 支持从 `-f FILE`（`.gz` 自动解压，`-` 读标准输入）按 `--batch-size` 分批带事务导入 `csv` 或 `json`；只读连接默认拦截，需明确授权并加 `--allow-write`。
+- `copy SRC DST` 直接将源库 `--table` 或 `--sql` 结果按 `--batch-size` 流式写入目标库（支持 `--target-table`、`--src-db`、`--dst-db`、`--max-rows`、`--allow-write`），无需落盘中转。
 - `explain NAME [QUERY]` 自动适配各库 `EXPLAIN` 语法（`--analyze` 实际执行查询；在只读连接上对写语句执行 `--analyze` 会被拦截）。
-- `snippet` 提供 `set`（支持 `-f FILE`）、`list`（别名 `ls`）、`show`、`remove`（别名 `rm`）和 `run`（支持 `--param`、`--stats`、`--max-rows`、`--max-cell-width`、`-x`、`--allow-write`）。
+- `snippet` 提供 `set`（支持 `-f FILE`）、`list`（别名 `ls`）、`show`、`remove`（别名 `rm`）和 `run`（支持 `{{key}}` 模板变量 `--var key=value`、`--param`、`--stats`、`--max-rows`、`--max-cell-width`、`-x`、`--allow-write`）。
 
 ## 写操作与防误操作保护
 
 - **防误操作拦截**：标记 `--read-only` 的连接默认拦截所有写语句；标记 `--env prod` 的连接默认拦截 `DROP`、`TRUNCATE` 以及不带 `WHERE` 的 `UPDATE` / `DELETE`。只有在用户明确授权写入时，才加 `--allow-write` 放行，禁止擅自绕过拦截。
+- **生产写审计日志**：`--env prod` 下的写操作（含 `import`/`copy` 及被拦截的危险写操作）会自动追加到 `<config-dir>/audit.jsonl`（`0600` 权限）；可通过 `dbh audit [--connection NAME] [--failed] [--limit N] [--format tsv]` 检索审计记录。
 - 用户已明确指定目标和操作时，直接执行授权范围内的建表、插入、更新、删除或索引操作。保持已有授权，只有缺少必需目标或操作范围时才补问。
 
 关系型数据库先按目标主键或筛选条件确认记录，执行写语句后再查询验证。需要原子性时，把事务和所有语句放入同一次 `exec --file` 调用；两次 `exec` 是两个独立会话，不能分别执行 `BEGIN` 与 `COMMIT`。
@@ -158,10 +163,11 @@ Agent 查结构优先使用元数据命令，避免手写各数据库的系统�
 dbh tables docker-pgsql --db dbh_test --format tsv
 dbh describe local-sqlite '"order items"' --format tsv
 dbh indexes docker-mysql users --format tsv
+dbh ddl docker-pgsql users --format raw -o users.sql
 dbh databases docker-pgsql --format tsv
 ```
 
-这些命令共用 `--db`、`--timeout`、`--format`。带空格的表名保留 SQL 标识符引号，外层 shell 引号用于将整个名称传为一个参数。
+这些命令共用 `--db`、`--timeout`、`--format`（`ddl` 默认 `raw`，支持 `raw|table|csv|json|tsv` 及 `-o/--output`）。带空格的表名保留 SQL 标识符引号，外层 shell 引号用于将整个名称传为一个参数。
 
 查表之间的关系或 JOIN 路径时，项目中有 `.dbh/` 则先用 `dbh erd relations --table T --format tsv`、`dbh erd path FROM TO --format tsv`，查字段用 `dbh erd columns T --format tsv`；生成和维护关系模型见 [dbh-erd 技能](../dbh-erd/SKILL.md)。
 
@@ -175,20 +181,22 @@ dbh databases docker-pgsql --format tsv
 \tables
 \describe dbh_demo
 \indexes dbh_demo
+\ddl dbh_demo
 \refresh
 \format json
 \x
 \truncate 200
-\run SNIPPET
+\run SNIPPET [key=value ...]
+\snippet [list|show|save|run|rm]
 \help
 \q
 ```
 
-交互提示符会按连接配置显示 `[RO]` / `[PROD]` 徽标（`prod` 红色高亮），并在 shell 内同样执行只读与生产环境防误操作拦截。`\x` 切换竖排展示，`\truncate [N|off]` 调整或查看当前单元格宽度上限，`\run SNIPPET` 执行已保存的查询片段。这些反斜杠命令只用于交互 shell，不能放进 `exec --sql` 或 SQL 文件。自动化元数据查询使用对应数据库的 SQL/JSON 命令。
+交互提示符会按连接配置显示 `[RO]` / `[PROD]` 徽标（`prod` 红色高亮），并在 shell 内同样执行只读与生产环境防误操作拦截，输入行支持 SQL 实时语法高亮（受 `NO_COLOR` 控制）。`\ddl TABLE` 输出建表 DDL（支持表名补全），`\x` 切换竖排展示，`\truncate [N|off]` 调整或查看当前单元格宽度上限，`\run SNIPPET [key=value ...]` / `\snippet` 管理和执行模板化查询片段。这些反斜杠命令只用于交互 shell，不能放进 `exec --sql` 或 SQL 文件。自动化元数据查询使用对应数据库的 SQL/JSON 命令。
 
 `\use DATABASE` 与 `USE DATABASE;` 都能切库；数据库列表范围取决于账号权限。关系型数据库可使用 `schema.table` 查看字段和索引。MongoDB 的 `\tables` 显示集合，`\describe` 显示样本文档与索引；ClickHouse 的 `\indexes` 显示主键表达式与数据跳过索引，主键不是唯一约束。Redis 的 `\database` 列出有 key 的数据库编号，`\tables` 用 SCAN 列出最多 1000 个 key，`\describe KEY` 显示类型、TTL、编码和长度，没有索引。
 
-SQL 通常以分号提交；完整 MongoDB JSON 文档和 Redis 命令行按 Enter 即执行。实时提示随键入显示，Tab 选择，Ctrl-C 清空待执行输入，空输入处 Ctrl-D 退出。含内部未引用分号的触发器/存储过程及 `DELIMITER` 不属于当前分句器支持范围。
+SQL 通常以分号提交，支持 `DELIMITER <token>` 指令及 `CREATE [TEMP|OR REPLACE] TRIGGER|PROCEDURE|FUNCTION ... BEGIN ... END;` 复合语句内部分句；完整 MongoDB JSON 文档和 Redis 命令行按 Enter 即执行。实时提示随键入显示，Tab 选择，Ctrl-C 清空待执行输入，空输入处 Ctrl-D 退出。
 
 ## 完成与报告
 
