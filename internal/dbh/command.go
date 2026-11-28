@@ -280,11 +280,19 @@ func NewCommand() *cobra.Command {
 	root.AddCommand(rmCmd)
 	for _, executeOnly := range []bool{false, true} {
 		var query, file, format, databaseName, outputPath string
+		var adhocDriver, adhocDSN string
+		var adhocProxies []string
 		var timeout time.Duration
-		var noHistory, stats, allowWrite, expanded bool
+		var noHistory, stats, allowWrite, expanded, adhocReadOnly bool
 		var maxRows, maxCellWidth, batchSize int
 		var params []string
 		connect := &cobra.Command{Use: "connect NAME", Aliases: []string{"c"}, Short: "Open a database shell, or execute queries from --sql, --file or stdin", Args: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("dsn") {
+				if len(args) > 0 {
+					return fmt.Errorf("connect does not accept a positional NAME when --dsn is set")
+				}
+				return nil
+			}
 			switch len(args) {
 			case 0:
 				return fmt.Errorf("missing connection NAME (usage: dbh %s NAME)", cmd.CalledAs())
@@ -296,11 +304,25 @@ func NewCommand() *cobra.Command {
 				return fmt.Errorf("connect expects 1 argument (NAME), got %d; to run a query use `dbh exec NAME QUERY` or `--sql`", len(args))
 			}
 		}, ValidArgsFunction: names, RunE: func(cmd *cobra.Command, args []string) error {
-			if executeOnly && len(args) == 2 {
-				if cmd.Flags().Changed("sql") || cmd.Flags().Changed("file") {
-					return fmt.Errorf("positional query cannot be combined with --sql or --file")
+			var targetArg string
+			hasPositionalQuery := false
+			if cmd.Flags().Changed("dsn") {
+				if executeOnly && len(args) == 1 {
+					hasPositionalQuery = true
+					if cmd.Flags().Changed("sql") || cmd.Flags().Changed("file") {
+						return fmt.Errorf("positional query cannot be combined with --sql or --file")
+					}
+					query = args[0]
 				}
-				query = args[1]
+			} else {
+				targetArg = args[0]
+				if executeOnly && len(args) == 2 {
+					hasPositionalQuery = true
+					if cmd.Flags().Changed("sql") || cmd.Flags().Changed("file") {
+						return fmt.Errorf("positional query cannot be combined with --sql or --file")
+					}
+					query = args[1]
+				}
 			}
 			if cmd.Flags().Changed("db") && strings.TrimSpace(databaseName) == "" {
 				return fmt.Errorf("database name must not be empty")
@@ -318,14 +340,22 @@ func NewCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			p, err := s.Get(args[0])
+			p, isAdhoc, err := resolveTarget(s, targetArg, adhocOptions{
+				Driver:   adhocDriver,
+				DSN:      adhocDSN,
+				Proxies:  adhocProxies,
+				ReadOnly: adhocReadOnly,
+			})
 			if err != nil {
 				return err
+			}
+			if isAdhoc {
+				noHistory = true
 			}
 			var input string
 			batch := false
 			switch {
-			case cmd.Flags().Changed("sql") || executeOnly && len(args) == 2:
+			case cmd.Flags().Changed("sql") || hasPositionalQuery:
 				input = query
 				batch = true
 			case cmd.Flags().Changed("file"):
@@ -367,6 +397,7 @@ func NewCommand() *cobra.Command {
 			session.AllowWrite = allowWrite
 			session.Expanded = expanded
 			session.Stats = stats
+			session.AuditStore = &s
 			if cmd.Flags().Changed("db") {
 				if err := session.UseDatabase(cmd.Context(), databaseName); err != nil {
 					return err
@@ -465,6 +496,12 @@ func NewCommand() *cobra.Command {
 			connect.Aliases = []string{"x"}
 			connect.Short = "Execute queries using a saved connection and optional database"
 			connect.Args = func(cmd *cobra.Command, args []string) error {
+				if cmd.Flags().Changed("dsn") {
+					if len(args) > 1 {
+						return fmt.Errorf("exec with --dsn expects at most 1 positional argument (QUERY), got %d", len(args))
+					}
+					return nil
+				}
 				switch {
 				case len(args) == 0:
 					return fmt.Errorf("missing connection NAME (usage: dbh %s NAME [QUERY])", cmd.CalledAs())
@@ -475,6 +512,13 @@ func NewCommand() *cobra.Command {
 				}
 			}
 		}
+		connect.Flags().StringVar(&adhocDSN, "dsn", "", "Ad-hoc DSN or URL (does not save a connection profile)")
+		connect.Flags().StringVar(&adhocDriver, "driver", "", "Driver for ad-hoc target ("+strings.Join(registry.Drivers(), ", ")+")")
+		connect.Flags().StringArrayVar(&adhocProxies, "proxy", nil, "Proxy hop for ad-hoc target; repeat in dial order")
+		connect.Flags().BoolVar(&adhocReadOnly, "read-only", false, "Block write statements on ad-hoc connection")
+		_ = connect.RegisterFlagCompletionFunc("driver", fixed(registry.Drivers()...))
+		_ = connect.RegisterFlagCompletionFunc("dsn", files)
+		_ = connect.RegisterFlagCompletionFunc("proxy", cobra.NoFileCompletions)
 		connect.Flags().StringVarP(&query, "sql", "e", "", "Execute SQL, a MongoDB JSON command or Redis commands and exit")
 		connect.Flags().StringVarP(&file, "file", "f", "", "Execute a query file (- for stdin)")
 		connect.Flags().StringVar(&format, "format", "table", "table, csv, json (newline-delimited objects) or tsv (compact, for agents)")
@@ -563,6 +607,7 @@ func NewCommand() *cobra.Command {
 	addTransferCommands(root, store, names)
 	addExplainCommand(root, store, names)
 	addSnippetCommand(root, store, names)
+	addAuditCommand(root, store, names)
 	return root
 }
 

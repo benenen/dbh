@@ -25,7 +25,8 @@ type checkStageResult struct {
 
 func addCheckCommand(root *cobra.Command, store func() (Store, error), names cobra.CompletionFunc) {
 	var timeout time.Duration
-	var db, format, tag string
+	var db, format, tag, adhocDriver, adhocDSN string
+	var adhocProxies []string
 	var checkAll bool
 	cmd := &cobra.Command{
 		Use:               "check [NAME]",
@@ -38,7 +39,12 @@ func addCheckCommand(root *cobra.Command, store func() (Store, error), names cob
 	cmd.Flags().BoolVar(&checkAll, "all", false, "Check all saved connections")
 	cmd.Flags().StringVar(&tag, "tag", "", "Filter --all connections by tag")
 	cmd.Flags().StringVar(&format, "format", "", "Structured output: table, csv, json or tsv")
+	cmd.Flags().StringVar(&adhocDSN, "dsn", "", "Ad-hoc DSN or URL to check")
+	cmd.Flags().StringVar(&adhocDriver, "driver", "", "Driver for ad-hoc target")
+	cmd.Flags().StringArrayVar(&adhocProxies, "proxy", nil, "Proxy hop for ad-hoc target; repeat in dial order")
+	cmd.MarkFlagsMutuallyExclusive("dsn", "all")
 	_ = cmd.RegisterFlagCompletionFunc("format", cobra.FixedCompletions([]string{"table", "csv", "json", "tsv"}, cobra.ShellCompDirectiveNoFileComp))
+	_ = cmd.RegisterFlagCompletionFunc("driver", cobra.FixedCompletions(registry.Drivers(), cobra.ShellCompDirectiveNoFileComp))
 	_ = cmd.RegisterFlagCompletionFunc("db", cobra.NoFileCompletions)
 	_ = cmd.RegisterFlagCompletionFunc("timeout", cobra.NoFileCompletions)
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
@@ -51,8 +57,8 @@ func addCheckCommand(root *cobra.Command, store func() (Store, error), names cob
 		if checkAll && len(args) > 0 {
 			return fmt.Errorf("--all cannot be combined with a connection NAME")
 		}
-		if !checkAll && len(args) == 0 {
-			return fmt.Errorf("provide a connection NAME or --all")
+		if !checkAll && !cmd.Flags().Changed("dsn") && len(args) == 0 {
+			return fmt.Errorf("provide a connection NAME or --all (or --dsn)")
 		}
 		if checkAll && cmd.Flags().Changed("db") {
 			return fmt.Errorf("--db cannot be combined with --all")
@@ -80,7 +86,15 @@ func addCheckCommand(root *cobra.Command, store func() (Store, error), names cob
 			}
 			return checkAllConnections(cmd, profiles, timeout, format)
 		}
-		p, err := st.Get(args[0])
+		var targetArg string
+		if len(args) > 0 {
+			targetArg = args[0]
+		}
+		p, _, err := resolveTarget(st, targetArg, adhocOptions{
+			Driver:  adhocDriver,
+			DSN:     adhocDSN,
+			Proxies: adhocProxies,
+		})
 		if err != nil {
 			return err
 		}

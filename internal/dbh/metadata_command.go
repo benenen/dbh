@@ -1,6 +1,7 @@
 package dbh
 
 import (
+	"bytes"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/benenen/dbh/internal/database"
+	"github.com/benenen/dbh/internal/database/registry"
 	"github.com/spf13/cobra"
 )
 
@@ -30,13 +32,23 @@ func addMetadataCommands(root *cobra.Command, store func() (Store, error), names
 	}
 	for _, spec := range specs {
 		spec := spec
-		var format, db string
+		var format, db, adhocDriver, adhocDSN string
+		var adhocProxies []string
 		var timeout time.Duration
 		c := &cobra.Command{
-			Use:               spec.use,
-			Aliases:           spec.aliases,
-			Short:             spec.short,
-			Args:              cobra.ExactArgs(spec.argc),
+			Use:     spec.use,
+			Aliases: spec.aliases,
+			Short:   spec.short,
+			Args: func(cmd *cobra.Command, args []string) error {
+				expected := spec.argc
+				if cmd.Flags().Changed("dsn") {
+					expected = spec.argc - 1
+				}
+				if len(args) != expected {
+					return fmt.Errorf("accepts %d arg(s), received %d", expected, len(args))
+				}
+				return nil
+			},
 			ValidArgsFunction: names,
 		}
 		c.Flags().StringVar(&format, "format", "table", "table, csv, json or tsv")
@@ -47,6 +59,10 @@ func addMetadataCommands(root *cobra.Command, store func() (Store, error), names
 		}
 		c.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Connection/query timeout")
 		_ = c.RegisterFlagCompletionFunc("timeout", cobra.NoFileCompletions)
+		c.Flags().StringVar(&adhocDSN, "dsn", "", "Ad-hoc DSN or URL (does not save a connection profile)")
+		c.Flags().StringVar(&adhocDriver, "driver", "", "Driver for ad-hoc target")
+		c.Flags().StringArrayVar(&adhocProxies, "proxy", nil, "Proxy hop for ad-hoc target; repeat in dial order")
+		_ = c.RegisterFlagCompletionFunc("driver", cobra.FixedCompletions(registry.Drivers(), cobra.ShellCompDirectiveNoFileComp))
 		c.RunE = func(cmd *cobra.Command, args []string) error {
 			if !validFormat(format) {
 				return fmt.Errorf("format must be table, csv, json or tsv")
@@ -61,7 +77,22 @@ func addMetadataCommands(root *cobra.Command, store func() (Store, error), names
 			if err != nil {
 				return err
 			}
-			p, err := st.Get(args[0])
+			var targetArg, tableArg string
+			if cmd.Flags().Changed("dsn") {
+				if spec.argc == 2 {
+					tableArg = args[0]
+				}
+			} else {
+				targetArg = args[0]
+				if spec.argc == 2 {
+					tableArg = args[1]
+				}
+			}
+			p, _, err := resolveTarget(st, targetArg, adhocOptions{
+				Driver:  adhocDriver,
+				DSN:     adhocDSN,
+				Proxies: adhocProxies,
+			})
 			if err != nil {
 				return err
 			}
@@ -85,9 +116,9 @@ func addMetadataCommands(root *cobra.Command, store func() (Store, error), names
 			}()
 			switch spec.verb {
 			case "describe":
-				return s.Describe(cmd.Context(), args[1], format, cmd.OutOrStdout())
+				return s.Describe(cmd.Context(), tableArg, format, cmd.OutOrStdout())
 			case "indexes":
-				return s.Indexes(cmd.Context(), args[1], format, cmd.OutOrStdout())
+				return s.Indexes(cmd.Context(), tableArg, format, cmd.OutOrStdout())
 			}
 			var values []string
 			if spec.verb == "tables" {
@@ -103,6 +134,102 @@ func addMetadataCommands(root *cobra.Command, store func() (Store, error), names
 		}
 		root.AddCommand(c)
 	}
+
+	addDDLCommand(root, store, names)
+}
+
+func addDDLCommand(root *cobra.Command, store func() (Store, error), names cobra.CompletionFunc) {
+	var format, db, outputPath, adhocDriver, adhocDSN string
+	var adhocProxies []string
+	var timeout time.Duration
+	c := &cobra.Command{
+		Use:   "ddl NAME TABLE",
+		Short: "Export CREATE DDL for a table or view",
+		Args: func(cmd *cobra.Command, args []string) error {
+			expected := 2
+			if cmd.Flags().Changed("dsn") {
+				expected = 1
+			}
+			if len(args) != expected {
+				return fmt.Errorf("accepts %d arg(s), received %d", expected, len(args))
+			}
+			return nil
+		},
+		ValidArgsFunction: names,
+	}
+	c.Flags().StringVar(&format, "format", "raw", "raw, table, csv, json or tsv")
+	c.Flags().StringVar(&db, "db", "", "Server database to use")
+	c.Flags().StringVarP(&outputPath, "output", "o", "", "Write DDL output atomically to this file")
+	c.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Connection/query timeout")
+	c.Flags().StringVar(&adhocDSN, "dsn", "", "Ad-hoc DSN or URL (does not save a connection profile)")
+	c.Flags().StringVar(&adhocDriver, "driver", "", "Driver for ad-hoc target")
+	c.Flags().StringArrayVar(&adhocProxies, "proxy", nil, "Proxy hop for ad-hoc target; repeat in dial order")
+	_ = c.RegisterFlagCompletionFunc("format", cobra.FixedCompletions([]string{"raw", "table", "csv", "json", "tsv"}, cobra.ShellCompDirectiveNoFileComp))
+	_ = c.RegisterFlagCompletionFunc("driver", cobra.FixedCompletions(registry.Drivers(), cobra.ShellCompDirectiveNoFileComp))
+	_ = c.RegisterFlagCompletionFunc("db", cobra.NoFileCompletions)
+	_ = c.RegisterFlagCompletionFunc("timeout", cobra.NoFileCompletions)
+	c.RunE = func(cmd *cobra.Command, args []string) error {
+		if format != "raw" && !validFormat(format) {
+			return fmt.Errorf("format must be raw, table, csv, json or tsv")
+		}
+		if timeout <= 0 {
+			return fmt.Errorf("timeout must be positive")
+		}
+		if cmd.Flags().Changed("db") && strings.TrimSpace(db) == "" {
+			return fmt.Errorf("database name must not be empty")
+		}
+		st, err := store()
+		if err != nil {
+			return err
+		}
+		var targetArg, tableArg string
+		if cmd.Flags().Changed("dsn") {
+			tableArg = args[0]
+		} else {
+			targetArg = args[0]
+			tableArg = args[1]
+		}
+		p, _, err := resolveTarget(st, targetArg, adhocOptions{
+			Driver:  adhocDriver,
+			DSN:     adhocDSN,
+			Proxies: adhocProxies,
+		})
+		if err != nil {
+			return err
+		}
+		stopSpinner := startSpinner(cmd.ErrOrStderr(), "Reading ddl")
+		s, err := openSession(cmd.Context(), p, timeout)
+		if err != nil {
+			stopSpinner()
+			return err
+		}
+		defer s.Close()
+		if cmd.Flags().Changed("db") {
+			if err := s.UseDatabase(cmd.Context(), db); err != nil {
+				stopSpinner()
+				return err
+			}
+		}
+		s.BeforeOutput = stopSpinner
+		defer func() {
+			stopSpinner()
+			s.BeforeOutput = nil
+		}()
+
+		outWriter := cmd.OutOrStdout()
+		var outBuf bytes.Buffer
+		if outputPath != "" {
+			outWriter = &outBuf
+		}
+		if err := s.DDL(cmd.Context(), tableArg, format, outWriter); err != nil {
+			return err
+		}
+		if outputPath != "" {
+			return writeAtomicFile(outputPath, outBuf.Bytes())
+		}
+		return nil
+	}
+	root.AddCommand(c)
 }
 
 func writeNames(cmd *cobra.Command, names []string, format string) error {

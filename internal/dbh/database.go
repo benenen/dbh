@@ -16,6 +16,7 @@ import (
 
 type Session struct {
 	Conn            database.Connection
+	ConnectionName  string
 	Driver          string
 	Timeout         time.Duration
 	MaxRows         int
@@ -30,6 +31,7 @@ type Session struct {
 	AllowWrite      bool
 	Expanded        bool
 	CurrentDatabase string
+	AuditStore      *Store
 	BeforeOutput    func()
 	Pager           func(columns []string, rows [][]string, elapsed time.Duration, truncated bool) (bool, error)
 	backend         database.Driver
@@ -50,13 +52,14 @@ func openSession(ctx context.Context, p Profile, timeout time.Duration) (*Sessio
 		return nil, fmt.Errorf("cannot connect to %q: %w", p.Name, err)
 	}
 	s := &Session{
-		Driver:   p.Driver,
-		Timeout:  timeout,
-		ReadOnly: p.ReadOnly,
-		Env:      p.Env,
-		backend:  backend,
-		dsn:      p.DSN,
-		proxies:  append([]string(nil), p.Proxies...),
+		ConnectionName: p.Name,
+		Driver:         p.Driver,
+		Timeout:        timeout,
+		ReadOnly:       p.ReadOnly,
+		Env:            p.Env,
+		backend:        backend,
+		dsn:            p.DSN,
+		proxies:        append([]string(nil), p.Proxies...),
 	}
 	if len(p.Proxies) > 0 {
 		if s.proxy, err = proxy.Open(pingCtx, p.Proxies); err != nil {
@@ -196,7 +199,32 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 	hasColumns := false
 	var affected int64
 	affectedKnown := false
+	shouldAudit := s.AuditStore != nil && strings.EqualFold(s.Env, "prod") && isWriteStatement(query, s.syntax())
 	defer func() {
+		elapsed := queryElapsed
+		if !elapsedCaptured {
+			elapsed = time.Since(started).Round(time.Microsecond)
+		}
+		if shouldAudit {
+			entry := AuditEntry{
+				Timestamp:  time.Now().UTC().Format(time.RFC3339Nano),
+				Connection: s.ConnectionName,
+				Driver:     s.Driver,
+				Env:        s.Env,
+				Database:   s.CurrentDatabase,
+				Query:      query,
+				ElapsedMs:  elapsed.Milliseconds(),
+				Success:    err == nil,
+				Error:      redactErrorString(err, s),
+			}
+			if affectedKnown {
+				val := affected
+				entry.RowsAffected = &val
+			}
+			if auditErr := s.AuditStore.appendAudit(entry); auditErr != nil && s.Notice != nil {
+				_, _ = fmt.Fprintln(s.Notice, "Audit log:", auditErr)
+			}
+		}
 		if err != nil || !s.Stats {
 			return
 		}
@@ -209,10 +237,6 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 			detail = fmt.Sprintf("; %d rows affected", affected)
 		} else if hasColumns {
 			detail = fmt.Sprintf("; %d rows returned", total)
-		}
-		elapsed := queryElapsed
-		if !elapsedCaptured {
-			elapsed = time.Since(started).Round(time.Microsecond)
 		}
 		_, err = fmt.Fprintf(w, "Time: %s%s\n", elapsed, detail)
 	}()
@@ -233,7 +257,7 @@ func (s *Session) executeArgs(ctx context.Context, query, format string, out io.
 			s.BeforeOutput()
 		}
 	}
-	if s.Stats && affectedStatement(query, s.backend.Syntax()) {
+	if (s.Stats || shouldAudit) && affectedStatement(query, s.backend.Syntax()) {
 		if executor, ok := s.Conn.(database.ResultExecutor); ok {
 			affected, affectedKnown, err = executor.ExecResult(ctx, query, args...)
 			beforeOutput()

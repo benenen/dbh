@@ -598,9 +598,10 @@ func erdPullCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 }
 
 func erdDiffCommand(store func() (Store, error), names cobra.CompletionFunc, model, dirFlag *string) *cobra.Command {
-	var db, schema, targetDB, targetSchema, format string
+	var db, schema, targetDB, targetSchema, format, dialect, outputPath string
 	var include, exclude []string
 	var timeout time.Duration
+	var ddlMode bool
 	c := &cobra.Command{
 		Use:               "diff NAME [TARGET]",
 		Short:             "Compare local .dbh/<model>.dbml against a live database, or compare two connections",
@@ -615,6 +616,9 @@ func erdDiffCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 	c.Flags().StringSliceVar(&exclude, "exclude", nil, "Exclude tables matching glob pattern (repeatable)")
 	c.Flags().DurationVar(&timeout, "timeout", 60*time.Second, "Connection and schema read timeout")
 	c.Flags().StringVar(&format, "format", "table", "table, csv, json or tsv")
+	c.Flags().BoolVar(&ddlMode, "ddl", false, "Output draft migration DDL instead of tabular diff")
+	c.Flags().StringVar(&dialect, "dialect", "", "SQL dialect for --ddl output (defaults to target driver)")
+	c.Flags().StringVarP(&outputPath, "output", "o", "", "Write diff output atomically to this file")
 	_ = c.RegisterFlagCompletionFunc("format", cobra.FixedCompletions([]string{"table", "csv", "json", "tsv"}, cobra.ShellCompDirectiveNoFileComp))
 	c.RunE = func(cmd *cobra.Command, args []string) error {
 		if !validFormat(format) {
@@ -627,12 +631,34 @@ func erdDiffCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 		if err != nil {
 			return err
 		}
+		writeDiffOutput := func(diff erd.ModelDiff, left, right *erd.Model, defaultDialect string) error {
+			if ddlMode {
+				d := dialect
+				if d == "" {
+					d = defaultDialect
+				}
+				outText := diff.RenderMigrationDDL(left, right, d)
+				if outputPath != "" {
+					return writeAtomicFile(outputPath, []byte(outText))
+				}
+				_, err := fmt.Fprint(cmd.OutOrStdout(), outText)
+				return err
+			}
+			if outputPath != "" {
+				var buf bytes.Buffer
+				if err := writeERDRows(&buf, diff.Rows(), format); err != nil {
+					return err
+				}
+				return writeAtomicFile(outputPath, buf.Bytes())
+			}
+			return writeERDRows(cmd.OutOrStdout(), diff.Rows(), format)
+		}
 		if len(args) == 2 {
-			p1, err := st.Get(args[0])
+			p1, _, err := resolveTarget(st, args[0], adhocOptions{})
 			if err != nil {
 				return err
 			}
-			p2, err := st.Get(args[1])
+			p2, _, err := resolveTarget(st, args[1], adhocOptions{})
 			if err != nil {
 				return err
 			}
@@ -670,7 +696,7 @@ func erdDiffCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 				return fmt.Errorf("cannot parse %s schema: %s", args[1], rightModel.Errors[0])
 			}
 			diff := erd.DiffModels(leftModel, rightModel)
-			return writeERDRows(cmd.OutOrStdout(), diff.Rows(), format)
+			return writeDiffOutput(diff, leftModel, rightModel, p2.Driver)
 		}
 		targetModel := *model
 		if targetModel == "" {
@@ -702,7 +728,7 @@ func erdDiffCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 		if err != nil {
 			return err
 		}
-		p, err := st.Get(args[0])
+		p, _, err := resolveTarget(st, args[0], adhocOptions{})
 		if err != nil {
 			return err
 		}
@@ -720,7 +746,7 @@ func erdDiffCommand(store func() (Store, error), names cobra.CompletionFunc, mod
 			return fmt.Errorf("cannot parse pulled schema: %s", remote.Errors[0])
 		}
 		diff := erd.DiffModels(local, remote)
-		return writeERDRows(cmd.OutOrStdout(), diff.Rows(), format)
+		return writeDiffOutput(diff, local, remote, p.Driver)
 	}
 	return c
 }

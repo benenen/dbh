@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/benenen/dbh/internal/database"
 )
@@ -51,4 +52,25 @@ func (s *Session) Indexes(ctx context.Context, table, format string, out io.Writ
 		}
 	}
 	return s.executeArgs(ctx, query.Text, format, out, query.Args...)
+}
+
+func (s *Session) DDL(ctx context.Context, table, format string, out io.Writer) error {
+	provider, ok := s.backend.(database.DDLProvider)
+	if !ok {
+		return fmt.Errorf("DDL export is not supported for %s", s.Driver)
+	}
+	metadataCtx, cancel := context.WithTimeout(ctx, s.Timeout)
+	ddl, err := provider.DDL(metadataCtx, s.Conn, table)
+	cancel()
+	if err != nil {
+		return err
+	}
+	if s.BeforeOutput != nil {
+		s.BeforeOutput()
+	}
+	if format == "" || format == "raw" {
+		_, err := fmt.Fprintln(out, strings.TrimRight(ddl, "\n"))
+		return err
+	}
+	return writeRows(out, []string{"table", "ddl"}, [][]any{{table, ddl}}, format)
 }

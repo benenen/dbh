@@ -289,7 +289,7 @@ func TestTerminalDriversInteractive(t *testing.T) {
 			excludes(t, ran, "error:")
 
 			// VISUAL replaces the buffer with tc.query; Enter then runs the edited query.
-			term.exchange("\\e\r", term.prompt)
+			term.exchange("\\e\r", tc.query)
 			if _, err := os.Stat(editorPath + ".ran"); err != nil {
 				t.Fatalf("editor did not run: %v", err)
 			}

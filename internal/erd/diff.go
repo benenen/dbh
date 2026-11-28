@@ -246,3 +246,128 @@ func columnSignature(c dbml.Column) string {
 	}
 	return sig
 }
+
+// RenderMigrationDDL produces a best-effort draft migration SQL script for the diff.
+func (d ModelDiff) RenderMigrationDDL(oldModel, newModel *Model, dialect string) string {
+	if !d.HasChanges() {
+		return "-- No schema changes.\n"
+	}
+	oldTables := map[string]Table{}
+	newTables := map[string]Table{}
+	if oldModel != nil {
+		for _, t := range oldModel.Tables {
+			oldTables[t.Display()] = t
+		}
+	}
+	if newModel != nil {
+		for _, t := range newModel.Tables {
+			newTables[t.Display()] = t
+		}
+	}
+
+	var stmts []string
+	stmts = append(stmts, "-- Draft migration DDL (review before executing)")
+	for _, e := range d.Entries {
+		switch {
+		case e.Kind == "table" && e.Change == "added":
+			if t, ok := newTables[e.Target]; ok {
+				stmts = append(stmts, renderCreateTableDDL(t, dialect))
+			}
+		case e.Kind == "table" && e.Change == "removed":
+			stmts = append(stmts, fmt.Sprintf("-- Review before dropping:\nDROP TABLE %s;", quoteDiffIdent(dialect, e.Target)))
+		case e.Kind == "column" && e.Change == "added":
+			tblName, colName, ok := splitDiffTarget(e.Target)
+			if !ok {
+				continue
+			}
+			if t, found := newTables[tblName]; found {
+				if col, colFound := findDiffColumn(t.Columns, colName); colFound {
+					stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s;", quoteDiffIdent(dialect, tblName), renderColumnDef(col, dialect)))
+				}
+			}
+		case e.Kind == "column" && e.Change == "removed":
+			tblName, colName, ok := splitDiffTarget(e.Target)
+			if !ok {
+				continue
+			}
+			stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s;", quoteDiffIdent(dialect, tblName), quoteDiffIdent(dialect, colName)))
+		case e.Kind == "column" && e.Change == "modified":
+			tblName, colName, ok := splitDiffTarget(e.Target)
+			if !ok {
+				continue
+			}
+			t, found := newTables[tblName]
+			if !found {
+				continue
+			}
+			col, colFound := findDiffColumn(t.Columns, colName)
+			if !colFound {
+				continue
+			}
+			switch strings.ToLower(dialect) {
+			case "mysql":
+				stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s MODIFY COLUMN %s;", quoteDiffIdent(dialect, tblName), renderColumnDef(col, dialect)))
+			case "sqlite":
+				stmts = append(stmts, fmt.Sprintf("-- SQLite requires table rebuild to alter column %s: %s", e.Target, e.Detail))
+			default:
+				stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s TYPE %s;", quoteDiffIdent(dialect, tblName), quoteDiffIdent(dialect, colName), columnType(col)))
+			}
+		case e.Kind == "relation" && e.Change == "added":
+			stmts = append(stmts, fmt.Sprintf("-- Added relation: %s", e.Target))
+		case e.Kind == "relation" && e.Change == "removed":
+			stmts = append(stmts, fmt.Sprintf("-- Removed relation: %s", e.Target))
+		}
+	}
+	return strings.Join(stmts, "\n\n") + "\n"
+}
+
+func renderCreateTableDDL(t Table, dialect string) string {
+	lines := make([]string, 0, len(t.Columns))
+	for _, c := range t.Columns {
+		lines = append(lines, "  "+renderColumnDef(c, dialect))
+	}
+	return fmt.Sprintf("CREATE TABLE %s (\n%s\n);", quoteDiffIdent(dialect, t.Display()), strings.Join(lines, ",\n"))
+}
+
+func renderColumnDef(c dbml.Column, dialect string) string {
+	def := quoteDiffIdent(dialect, c.Name) + " " + columnType(c)
+	if c.NotNull != nil && *c.NotNull {
+		def += " NOT NULL"
+	}
+	if d := columnDefault(c); d != "" {
+		def += " DEFAULT " + d
+	}
+	if c.PK {
+		def += " PRIMARY KEY"
+	}
+	return def
+}
+
+func splitDiffTarget(target string) (table, col string, ok bool) {
+	idx := strings.LastIndex(target, ".")
+	if idx <= 0 || idx >= len(target)-1 {
+		return "", "", false
+	}
+	return target[:idx], target[idx+1:], true
+}
+
+func findDiffColumn(cols []dbml.Column, name string) (dbml.Column, bool) {
+	for _, c := range cols {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return dbml.Column{}, false
+}
+
+func quoteDiffIdent(dialect, name string) string {
+	parts := strings.Split(name, ".")
+	for i, part := range parts {
+		if strings.EqualFold(dialect, "mysql") {
+			parts[i] = "`" + strings.ReplaceAll(part, "`", "``") + "`"
+		} else {
+			parts[i] = `"` + strings.ReplaceAll(part, `"`, `""`) + `"`
+		}
+	}
+	return strings.Join(parts, ".")
+}

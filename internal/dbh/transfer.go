@@ -20,6 +20,7 @@ import (
 func addTransferCommands(root *cobra.Command, store func() (Store, error), names cobra.CompletionFunc) {
 	root.AddCommand(exportCommand(store, names))
 	root.AddCommand(importCommand(store, names))
+	root.AddCommand(copyCommand(store, names))
 }
 
 func exportCommand(store func() (Store, error), names cobra.CompletionFunc) *cobra.Command {
@@ -67,7 +68,7 @@ func exportCommand(store func() (Store, error), names cobra.CompletionFunc) *cob
 		if err != nil {
 			return err
 		}
-		p, err := st.Get(args[0])
+		p, _, err := resolveTarget(st, args[0], adhocOptions{})
 		if err != nil {
 			return err
 		}
@@ -284,7 +285,7 @@ func importCommand(store func() (Store, error), names cobra.CompletionFunc) *cob
 		if err != nil {
 			return err
 		}
-		p, err := st.Get(args[0])
+		p, _, err := resolveTarget(st, args[0], adhocOptions{})
 		if err != nil {
 			return err
 		}
@@ -338,6 +339,20 @@ func importCommand(store func() (Store, error), names cobra.CompletionFunc) *cob
 		}
 
 		imported, err := runBatchedImport(cmd.Context(), session, p.Driver, table, cols, rows, batchSize)
+		if strings.EqualFold(p.Env, "prod") {
+			affected := int64(imported)
+			_ = st.appendAudit(AuditEntry{
+				Timestamp:    time.Now().UTC().Format(time.RFC3339Nano),
+				Connection:   p.Name,
+				Driver:       p.Driver,
+				Env:          p.Env,
+				Database:     session.CurrentDatabase,
+				Query:        fmt.Sprintf("IMPORT INTO %s (%d rows)", table, imported),
+				RowsAffected: &affected,
+				Success:      err == nil,
+				Error:        redactErrorString(err, session),
+			})
+		}
 		if err != nil {
 			return err
 		}
@@ -345,6 +360,179 @@ func importCommand(store func() (Store, error), names cobra.CompletionFunc) *cob
 		return err
 	}
 	return c
+}
+
+func copyCommand(store func() (Store, error), names cobra.CompletionFunc) *cobra.Command {
+	var table, targetTable, query, srcDB, dstDB string
+	var batchSize, maxRows int
+	var timeout time.Duration
+	var allowWrite bool
+
+	c := &cobra.Command{
+		Use:               "copy SRC DST",
+		Short:             "Stream table or query results directly from SRC to DST",
+		Args:              cobra.ExactArgs(2),
+		ValidArgsFunction: names,
+	}
+	c.Flags().StringVar(&table, "table", "", "Source table name (also default destination table)")
+	c.Flags().StringVar(&targetTable, "target-table", "", "Destination table name (defaults to --table)")
+	c.Flags().StringVarP(&query, "sql", "e", "", "Source SQL query to stream")
+	c.Flags().StringVar(&srcDB, "src-db", "", "Source server database to use")
+	c.Flags().StringVar(&dstDB, "dst-db", "", "Destination server database to use")
+	c.Flags().IntVar(&batchSize, "batch-size", 500, "Rows per destination transaction batch")
+	c.Flags().IntVar(&maxRows, "max-rows", 0, "Maximum rows to copy (0 for unlimited)")
+	c.Flags().DurationVar(&timeout, "timeout", 60*time.Second, "Operation timeout")
+	c.Flags().BoolVar(&allowWrite, "allow-write", false, "Allow copy into read-only/prod destination")
+	c.MarkFlagsMutuallyExclusive("table", "sql")
+
+	c.RunE = func(cmd *cobra.Command, args []string) error {
+		if batchSize <= 0 {
+			return fmt.Errorf("batch-size must be positive")
+		}
+		if maxRows < 0 {
+			return fmt.Errorf("max-rows must be nonnegative")
+		}
+		if timeout <= 0 {
+			return fmt.Errorf("timeout must be positive")
+		}
+		st, err := store()
+		if err != nil {
+			return err
+		}
+		srcProfile, _, err := resolveTarget(st, args[0], adhocOptions{})
+		if err != nil {
+			return err
+		}
+		dstProfile, _, err := resolveTarget(st, args[1], adhocOptions{})
+		if err != nil {
+			return err
+		}
+		if dstProfile.ReadOnly && !allowWrite {
+			return fmt.Errorf("copy blocked: destination connection is marked read-only (use --allow-write to override)")
+		}
+
+		destTable := targetTable
+		if destTable == "" {
+			destTable = table
+		}
+		if query == "" && table != "" {
+			query = "SELECT * FROM " + quoteSQLIdent(srcProfile.Driver, table)
+		}
+		if strings.TrimSpace(query) == "" {
+			return fmt.Errorf("provide --table or --sql")
+		}
+		if strings.TrimSpace(destTable) == "" {
+			return fmt.Errorf("provide --target-table when using --sql")
+		}
+
+		srcSession, err := openSession(cmd.Context(), srcProfile, timeout)
+		if err != nil {
+			return err
+		}
+		defer srcSession.Close()
+		if cmd.Flags().Changed("src-db") {
+			if err := srcSession.UseDatabase(cmd.Context(), srcDB); err != nil {
+				return err
+			}
+		}
+
+		dstSession, err := openSession(cmd.Context(), dstProfile, timeout)
+		if err != nil {
+			return err
+		}
+		defer dstSession.Close()
+		dstSession.AllowWrite = allowWrite
+		if cmd.Flags().Changed("dst-db") {
+			if err := dstSession.UseDatabase(cmd.Context(), dstDB); err != nil {
+				return err
+			}
+		}
+
+		started := time.Now()
+		queryCtx, cancel := context.WithTimeout(cmd.Context(), timeout)
+		defer cancel()
+		rows, err := srcSession.Conn.Query(queryCtx, query)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+
+		cols, err := rows.Columns()
+		if err != nil {
+			return err
+		}
+		if len(cols) == 0 {
+			return fmt.Errorf("source query returned no columns")
+		}
+
+		var batch [][]any
+		copied := 0
+		var copyErr error
+		for rows.Next() {
+			if maxRows > 0 && copied+len(batch) >= maxRows {
+				break
+			}
+			row, rowErr := rows.Row()
+			if rowErr != nil {
+				copyErr = rowErr
+				break
+			}
+			batch = append(batch, row.Values)
+			if len(batch) >= batchSize {
+				n, batchErr := runBatchedImport(cmd.Context(), dstSession, dstProfile.Driver, destTable, cols, batch, batchSize)
+				copied += n
+				batch = batch[:0]
+				if batchErr != nil {
+					copyErr = batchErr
+					break
+				}
+			}
+		}
+		if copyErr == nil {
+			if err := rows.Err(); err != nil {
+				copyErr = err
+			}
+		}
+		if copyErr == nil && len(batch) > 0 {
+			n, batchErr := runBatchedImport(cmd.Context(), dstSession, dstProfile.Driver, destTable, cols, batch, batchSize)
+			copied += n
+			if batchErr != nil {
+				copyErr = batchErr
+			}
+		}
+
+		if strings.EqualFold(dstProfile.Env, "prod") {
+			affected := int64(copied)
+			_ = st.appendAudit(AuditEntry{
+				Timestamp:    time.Now().UTC().Format(time.RFC3339Nano),
+				Connection:   dstProfile.Name,
+				Driver:       dstProfile.Driver,
+				Env:          dstProfile.Env,
+				Database:     dstSession.CurrentDatabase,
+				Query:        fmt.Sprintf("COPY %s -> %s (%d rows)", srcProfile.Name, destTable, copied),
+				RowsAffected: &affected,
+				ElapsedMs:    time.Since(started).Milliseconds(),
+				Success:      copyErr == nil,
+				Error:        redactErrorString(copyErr, dstSession),
+			})
+		}
+		if copyErr != nil {
+			return copyErr
+		}
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Copied %d rows from %s to %s.%s\n", copied, srcProfile.Name, dstProfile.Name, destTable)
+		return err
+	}
+	return c
+}
+
+func redactErrorString(err error, s *Session) string {
+	if err == nil {
+		return ""
+	}
+	if s == nil {
+		return err.Error()
+	}
+	return redact(err.Error(), s.dsn, s.proxies)
 }
 
 func readCSVImport(r io.Reader) ([]string, [][]any, error) {

@@ -7,12 +7,19 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/creack/pty"
 )
+
+var ansiCSIPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
+
+func stripANSI(s string) string {
+	return ansiCSIPattern.ReplaceAllString(s, "")
+}
 
 type terminal struct {
 	t          *testing.T
@@ -104,7 +111,13 @@ func (term *terminal) exchange(input string, expected ...string) string {
 	defer deadline.Stop()
 	quiet := time.NewTimer(150 * time.Millisecond)
 	defer quiet.Stop()
-	matches := func() bool { return len(expected) == 0 || strings.Contains(result.String(), expected[0]) }
+	matches := func() bool {
+		if len(expected) == 0 {
+			return true
+		}
+		raw := result.String()
+		return strings.Contains(raw, expected[0]) || strings.Contains(stripANSI(raw), expected[0])
+	}
 	finish := func() string {
 		term.transcript += result.String()
 		if !matches() {

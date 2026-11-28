@@ -58,6 +58,26 @@ func (c *completer) candidates(line []rune, pos int) ([]string, string) {
 	if pos < 0 || pos > len(line) {
 		return nil, ""
 	}
+	currentLineFull := string(line[:pos])
+	currentLineTrimmed := strings.TrimLeft(currentLineFull[strings.LastIndex(currentLineFull, "\n")+1:], " \t")
+	if rest, found := strings.CutPrefix(currentLineTrimmed, `\snippet`); found && rest != "" && (rest[0] == ' ' || rest[0] == '\t') {
+		arg := strings.TrimLeft(rest, " \t")
+		if !strings.ContainsAny(arg, " \t") {
+			return matching([]string{"list", "show", "save", "run", "rm"}, arg), arg
+		}
+		fields := strings.Fields(arg)
+		if len(fields) == 1 || (len(fields) == 2 && !strings.HasSuffix(arg, " ") && !strings.HasSuffix(arg, "\t")) {
+			sub := fields[0]
+			if sub == "show" || sub == "run" || sub == "rm" || sub == "remove" {
+				prefix := ""
+				if len(fields) == 2 {
+					prefix = fields[1]
+				}
+				return matching(c.snippets, prefix), prefix
+			}
+		}
+		return nil, ""
+	}
 	if command, name, ok := commandArgument(line[:pos]); ok {
 		// List all valid values as soon as the command argument starts.
 		names := c.tables
@@ -207,7 +227,7 @@ func filterList(items []string, pattern string) []string {
 func commandArgument(line []rune) (command, name string, ok bool) {
 	text := string(line)
 	text = strings.TrimLeft(text[strings.LastIndex(text, "\n")+1:], " \t")
-	for _, command := range []string{`\use`, `\database`, `\tables`, `\describe`, `\indexes`, `\format`, `\pager`, `\truncate`, `\limit`, `\timeout`, `\run`} {
+	for _, command := range []string{`\use`, `\database`, `\tables`, `\describe`, `\indexes`, `\ddl`, `\format`, `\pager`, `\truncate`, `\limit`, `\timeout`, `\run`} {
 		rest, found := strings.CutPrefix(text, command)
 		if !found || rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
 			continue
@@ -280,7 +300,7 @@ func (c *completer) refresh(ctx context.Context, s *Session) error {
 	if native := s.backend.Syntax().CompletionWords; len(native) > 0 {
 		words = append([]string{}, native...)
 	}
-	words = append(words, `\help`, `\q`, `\database`, `\use`, `\tables`, `\describe`, `\indexes`, `\history`, `\refresh`, `\clear`, `\format`, `\pager`, `\truncate`, `\limit`, `\timeout`, `\reconnect`, `\o`, `\out`, `\i`, `\source`, `\e`, `\edit`, `\watch`, `\explain`, `\x`, `\run`)
+	words = append(words, `\help`, `\q`, `\database`, `\use`, `\tables`, `\describe`, `\indexes`, `\ddl`, `\history`, `\refresh`, `\clear`, `\format`, `\pager`, `\truncate`, `\limit`, `\timeout`, `\reconnect`, `\o`, `\out`, `\i`, `\source`, `\e`, `\edit`, `\watch`, `\explain`, `\x`, `\run`, `\snippet`)
 	// SQLite has no database list; \use then offers no candidates.
 	c.databases, _ = s.Databases(ctx)
 	tables, err := s.Tables(ctx)
@@ -342,6 +362,7 @@ Ctrl-C clears input; Ctrl-D exits.
 \tables [PATTERN]   List tables/views
 \describe TABLE     Show column details and indexes
 \indexes TABLE      List indexes
+\ddl TABLE          Show CREATE DDL for a table or view
 \history [PATTERN]  Show SQL history
 \refresh            Refresh schema completion (use after DDL)
 \clear              Clear pending query
@@ -357,14 +378,22 @@ Ctrl-C clears input; Ctrl-D exits.
 \watch [SEC]        Repeat last query every SEC seconds (default 2s; Ctrl-C stops)
 \explain [analyze] SQL  Show query execution plan
 \x                  Toggle expanded vertical table display
-\run SNIPPET        Execute a saved snippet
+\run SNIPPET [k=v]  Execute a saved snippet (with optional {{k}} vars)
+\snippet [CMD]      Manage snippets (list, show, save, run, rm)
 `
 
 const defaultShellMaxRows = 1000
 
 func acceptSQLInput(line, driver string) bool {
+	return acceptSQLInputWithDelimiter(line, driver, ";")
+}
+
+func acceptSQLInputWithDelimiter(line, driver, delimiter string) bool {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" || (strings.HasPrefix(trimmed, `\`) && !strings.Contains(trimmed, "\n")) {
+		return true
+	}
+	if fields := strings.Fields(trimmed); len(fields) == 2 && strings.EqualFold(fields[0], "DELIMITER") && !strings.Contains(trimmed, "\n") {
 		return true
 	}
 	if backend, err := registry.Lookup(driver); err == nil {
@@ -375,7 +404,7 @@ func acceptSQLInput(line, driver string) bool {
 			return true
 		}
 	}
-	statements, rest, err := splitSQL(line, driver)
+	statements, rest, _, err := splitSQLWithDelimiter(line, driver, delimiter)
 	if backend, lookupErr := registry.Lookup(driver); lookupErr == nil && backend.Syntax().LineCommands {
 		// Enter runs every complete line, unless a quoted argument is still open.
 		return err == nil
@@ -407,8 +436,10 @@ func acceptHTTPInput(trimmed string) bool {
 }
 
 func shell(ctx context.Context, s *Session, p Profile, store Store, format string, noHistory bool, out, errOut io.Writer) error {
+	s.AuditStore = &store
 	s.Stats = true
 	s.Notice = errOut
+	sessionDelimiter := ";"
 	c := &completer{}
 	if err := c.refresh(ctx, s); err != nil {
 		_, _ = fmt.Fprintln(errOut, "Schema completion unavailable:", err)
@@ -551,9 +582,14 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 				return true
 			}
 		}
-		return acceptSQLInput(text, s.Driver)
+		return acceptSQLInputWithDelimiter(text, s.Driver, sessionDelimiter)
 	}
 	color := os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
+	if color && !s.backend.Syntax().JSONCommands && !s.backend.Syntax().LineCommands && !s.backend.Syntax().HTTPCommands {
+		rl.SyntaxHighlighter = func(line []rune) string {
+			return highlightSQL(line, s.backend.Syntax())
+		}
+	}
 	rl.Prompt.Primary(func() string {
 		label := p.Name
 		if s.CurrentDatabase != "" {
@@ -733,7 +769,7 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 						_, _ = fmt.Fprintln(out, n)
 					}
 				}
-			case `\describe`, `\indexes`:
+			case `\describe`, `\indexes`, `\ddl`:
 				table := strings.TrimSpace(line[len(fields[0]):])
 				if table == "" {
 					_, _ = fmt.Fprintf(errOut, "Usage: %s TABLE\n", fields[0])
@@ -742,10 +778,14 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 				stopSpinner := startSpinner(errOut, "Loading metadata")
 				s.BeforeOutput = stopSpinner
 				metaErr, interrupted := runInterruptible(ctx, func(qCtx context.Context) error {
-					if fields[0] == `\describe` {
+					switch fields[0] {
+					case `\describe`:
 						return s.Describe(qCtx, table, format, out)
+					case `\ddl`:
+						return s.DDL(qCtx, table, "raw", out)
+					default:
+						return s.Indexes(qCtx, table, format, out)
 					}
-					return s.Indexes(qCtx, table, format, out)
 				})
 				stopSpinner()
 				s.BeforeOutput = nil
@@ -819,8 +859,13 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 					_, _ = fmt.Fprintln(out, "Expanded display is off.")
 				}
 			case `\run`:
-				if len(fields) != 2 {
-					_, _ = fmt.Fprintln(errOut, `Usage: \run SNIPPET`)
+				if len(fields) < 2 {
+					_, _ = fmt.Fprintln(errOut, `Usage: \run SNIPPET [key=value ...]`)
+					break
+				}
+				vars, varErr := parseShellVarAssignments(fields[2:])
+				if varErr != nil {
+					_, _ = fmt.Fprintln(errOut, varErr)
 					break
 				}
 				snippets, snErr := store.loadSnippets()
@@ -833,13 +878,15 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 					_, _ = fmt.Fprintf(errOut, "snippet %q does not exist\n", fields[1])
 					break
 				}
+				rendered, tplErr := renderSnippetTemplate(sn.Query, vars)
+				if tplErr != nil {
+					_, _ = fmt.Fprintln(errOut, tplErr)
+					break
+				}
 				stopSpinner := startSpinner(errOut, "Running query")
 				s.BeforeOutput = stopSpinner
 				execErr, interrupted := runInterruptible(ctx, func(qCtx context.Context) error {
-					if execErr := s.Run(qCtx, sn.Query, format, activeOut()); execErr != nil {
-						return execErr
-					}
-					return nil
+					return s.Run(qCtx, rendered, format, activeOut())
 				})
 				stopSpinner()
 				s.BeforeOutput = nil
@@ -853,6 +900,145 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 						label = "Command error:"
 					}
 					_, _ = fmt.Fprintln(errOut, label, execErr)
+				}
+			case `\snippet`:
+				sub := "list"
+				if len(fields) >= 2 {
+					sub = strings.ToLower(fields[1])
+				}
+				switch sub {
+				case "list", "ls":
+					snippets, snErr := store.loadSnippets()
+					if snErr != nil {
+						_, _ = fmt.Fprintln(errOut, snErr)
+						break
+					}
+					if len(snippets) == 0 {
+						_, _ = fmt.Fprintln(out, "No saved snippets.")
+						break
+					}
+					var snNames []string
+					for name := range snippets {
+						snNames = append(snNames, name)
+					}
+					sort.Strings(snNames)
+					for _, name := range snNames {
+						sn := snippets[name]
+						preview := strings.Join(strings.Fields(sn.Query), " ")
+						if len(preview) > 60 {
+							preview = preview[:57] + "..."
+						}
+						if sn.Description != "" {
+							_, _ = fmt.Fprintf(out, "%s\t(%s)\t%s\n", sn.Name, sn.Description, preview)
+						} else {
+							_, _ = fmt.Fprintf(out, "%s\t%s\n", sn.Name, preview)
+						}
+					}
+				case "show":
+					if len(fields) != 3 {
+						_, _ = fmt.Fprintln(errOut, `Usage: \snippet show NAME`)
+						break
+					}
+					snippets, snErr := store.loadSnippets()
+					if snErr != nil {
+						_, _ = fmt.Fprintln(errOut, snErr)
+						break
+					}
+					sn, ok := snippets[fields[2]]
+					if !ok {
+						_, _ = fmt.Fprintf(errOut, "snippet %q does not exist\n", fields[2])
+						break
+					}
+					_, _ = fmt.Fprintln(out, sn.Query)
+				case "save":
+					if len(fields) < 3 {
+						_, _ = fmt.Fprintln(errOut, `Usage: \snippet save NAME [DESCRIPTION...]`)
+						break
+					}
+					name := fields[2]
+					if !validName.MatchString(name) {
+						_, _ = fmt.Fprintln(errOut, "name must contain letters, digits, dots, underscores or hyphens and start with a letter or digit")
+						break
+					}
+					if strings.TrimSpace(lastQuery) == "" {
+						_, _ = fmt.Fprintln(errOut, "no previous query to save")
+						break
+					}
+					desc := ""
+					if len(fields) > 3 {
+						desc = strings.Join(fields[3:], " ")
+					}
+					if err := store.updateSnippets(func(m map[string]Snippet) error {
+						m[name] = Snippet{Name: name, Query: strings.TrimSpace(lastQuery), Description: desc}
+						return nil
+					}); err != nil {
+						_, _ = fmt.Fprintln(errOut, err)
+						break
+					}
+					c.refreshSnippets(store)
+					_, _ = fmt.Fprintf(out, "Saved snippet %s\n", name)
+				case "rm", "remove":
+					if len(fields) != 3 {
+						_, _ = fmt.Fprintln(errOut, `Usage: \snippet rm NAME`)
+						break
+					}
+					if err := store.updateSnippets(func(m map[string]Snippet) error {
+						if _, ok := m[fields[2]]; !ok {
+							return fmt.Errorf("snippet %q does not exist", fields[2])
+						}
+						delete(m, fields[2])
+						return nil
+					}); err != nil {
+						_, _ = fmt.Fprintln(errOut, err)
+						break
+					}
+					c.refreshSnippets(store)
+					_, _ = fmt.Fprintf(out, "Removed snippet %s\n", fields[2])
+				case "run":
+					if len(fields) < 3 {
+						_, _ = fmt.Fprintln(errOut, `Usage: \snippet run NAME [key=value ...]`)
+						break
+					}
+					vars, varErr := parseShellVarAssignments(fields[3:])
+					if varErr != nil {
+						_, _ = fmt.Fprintln(errOut, varErr)
+						break
+					}
+					snippets, snErr := store.loadSnippets()
+					if snErr != nil {
+						_, _ = fmt.Fprintln(errOut, snErr)
+						break
+					}
+					sn, ok := snippets[fields[2]]
+					if !ok {
+						_, _ = fmt.Fprintf(errOut, "snippet %q does not exist\n", fields[2])
+						break
+					}
+					rendered, tplErr := renderSnippetTemplate(sn.Query, vars)
+					if tplErr != nil {
+						_, _ = fmt.Fprintln(errOut, tplErr)
+						break
+					}
+					stopSpinner := startSpinner(errOut, "Running query")
+					s.BeforeOutput = stopSpinner
+					execErr, interrupted := runInterruptible(ctx, func(qCtx context.Context) error {
+						return s.Run(qCtx, rendered, format, activeOut())
+					})
+					stopSpinner()
+					s.BeforeOutput = nil
+					if interrupted {
+						_, _ = fmt.Fprintln(errOut, "Query canceled.")
+						break
+					}
+					if execErr != nil {
+						label := "SQL error:"
+						if syntax := s.backend.Syntax(); syntax.JSONCommands || syntax.LineCommands || syntax.HTTPCommands {
+							label = "Command error:"
+						}
+						_, _ = fmt.Fprintln(errOut, label, execErr)
+					}
+				default:
+					_, _ = fmt.Fprintln(errOut, `Usage: \snippet [list|show|save|run|rm] ...`)
 				}
 			case `\reconnect`:
 				stopSpinner := startSpinner(errOut, "Reconnecting")
@@ -1025,7 +1211,8 @@ func shell(ctx context.Context, s *Session, p Profile, store Store, format strin
 		if line == "" {
 			continue
 		}
-		statements, rest, _ := splitSQL(line, s.Driver)
+		statements, rest, nextDelim, _ := splitSQLWithDelimiter(line, s.Driver, sessionDelimiter)
+		sessionDelimiter = nextDelim
 		if syntax := s.backend.Syntax(); (syntax.JSONCommands || syntax.LineCommands || syntax.HTTPCommands) && strings.TrimSpace(rest) != "" {
 			statements = append(statements, rest)
 		}

@@ -12,20 +12,45 @@ import (
 // splitSQL recognizes statement separators outside strings, comments and dollar quotes.
 // The remainder is held by the interactive shell until a terminating semicolon arrives.
 func splitSQL(input, driver string) (statements []string, remainder string, err error) {
+	statements, remainder, _, err = splitSQLWithDelimiter(input, driver, ";")
+	return
+}
+
+func splitSQLWithDelimiter(input, driver, initialDelimiter string) (statements []string, remainder string, finalDelimiter string, err error) {
+	if initialDelimiter == "" {
+		initialDelimiter = ";"
+	}
+	finalDelimiter = initialDelimiter
 	backend, err := registry.Lookup(driver)
 	if err != nil {
-		return nil, "", err
+		return nil, "", finalDelimiter, err
 	}
 	syntax := backend.Syntax()
 	if syntax.LineCommands {
 		statements, remainder, err = splitLines(input)
-		return
+		return statements, remainder, finalDelimiter, err
 	}
+
+	delimiter := initialDelimiter
 	start := 0
 	quote := byte(0)
 	dollar := ""
 	block := 0
 	line := false
+
+	// Track compound CREATE TRIGGER/PROCEDURE/FUNCTION ... BEGIN ... END blocks
+	// so internal semicolons do not split the statement when delimiter == ";".
+	var headerWords []string
+	compoundHeader := false
+	beginDepth := 0
+	caseDepth := 0
+	resetCompound := func() {
+		headerWords = nil
+		compoundHeader = false
+		beginDepth = 0
+		caseDepth = 0
+	}
+
 	for i := 0; i < len(input); i++ {
 		c := input[i]
 		if line {
@@ -93,6 +118,19 @@ func splitSQL(input, driver string) (statements []string, remainder string, err 
 			i++
 			continue
 		}
+
+		// Handle DELIMITER <token> directive at statement start.
+		if stripCommentsSyntax(input[start:i], syntax) == "" {
+			if newDelim, nextPos, ok := parseDelimiterDirective(input, i); ok {
+				delimiter = newDelim
+				finalDelimiter = newDelim
+				i = nextPos
+				start = nextPos + 1
+				resetCompound()
+				continue
+			}
+		}
+
 		if c == '\'' || c == '"' || c == '`' {
 			quote = c
 			if c == '\'' && syntax.EscapeStringPrefix && i > 0 && (input[i-1] == 'E' || input[i-1] == 'e') && (i == 1 || !isIdentifier(rune(input[i-2]))) {
@@ -115,19 +153,118 @@ func splitSQL(input, driver string) (statements []string, remainder string, err 
 				continue
 			}
 		}
-		if c == ';' {
+
+		if delimiter == ";" && (isASCIIAlpha(c) || c == '_') && (i == 0 || !isIdentByte(input[i-1])) {
+			j := i + 1
+			for j < len(input) && isIdentByte(input[j]) {
+				j++
+			}
+			word := strings.ToUpper(input[i:j])
+			if len(headerWords) < 5 {
+				headerWords = append(headerWords, word)
+				compoundHeader = isCompoundHeader(headerWords)
+			}
+			if compoundHeader {
+				switch word {
+				case "BEGIN":
+					if !isBeginTransactionFollow(input[j:]) {
+						beginDepth++
+					}
+				case "CASE":
+					if beginDepth > 0 {
+						caseDepth++
+					}
+				case "END":
+					if caseDepth > 0 {
+						caseDepth--
+					} else if beginDepth > 0 {
+						beginDepth--
+					}
+				}
+			}
+			i = j - 1
+			continue
+		}
+
+		if beginDepth == 0 && strings.HasPrefix(input[i:], delimiter) {
 			text := strings.TrimSpace(input[start:i])
 			if stripCommentsSyntax(text, syntax) != "" {
 				statements = append(statements, text)
 			}
+			i += len(delimiter) - 1
 			start = i + 1
+			resetCompound()
 		}
 	}
-	remainder = strings.TrimSpace(input[start:])
+	if start < len(input) {
+		remainder = strings.TrimSpace(input[start:])
+	}
 	if quote != 0 || dollar != "" || block > 0 {
 		err = fmt.Errorf("unterminated SQL string, identifier or comment")
 	}
-	return
+	return statements, remainder, finalDelimiter, err
+}
+
+func parseDelimiterDirective(input string, pos int) (delim string, endOfLine int, ok bool) {
+	if pos > 0 && input[pos-1] != '\n' && input[pos-1] != '\r' {
+		// Allow leading whitespace on the line.
+		k := pos - 1
+		for k >= 0 && (input[k] == ' ' || input[k] == '\t') {
+			k--
+		}
+		if k >= 0 && input[k] != '\n' && input[k] != '\r' {
+			return "", 0, false
+		}
+	}
+	lineEnd := pos
+	for lineEnd < len(input) && input[lineEnd] != '\n' {
+		lineEnd++
+	}
+	line := strings.TrimSpace(input[pos:lineEnd])
+	fields := strings.Fields(line)
+	if len(fields) != 2 || !strings.EqualFold(fields[0], "DELIMITER") {
+		return "", 0, false
+	}
+	if lineEnd < len(input) && input[lineEnd] == '\n' {
+		return fields[1], lineEnd, true
+	}
+	return fields[1], lineEnd - 1, true
+}
+
+func isCompoundHeader(words []string) bool {
+	if len(words) < 2 || words[0] != "CREATE" {
+		return false
+	}
+	idx := 1
+	if idx < len(words) && (words[idx] == "TEMP" || words[idx] == "TEMPORARY") {
+		idx++
+	} else if idx+1 < len(words) && words[idx] == "OR" && words[idx+1] == "REPLACE" {
+		idx += 2
+	}
+	if idx >= len(words) {
+		return false
+	}
+	switch words[idx] {
+	case "TRIGGER", "PROCEDURE", "FUNCTION":
+		return true
+	}
+	return false
+}
+
+func isBeginTransactionFollow(rest string) bool {
+	rest = strings.TrimLeft(rest, " \t\r\n")
+	if rest == "" || rest[0] == ';' {
+		return true
+	}
+	end := 0
+	for end < len(rest) && isIdentByte(rest[end]) {
+		end++
+	}
+	switch strings.ToUpper(rest[:end]) {
+	case "TRANSACTION", "DEFERRED", "IMMEDIATE", "EXCLUSIVE", "WORK":
+		return true
+	}
+	return false
 }
 
 func secondaryPrompt(input, driver string) string {

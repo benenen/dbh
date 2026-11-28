@@ -44,4 +44,13 @@ func TestTerminalExpandedTruncateSnippetAndBadges(t *testing.T) {
 	term2.exchange("\r", "[PROD]> ")
 	contains(t, term2.exchange("DELETE FROM items;\r", "without WHERE"), "without WHERE")
 	term2.exchange("DELETE FROM items WHERE id = 1;\r", "[PROD]> ")
+
+	// \ddl prints CREATE TABLE DDL in interactive shell.
+	ddlOut := term2.exchange("\\ddl items\r", "[PROD]> ")
+	contains(t, ddlOut, "CREATE TABLE items")
+
+	// \snippet save and \snippet run.
+	term2.exchange("SELECT id FROM items WHERE id = 2;\r", "[PROD]> ")
+	contains(t, term2.exchange("\\snippet save get_one\r", "Saved snippet get_one"), "Saved snippet get_one")
+	contains(t, term2.exchange("\\snippet run get_one\r", `{"id":2}`), `{"id":2}`)
 }

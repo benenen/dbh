@@ -65,7 +65,7 @@ func addExplainCommand(root *cobra.Command, store func() (Store, error), names c
 		if err != nil {
 			return err
 		}
-		p, err := st.Get(args[0])
+		p, _, err := resolveTarget(st, args[0], adhocOptions{})
 		if err != nil {
 			return err
 		}

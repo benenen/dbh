@@ -45,6 +45,8 @@ func TestCompletionCommandArgumentsAndCursor(t *testing.T) {
 		{"SELECT 1\n  \\format\tj", 20, "j", []string{"json"}},
 		{`\format csv SELECT`, 17, "", nil},
 		{`\describe users SE`, 17, "", nil},
+		{`\ddl `, 5, "", []string{"users"}},
+		{`\ddl us`, 7, "us", []string{"users"}},
 		{`\help SE`, 8, "", nil},
 		{"SELECT 名", 8, "名", []string{"名称"}},
 		{"SELECT na", 2, "SE", []string{"SELECT"}},

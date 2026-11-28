@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -207,7 +208,7 @@ func addSnippetCommand(root *cobra.Command, store func() (Store, error), names c
 	}
 
 	var runDB, runFormat string
-	var runParams []string
+	var runParams, runVars []string
 	var runTimeout time.Duration
 	var runMaxRows, runMaxCell int
 	var runStats, runAllowWrite, runExpanded bool
@@ -228,6 +229,10 @@ func addSnippetCommand(root *cobra.Command, store func() (Store, error), names c
 			if runTimeout <= 0 {
 				return fmt.Errorf("timeout must be positive")
 			}
+			vars, err := parseVarAssignments(runVars)
+			if err != nil {
+				return err
+			}
 			st, err := store()
 			if err != nil {
 				return err
@@ -240,7 +245,11 @@ func addSnippetCommand(root *cobra.Command, store func() (Store, error), names c
 			if !ok {
 				return fmt.Errorf("snippet %q does not exist", args[0])
 			}
-			p, err := st.Get(args[1])
+			rendered, err := renderSnippetTemplate(sn.Query, vars)
+			if err != nil {
+				return err
+			}
+			p, _, err := resolveTarget(st, args[1], adhocOptions{})
 			if err != nil {
 				return err
 			}
@@ -253,6 +262,7 @@ func addSnippetCommand(root *cobra.Command, store func() (Store, error), names c
 				return err
 			}
 			defer session.Close()
+			session.AuditStore = &st
 			session.MaxRows = runMaxRows
 			session.MaxCellWidth = runMaxCell
 			session.MaxCellWidthSet = cmd.Flags().Changed("max-cell-width")
@@ -266,13 +276,14 @@ func addSnippetCommand(root *cobra.Command, store func() (Store, error), names c
 				}
 			}
 			if len(bound) > 0 {
-				return session.executeArgs(cmd.Context(), sn.Query, runFormat, cmd.OutOrStdout(), bound...)
+				return session.executeArgs(cmd.Context(), rendered, runFormat, cmd.OutOrStdout(), bound...)
 			}
-			return session.Run(cmd.Context(), sn.Query, runFormat, cmd.OutOrStdout())
+			return session.Run(cmd.Context(), rendered, runFormat, cmd.OutOrStdout())
 		},
 	}
 	runCmd.Flags().StringVar(&runDB, "db", "", "Server database to use")
 	runCmd.Flags().StringArrayVar(&runParams, "param", nil, "Bind JSON scalar parameter; repeat in order")
+	runCmd.Flags().StringArrayVar(&runVars, "var", nil, "Template variable key=value for {{key}} placeholders; repeat as needed")
 	runCmd.Flags().StringVar(&runFormat, "format", "table", "table, csv, json or tsv")
 	runCmd.Flags().DurationVar(&runTimeout, "timeout", 30*time.Second, "Query timeout")
 	runCmd.Flags().IntVar(&runMaxRows, "max-rows", 0, "Maximum result rows (0 for unlimited)")
@@ -314,4 +325,56 @@ func parseBoundParams(params []string) ([]any, error) {
 		bound[i] = v
 	}
 	return bound, nil
+}
+
+var (
+	snippetVarPattern   = regexp.MustCompile(`\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}`)
+	validSnippetVarName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+)
+
+func parseVarAssignments(items []string) (map[string]string, error) {
+	return parseVarAssignmentsMode(items, false)
+}
+
+func parseShellVarAssignments(items []string) (map[string]string, error) {
+	return parseVarAssignmentsMode(items, true)
+}
+
+func parseVarAssignmentsMode(items []string, stripQuotes bool) (map[string]string, error) {
+	vars := make(map[string]string, len(items))
+	for _, item := range items {
+		k, v, ok := strings.Cut(item, "=")
+		if !ok || !validSnippetVarName.MatchString(k) {
+			return nil, fmt.Errorf("invalid variable assignment %q (expected key=value)", item)
+		}
+		if stripQuotes && len(v) >= 2 {
+			if (v[0] == '\'' && v[len(v)-1] == '\'') || (v[0] == '"' && v[len(v)-1] == '"') {
+				v = v[1 : len(v)-1]
+			}
+		}
+		vars[k] = v
+	}
+	return vars, nil
+}
+
+func renderSnippetTemplate(query string, vars map[string]string) (string, error) {
+	missingSet := map[string]bool{}
+	matches := snippetVarPattern.FindAllStringSubmatch(query, -1)
+	for _, m := range matches {
+		if _, ok := vars[m[1]]; !ok {
+			missingSet[m[1]] = true
+		}
+	}
+	if len(missingSet) > 0 {
+		missing := make([]string, 0, len(missingSet))
+		for k := range missingSet {
+			missing = append(missing, k)
+		}
+		sort.Strings(missing)
+		return "", fmt.Errorf("missing snippet variable(s): %s", strings.Join(missing, ", "))
+	}
+	return snippetVarPattern.ReplaceAllStringFunc(query, func(token string) string {
+		m := snippetVarPattern.FindStringSubmatch(token)
+		return vars[m[1]]
+	}), nil
 }
