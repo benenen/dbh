@@ -2,8 +2,10 @@
 
 ```bash
 dbh connect local --sql 'SELECT * FROM users;'
-# exec: NAME 是已保存连接，--db 是服务器数据库名
+# exec: NAME 是已保存连接，也支持直接传 URL / 文件路径或 --dsn 临时直连
 dbh exec docker-pgsql --db dbh_test 'SELECT * FROM dbh_demo;'
+dbh exec ./demo.db 'SELECT * FROM users;'
+dbh exec --dsn "$DATABASE_URL" 'SELECT 1;' --format tsv
 dbh exec docker-mysql --db dbh_test --sql 'SELECT * FROM dbh_demo;' --format json
 dbh exec local 'SELECT * FROM users;'
 dbh connect local -f queries.sql

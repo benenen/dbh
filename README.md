@@ -19,13 +19,19 @@ Shell 补全和其他安装方式见 [安装](docs/install.md)。
 dbh new local --driver sqlite --dsn ./demo.db
 dbh new pg --driver postgres --prompt-dsn
 
-# 执行语句后退出
+# 执行语句后退出（支持已保存连接，或直接传 URL / 文件路径 / --dsn 临时直连）
 dbh exec local 'SELECT * FROM users;'
+dbh exec ./demo.db 'SELECT * FROM users;'
 dbh exec pg --db app 'SELECT * FROM users WHERE id = $1' --param 42 --format tsv
 
-# 查看结构、诊断连接
+# 查看结构、DDL 与诊断连接
 dbh tables pg
+dbh ddl pg users
 dbh check pg
+
+# 跨库流式复制与生产写审计日志
+dbh copy dev prod --table users --allow-write
+dbh audit --env prod
 
 # 生成/更新关系模型到 .dbh/，查询表关系
 dbh erd init pg

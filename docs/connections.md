@@ -73,6 +73,22 @@ dbh remove local --keep-history
 
 自动化可用 `--dsn-env ENV_NAME` 从环境变量读取 DSN。`--dsn`、`--dsn-env`、`--prompt-dsn` 三选一。密码建议通过隐藏输入或环境变量传入，避免出现在 shell 历史或进程参数中。
 
+## 临时直连（Ad-hoc）
+
+无需提前 `dbh new`，`connect`、`exec`、`tables`、`describe`、`indexes`、`databases`、`ddl` 和 `check` 支持直接传入 URL、SQLite/bbolt 文件路径或 `--dsn` 临时连接：
+
+```bash
+dbh exec ./demo.db 'SELECT * FROM users;'
+dbh connect postgres://user:password@localhost:5432/app
+dbh tables --dsn "$DATABASE_URL"
+dbh check --driver elasticsearch --dsn http://localhost:9200
+dbh ddl ./demo.db users
+```
+
+- 自动推断：`postgres://` / `postgresql://` → `postgres`，`mysql://`（自动转为 `go-sql-driver/mysql` DSN）或含 `@tcp(` / `@unix(` → `mysql`，`sqlite://` / `sqlite3://` / `file:` / `:memory:` / `.db` / `.sqlite` / `.sqlite3` → `sqlite`，`sqlserver://` / `mssql://` → `mssql`，`oracle://` → `oracle`，`trino://` → `trino`，`dm://` → `dm`，`mongodb://` / `mongodb+srv://` → `mongo`，`clickhouse://` → `clickhouse`，`redis://` / `rediss://` / `redis+cluster://` / `redis+sentinel://` → `redis`，`cassandra://` / `scylla://` → `cassandra`，`etcd://` / `etcds://` → `etcd`，`bbolt://` / `.bolt` / `.bbolt` → `bbolt`，`openobserve://` → `openobserve`。`http://` / `https://` 存在多驱动歧义，需显式指定 `--driver`。
+- 若传入的标识匹配已保存连接名，优先使用已保存配置；临时直连不会写入本地连接配置，也不会持久化 SQL 历史。
+- 临时直连同样支持 `--driver`、`--proxy`（可重复），`connect` / `exec` 还支持 `--read-only`。
+
 ## 代理
 
 每个连接可保存自己的代理列表。`--proxy` 可重复，按从本机出发的顺序逐跳连接，最后一跳连接 DSN 中的数据库地址：

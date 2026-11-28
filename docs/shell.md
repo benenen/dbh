@@ -28,9 +28,10 @@ local/main> \q
 - ↑/↓ 在多行输入中移动，到顶部/底部后回顾历史（在最后一行且有候选显示时，↓ 进入候选菜单）；Ctrl-R 打开模糊历史搜索面板（支持 `Ctrl-W` 删词、`Ctrl-D` 删除当前历史条目），在底部预览完整多行 SQL，按 Enter 回填到输入行（不立即执行），按 Esc 或 Ctrl-C 取消。匹配的历史 SQL 也会作为灰色文字预览，在输入末尾按 → 接受。Ctrl-C 在输入时清除整块输入，在查询或元命令执行期间取消当前操作并返回提示符；在空输入区按 Ctrl-D 退出。
 - `\database [PATTERN]` 在 MySQL/PostgreSQL/MongoDB/ClickHouse/Redis 中列出数据库（支持按不区分大小写的子串或 `*`/`?` 通配符过滤），每行一个名称，与 `\tables` 一样不受 `\format` 影响。MySQL 使用 `SHOW DATABASES`，PostgreSQL 查询 `pg_database`，MongoDB 列出服务器数据库；列表范围由数据库权限决定。SQLite 不支持此命令。
 - `\use DATABASE` 或 `USE DATABASE;` 切换当前数据库，成功后刷新表/集合和字段提示，不修改保存的连接配置。MySQL 保留当前会话；PostgreSQL 重新建立连接，临时表、会话设置和未提交事务不保留，连接失败时仍保留旧连接；MongoDB 复用客户端并选择数据库，新库在写入数据后出现。SQLite 不支持切库。
-- `\tables [PATTERN]` 列出表和视图（支持按不区分大小写的子串或 `*`/`?` 通配符过滤）；`\describe TABLE` 显示每个字段的名称、类型、是否可空、默认值、主键顺序和注释，并附上索引列表；`\indexes TABLE` 单独查看索引。支持 `schema.table` 和带引号的名称（如 `"a.b"`、`"order items"`），可直接使用 `\tables` 列出的名称；SQLite 表名不区分大小写。结果遵循当前 `\format`。
+- `\tables [PATTERN]` 列出表和视图（支持按不区分大小写的子串或 `*`/`?` 通配符过滤）；`\describe TABLE` 显示每个字段的名称、类型、是否可空、默认值、主键顺序和注释，并附上索引列表；`\indexes TABLE` 单独查看索引；`\ddl TABLE` 输出表或视图的 `CREATE` DDL 语句（输入 `\ddl ` 时自动补全表名）。支持 `schema.table` 和带引号的名称（如 `"a.b"`、`"order items"`），可直接使用 `\tables` 列出的名称；SQLite 表名不区分大小写。结果遵循当前 `\format`（`\ddl` 始终输出原始 SQL）。
 - 索引显示名称、唯一性、主键标记及索引字段/定义。MySQL 联合索引按字段顺序逐行显示，包含索引类型、前缀长度和排序方向。SQLite 没有原生字段注释，注释显示为 `NULL`；`INTEGER PRIMARY KEY` 使用 rowid 时没有独立索引，因此不会出现在索引列表中。CSV/JSON 下字段与索引结果顺序输出，不插入文本标题。
-- `\history [PATTERN]` 查看或按关键字/通配符过滤历史，`\clear` 清除待执行 SQL，`\format table|csv|json|tsv` 切换格式，`\limit [N|off]` 查看或调整单次查询最大返回行数（交互模式默认 `1000`，`off`/`0` 为不限），`\timeout [DUR]` 查看或调整单次查询超时（如 `30s`、`5m`），`\reconnect` 断线重连并恢复当前库，`\o [FILE]` / `\out [FILE]` 重定向输出到文件（无参数恢复终端），`\i FILE` / `\source FILE` 执行本地脚本文件，`\e` / `\edit` 调起 `$EDITOR` 编辑查询，`\watch [SEC]` 按间隔重复执行上一条查询（`Ctrl-C` 停止），`\explain [analyze] SQL` 查看执行计划，`\pager auto|on|off` 控制大结果集交互分页浏览（默认 `auto`，表格超出终端高度或自然宽度超过终端宽度时自动进入固定表头与固定 `No` 序号列的分页视图，支持 `↑↓←→`/`hjkl`/鼠标滚轮滚动、`Tab`/`Shift-Tab`/`0`/`$`/`H`/`L` 横向跳列、`Enter`/`v` 单行详情展开、`&` 行过滤、`s` 导出、`y` 复制行、`/` 搜索并用 `n`/`N` 跳转及 `Esc` 清空搜索/返回），`\truncate [N|off]` 查看或调整单元格显示截断宽度（`table` 默认 `200` 字符，大 BLOB 与高维向量显示摘要；`off`/`0` 查看完整内容），`\help` 查看帮助。
+- `\history [PATTERN]` 查看或按关键字/通配符过滤历史，`\clear` 清除待执行 SQL，`\format table|csv|json|tsv` 切换格式，`\limit [N|off]` 查看或调整单次查询最大返回行数（交互模式默认 `1000`，`off`/`0` 为不限），`\timeout [DUR]` 查看或调整单次查询超时（如 `30s`、`5m`），`\reconnect` 断线重连并恢复当前库，`\o [FILE]` / `\out [FILE]` 重定向输出到文件（无参数恢复终端），`\i FILE` / `\source FILE` 执行本地脚本文件，`\e` / `\edit` 调起 `$EDITOR` 编辑查询，`\watch [SEC]` 按间隔重复执行上一条查询（`Ctrl-C` 停止），`\explain [analyze] SQL` 查看执行计划，`\pager auto|on|off` 控制大结果集交互分页浏览（默认 `auto`，表格超出终端高度或自然宽度超过终端宽度时自动进入固定表头与固定 `No` 序号列的分页视图，支持 `↑↓←→`/`hjkl`/鼠标滚轮滚动、`Tab`/`Shift-Tab`/`0`/`$`/`H`/`L` 横向跳列、`Enter`/`v` 单行详情展开、`&` 行过滤、`s` 导出、`y` 复制行、`/` 搜索并用 `n`/`N` 跳转及 `Esc` 清空搜索/返回），`\truncate [N|off]` 查看或调整单元格显示截断宽度（`table` 默认 `200` 字符，大 BLOB 与高维向量显示摘要；`off`/`0` 查看完整内容），`\run NAME [key=value ...]` / `\snippet [list|show|save|run|rm]` 管理并执行模板化 Snippet（支持 `{{key}}` 变量替换和名补全），`\help` 查看帮助。
+- 交互输入行支持 SQL 实时语法高亮（关键字、字符串、注释、数字与元命令区分颜色，设置 `NO_COLOR=1` 自动关闭）。
 - 慢查询或 `dbh erd pull` 执行期间，若 stderr 为交互终端且耗时超过 120ms，会在行内显示动态进度 Spinner 与实时耗时，完成后自动清行再输出结果，不污染 stdout 或脚本管道。
 
 ## 历史
@@ -47,6 +48,6 @@ dbh connect local --history-limit 200
 
 ## 限制
 
-当前分句器面向常规 SQL 和 PostgreSQL dollar quote 块；SQLite trigger、MySQL 存储过程等含内部未引用分号的复合语句以及 `DELIMITER` 客户端指令暂不支持。
+支持常规 SQL、PostgreSQL dollar quote 块、`DELIMITER <token>` 客户端指令，以及 `CREATE [TEMP|OR REPLACE] TRIGGER|PROCEDURE|FUNCTION ... BEGIN ... END;` 复合语句内部分句。
 
 MongoDB、Redis 的交互差异见 [各数据库说明](drivers.md)。
