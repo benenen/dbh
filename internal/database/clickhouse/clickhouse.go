@@ -15,6 +15,7 @@ import (
 type Driver struct{}
 
 var _ database.Driver = Driver{}
+var _ database.DDLProvider = Driver{}
 
 func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (database.Connection, error) {
 	options, err := ch.ParseDSN(dsn)
@@ -108,4 +109,31 @@ func (Driver) CurrentDatabase(ctx context.Context, conn database.Connection) (st
 }
 func (Driver) TableColumns(ctx context.Context, conn database.Connection) (map[string][]string, error) {
 	return database.ReadTableColumns(ctx, conn, `SELECT table, name FROM system.columns WHERE database=currentDatabase() ORDER BY table, position`)
+}
+
+func quoteIdent(name string) string {
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+}
+
+func (Driver) DDL(ctx context.Context, conn database.Connection, table string) (string, error) {
+	if err := resolve(ctx, conn, table); err != nil {
+		return "", err
+	}
+	a := tableArgs(table)
+	quoted := quoteIdent(fmt.Sprint(a[1]))
+	if schema := fmt.Sprint(a[0]); schema != "" {
+		quoted = quoteIdent(schema) + "." + quoted
+	}
+	names, err := database.Names(ctx, conn, database.Query{Text: "SHOW CREATE TABLE " + quoted})
+	if err != nil {
+		return "", err
+	}
+	if len(names) == 0 {
+		return "", fmt.Errorf("DDL for %q is unavailable", table)
+	}
+	ddl := strings.TrimSpace(names[0])
+	if !strings.HasSuffix(ddl, ";") {
+		ddl += ";"
+	}
+	return ddl, nil
 }

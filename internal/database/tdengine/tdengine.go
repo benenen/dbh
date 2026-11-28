@@ -21,6 +21,7 @@ type Driver struct{}
 
 var _ database.Driver = Driver{}
 var _ database.CurrentDatabase = Driver{}
+var _ database.DDLProvider = Driver{}
 
 type connection struct {
 	baseURL  *url.URL
@@ -178,6 +179,35 @@ func (Driver) ColumnDetails(_ context.Context, _ database.Connection, table stri
 
 func (Driver) Indexes(_ context.Context, _ database.Connection, _ string) (database.Query, error) {
 	return database.Query{}, database.ErrNoIndexes
+}
+
+func (Driver) DDL(ctx context.Context, conn database.Connection, table string) (string, error) {
+	if err := validateName(table); err != nil {
+		return "", err
+	}
+	rows, err := conn.Query(ctx, "SHOW CREATE TABLE "+quoteIdent(table))
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("DDL for %q is unavailable", table)
+	}
+	row, err := rows.Row()
+	if err != nil {
+		return "", err
+	}
+	if len(row.Values) < 2 || row.Values[1] == nil {
+		return "", fmt.Errorf("unexpected SHOW CREATE TABLE output for %q", table)
+	}
+	ddl := strings.TrimSpace(fmt.Sprint(row.Values[1]))
+	if !strings.HasSuffix(ddl, ";") {
+		ddl += ";"
+	}
+	return ddl, rows.Err()
 }
 
 func (c *connection) Query(ctx context.Context, text string, args ...any) (database.Rows, error) {

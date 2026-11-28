@@ -21,6 +21,7 @@ var _ database.Driver = Driver{}
 var _ database.CurrentDatabase = Driver{}
 var _ database.ColumnNames = Driver{}
 var _ database.TableColumns = Driver{}
+var _ database.DDLProvider = Driver{}
 
 var customClientSeq atomic.Uint64
 
@@ -176,6 +177,29 @@ func (Driver) ColumnDetails(ctx context.Context, conn database.Connection, table
 
 func (Driver) Indexes(_ context.Context, _ database.Connection, _ string) (database.Query, error) {
 	return database.Query{}, database.ErrNoIndexes
+}
+
+func (Driver) DDL(ctx context.Context, conn database.Connection, table string) (string, error) {
+	schema, name := splitTable(table)
+	quoted := quoteIdent(name)
+	if schema != "" {
+		quoted = quoteIdent(schema) + "." + quoted
+	}
+	names, err := database.Names(ctx, conn, database.Query{Text: "SHOW CREATE TABLE " + quoted})
+	if err != nil {
+		names, err = database.Names(ctx, conn, database.Query{Text: "SHOW CREATE VIEW " + quoted})
+		if err != nil {
+			return "", err
+		}
+	}
+	if len(names) == 0 {
+		return "", fmt.Errorf("DDL for %q is unavailable", table)
+	}
+	ddl := strings.TrimSpace(names[0])
+	if !strings.HasSuffix(ddl, ";") {
+		ddl += ";"
+	}
+	return ddl, nil
 }
 
 var _ = sql.Open

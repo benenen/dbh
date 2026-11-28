@@ -20,6 +20,7 @@ var _ database.Driver = Driver{}
 var _ database.CurrentDatabase = Driver{}
 var _ database.ColumnNames = Driver{}
 var _ database.TableColumns = Driver{}
+var _ database.DDLProvider = Driver{}
 
 type bridgedConn struct {
 	database.Connection
@@ -269,4 +270,37 @@ GROUP BY i.INDEX_NAME, i.INDEX_TYPE, i.UNIQUENESS
 ORDER BY i.INDEX_NAME`,
 		Args: []any{owner, name},
 	}, nil
+}
+
+func (Driver) DDL(ctx context.Context, conn database.Connection, table string) (string, error) {
+	owner, name, err := resolveTable(ctx, conn, table)
+	if err != nil {
+		return "", err
+	}
+	types, err := database.Names(ctx, conn, database.Query{
+		Text: `SELECT OBJECT_TYPE FROM ALL_OBJECTS WHERE OWNER = ? AND OBJECT_NAME = ? AND OBJECT_TYPE IN ('TABLE','VIEW','MATERIALIZED VIEW')`,
+		Args: []any{owner, name},
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(types) == 0 {
+		return "", fmt.Errorf("table or view %q does not exist", table)
+	}
+	objType := strings.ReplaceAll(types[0], " ", "_")
+	ddls, err := database.Names(ctx, conn, database.Query{
+		Text: `SELECT DBMS_METADATA.GET_DDL(?, ?, ?) FROM DUAL`,
+		Args: []any{objType, name, owner},
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(ddls) == 0 {
+		return "", fmt.Errorf("DDL for %q is unavailable", table)
+	}
+	ddl := strings.TrimSpace(ddls[0])
+	if !strings.HasSuffix(ddl, ";") {
+		ddl += ";"
+	}
+	return ddl, nil
 }

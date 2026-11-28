@@ -13,6 +13,7 @@ import (
 type Driver struct{}
 
 var _ database.Driver = Driver{}
+var _ database.DDLProvider = Driver{}
 
 func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (database.Connection, error) {
 	if dial != nil {
@@ -102,4 +103,41 @@ func resolveTable(ctx context.Context, conn database.Connection, table string) (
 
 func (Driver) CurrentDatabase(_ context.Context, conn database.Connection) (string, error) {
 	return "main", nil
+}
+
+func (Driver) DDL(ctx context.Context, conn database.Connection, table string) (string, error) {
+	schema, name, err := resolveTable(ctx, conn, table)
+	if err != nil {
+		return "", err
+	}
+	quotedSchema := `"` + strings.ReplaceAll(schema, `"`, `""`) + `"`
+	mainSQL, err := database.Names(ctx, conn, database.Query{
+		Text: `SELECT sql FROM ` + quotedSchema + `.sqlite_schema WHERE name = ? AND type IN ('table', 'view') AND sql IS NOT NULL`,
+		Args: []any{name},
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(mainSQL) == 0 {
+		return "", fmt.Errorf("DDL for %q is unavailable", table)
+	}
+	extraSQL, err := database.Names(ctx, conn, database.Query{
+		Text: `SELECT sql FROM ` + quotedSchema + `.sqlite_schema WHERE tbl_name = ? AND type IN ('index', 'trigger') AND sql IS NOT NULL ORDER BY CASE type WHEN 'index' THEN 0 ELSE 1 END, name`,
+		Args: []any{name},
+	})
+	if err != nil {
+		return "", err
+	}
+	stmts := make([]string, 0, len(mainSQL)+len(extraSQL))
+	for _, s := range append(mainSQL, extraSQL...) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if !strings.HasSuffix(s, ";") {
+			s += ";"
+		}
+		stmts = append(stmts, s)
+	}
+	return strings.Join(stmts, "\n\n"), nil
 }

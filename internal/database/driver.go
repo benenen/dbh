@@ -38,6 +38,14 @@ type Driver interface {
 // \describe then shows only the column details.
 var ErrNoIndexes = errors.New("this database has no indexes")
 
+// ErrNoDDL is returned when a database does not support DDL export.
+var ErrNoDDL = errors.New("DDL export is not supported for this database")
+
+// DDLProvider returns the CREATE statement(s) for a table or view.
+type DDLProvider interface {
+	DDL(context.Context, Connection, string) (string, error)
+}
+
 // ColumnNames is implemented by drivers that can list the column names of every
 // table in the current database with one query instead of one query per table.
 type ColumnNames interface {

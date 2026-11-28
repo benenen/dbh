@@ -15,6 +15,7 @@ import (
 type Driver struct{}
 
 var _ database.Driver = Driver{}
+var _ database.DDLProvider = Driver{}
 
 func (Driver) Open(ctx context.Context, dsn string, dial database.Dial) (database.Connection, error) {
 	if dial == nil {
@@ -120,4 +121,179 @@ func (Driver) TableColumns(ctx context.Context, conn database.Connection) (map[s
  WHERE table_schema NOT IN ('pg_catalog','information_schema')
  AND pg_table_is_visible(format('%I.%I', table_schema, table_name)::regclass)
  ) AS cols ORDER BY name, ordinal_position`)
+}
+
+func (Driver) DDL(ctx context.Context, conn database.Connection, table string) (string, error) {
+	regclass, err := resolveTable(ctx, conn, table)
+	if err != nil {
+		return "", err
+	}
+
+	metaRows, err := conn.Query(ctx, `SELECT c.relkind::text, COALESCE(pg_get_partkeydef(c.oid), ''), COALESCE(obj_description(c.oid, 'pg_class'), '')
+FROM pg_class c WHERE c.oid = to_regclass($1)`, regclass)
+	if err != nil {
+		return "", err
+	}
+	var relkind, partKey, tableComment string
+	if metaRows.Next() {
+		row, err := metaRows.Row()
+		if err != nil {
+			_ = metaRows.Close()
+			return "", err
+		}
+		if len(row.Values) >= 3 {
+			relkind = fmt.Sprint(row.Values[0])
+			partKey = fmt.Sprint(row.Values[1])
+			tableComment = fmt.Sprint(row.Values[2])
+		}
+	}
+	if err := metaRows.Err(); err != nil {
+		_ = metaRows.Close()
+		return "", err
+	}
+	_ = metaRows.Close()
+
+	switch relkind {
+	case "v", "m":
+		defs, err := database.Names(ctx, conn, database.Query{
+			Text: `SELECT pg_get_viewdef(to_regclass($1), true)`,
+			Args: []any{regclass},
+		})
+		if err != nil {
+			return "", err
+		}
+		if len(defs) == 0 {
+			return "", fmt.Errorf("DDL for %q is unavailable", table)
+		}
+		kind := "VIEW"
+		if relkind == "m" {
+			kind = "MATERIALIZED VIEW"
+		}
+		body := strings.TrimRight(strings.TrimSpace(defs[0]), ";")
+		return fmt.Sprintf("CREATE %s %s AS\n%s;", kind, regclass, body), nil
+	case "r", "p":
+	default:
+		return "", fmt.Errorf("DDL export is not supported for relation kind %q", relkind)
+	}
+
+	var entries []string
+	colRows, err := conn.Query(ctx, `SELECT quote_ident(a.attname), format_type(a.atttypid, a.atttypmod),
+COALESCE(pg_get_expr(d.adbin, d.adrelid), ''), a.attnotnull
+FROM pg_attribute a
+LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+WHERE a.attrelid = to_regclass($1) AND a.attnum > 0 AND NOT a.attisdropped
+ORDER BY a.attnum`, regclass)
+	if err != nil {
+		return "", err
+	}
+	for colRows.Next() {
+		row, err := colRows.Row()
+		if err != nil {
+			_ = colRows.Close()
+			return "", err
+		}
+		if len(row.Values) < 4 {
+			continue
+		}
+		colName := fmt.Sprint(row.Values[0])
+		colType := fmt.Sprint(row.Values[1])
+		colDefault := fmt.Sprint(row.Values[2])
+		notNull, _ := row.Values[3].(bool)
+		line := "    " + colName + " " + colType
+		if colDefault != "" {
+			line += " DEFAULT " + colDefault
+		}
+		if notNull {
+			line += " NOT NULL"
+		}
+		entries = append(entries, line)
+	}
+	if err := colRows.Err(); err != nil {
+		_ = colRows.Close()
+		return "", err
+	}
+	_ = colRows.Close()
+
+	conRows, err := conn.Query(ctx, `SELECT quote_ident(conname), pg_get_constraintdef(oid, true)
+FROM pg_constraint
+WHERE conrelid = to_regclass($1) AND contype IN ('p','u','f','c')
+ORDER BY CASE contype WHEN 'p' THEN 0 WHEN 'u' THEN 1 WHEN 'f' THEN 2 ELSE 3 END, conname`, regclass)
+	if err != nil {
+		return "", err
+	}
+	for conRows.Next() {
+		row, err := conRows.Row()
+		if err != nil {
+			_ = conRows.Close()
+			return "", err
+		}
+		if len(row.Values) >= 2 {
+			entries = append(entries, fmt.Sprintf("    CONSTRAINT %s %s", fmt.Sprint(row.Values[0]), fmt.Sprint(row.Values[1])))
+		}
+	}
+	if err := conRows.Err(); err != nil {
+		_ = conRows.Close()
+		return "", err
+	}
+	_ = conRows.Close()
+
+	var stmts []string
+	createStmt := fmt.Sprintf("CREATE TABLE %s (\n%s\n)", regclass, strings.Join(entries, ",\n"))
+	if partKey != "" {
+		createStmt += "\nPARTITION BY " + partKey
+	}
+	stmts = append(stmts, createStmt+";")
+
+	idxDefs, err := database.Names(ctx, conn, database.Query{
+		Text: `SELECT pg_get_indexdef(i.indexrelid)
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indexrelid
+LEFT JOIN pg_constraint con ON con.conindid = i.indexrelid
+WHERE i.indrelid = to_regclass($1) AND con.oid IS NULL
+ORDER BY c.relname`,
+		Args: []any{regclass},
+	})
+	if err != nil {
+		return "", err
+	}
+	for _, idx := range idxDefs {
+		idx = strings.TrimSpace(idx)
+		if idx != "" {
+			if !strings.HasSuffix(idx, ";") {
+				idx += ";"
+			}
+			stmts = append(stmts, idx)
+		}
+	}
+
+	if tableComment != "" {
+		stmts = append(stmts, fmt.Sprintf("COMMENT ON TABLE %s IS '%s';", regclass, strings.ReplaceAll(tableComment, "'", "''")))
+	}
+
+	cmtRows, err := conn.Query(ctx, `SELECT quote_ident(a.attname), col_description(a.attrelid, a.attnum)
+FROM pg_attribute a
+WHERE a.attrelid = to_regclass($1) AND a.attnum > 0 AND NOT a.attisdropped
+  AND col_description(a.attrelid, a.attnum) IS NOT NULL
+ORDER BY a.attnum`, regclass)
+	if err != nil {
+		return "", err
+	}
+	for cmtRows.Next() {
+		row, err := cmtRows.Row()
+		if err != nil {
+			_ = cmtRows.Close()
+			return "", err
+		}
+		if len(row.Values) >= 2 && row.Values[1] != nil {
+			cmt := strings.ReplaceAll(fmt.Sprint(row.Values[1]), "'", "''")
+			stmts = append(stmts, fmt.Sprintf("COMMENT ON COLUMN %s.%s IS '%s';", regclass, fmt.Sprint(row.Values[0]), cmt))
+		}
+	}
+	if err := cmtRows.Err(); err != nil {
+		_ = cmtRows.Close()
+		return "", err
+	}
+	_ = cmtRows.Close()
+
+	return strings.Join(stmts, "\n\n"), nil
 }

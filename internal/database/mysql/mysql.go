@@ -17,6 +17,7 @@ import (
 type Driver struct{}
 
 var _ database.Driver = Driver{}
+var _ database.DDLProvider = Driver{}
 
 var dialers atomic.Uint64
 
@@ -128,4 +129,38 @@ func (Driver) CurrentDatabase(ctx context.Context, conn database.Connection) (st
 }
 func (Driver) TableColumns(ctx context.Context, conn database.Connection) (map[string][]string, error) {
 	return database.ReadTableColumns(ctx, conn, `SELECT table_name, column_name FROM information_schema.columns WHERE table_schema=DATABASE() ORDER BY table_name, ordinal_position`)
+}
+
+func quoteIdent(name string) string {
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+}
+
+func (Driver) DDL(ctx context.Context, conn database.Connection, table string) (string, error) {
+	schema, name, err := resolveTable(ctx, conn, table)
+	if err != nil {
+		return "", err
+	}
+	rows, err := conn.Query(ctx, "SHOW CREATE TABLE "+quoteIdent(schema)+"."+quoteIdent(name))
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("DDL for %q is unavailable", table)
+	}
+	row, err := rows.Row()
+	if err != nil {
+		return "", err
+	}
+	if len(row.Values) < 2 || row.Values[1] == nil {
+		return "", fmt.Errorf("unexpected SHOW CREATE TABLE output for %q", table)
+	}
+	ddl := strings.TrimSpace(fmt.Sprint(row.Values[1]))
+	if !strings.HasSuffix(ddl, ";") {
+		ddl += ";"
+	}
+	return ddl, rows.Err()
 }
